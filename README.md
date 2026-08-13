@@ -11,7 +11,7 @@ Workcell
   -> offers / eligibility / plan
   -> provider binding
   -> MaterialisedExecutionWorld
-  -> execute / inspect / collect / release
+  -> execute / inspect / release
 result + material provenance
   -> semantic owner
 ```
