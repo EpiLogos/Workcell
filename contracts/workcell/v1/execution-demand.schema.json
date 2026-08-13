@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "workcell.execution-demand/v1",
+  "title": "ExecutionDemand",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "demandId", "subjectRef", "affordances"],
+  "properties": {
+    "schemaVersion": { "const": "workcell.execution-demand/v1" },
+    "demandId": { "type": "string", "minLength": 1 },
+    "subjectRef": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Opaque semantic identity owned by the caller/semantic system. Workcell must preserve, not reinterpret, it."
+    },
+    "subjectRevision": { "type": "string", "minLength": 1 },
+    "affordances": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required": { "$ref": "#/$defs/affordanceList" },
+        "preferred": { "$ref": "#/$defs/affordanceList" },
+        "optional": { "$ref": "#/$defs/affordanceList" }
+      }
+    },
+    "connect": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["writable"],
+      "properties": {
+        "writable": { "type": "boolean" },
+        "sourceRef": { "type": "string", "minLength": 1 },
+        "sourceRevision": { "type": "string", "minLength": 1 }
+      }
+    },
+    "persistence": {
+      "enum": ["ephemeral", "run", "candidate", "project", "workcell", "factory", "external"]
+    },
+    "retention": { "enum": ["release", "preserve"] }
+  },
+  "$defs": {
+    "affordanceList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}

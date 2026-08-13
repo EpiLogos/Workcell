@@ -1,0 +1,17 @@
+{
+  "name": "@epilogos/workcell",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Provider-neutral material execution product for EpiLogos",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "verify": "node scripts/verify.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

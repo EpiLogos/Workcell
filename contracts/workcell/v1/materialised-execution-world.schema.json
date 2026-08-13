@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "workcell.materialised-execution-world/v1",
+  "title": "MaterialisedExecutionWorld",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "worldRef", "workcellId", "demandId", "subjectRef", "state", "planRef", "provider", "bindings", "degradations", "provenance"],
+  "properties": {
+    "schemaVersion": { "const": "workcell.materialised-execution-world/v1" },
+    "worldRef": { "type": "string", "minLength": 1 },
+    "workcellId": { "type": "string", "minLength": 1 },
+    "demandId": { "type": "string", "minLength": 1 },
+    "subjectRef": { "type": "string", "minLength": 1 },
+    "subjectRevision": { "type": "string" },
+    "state": { "type": "string" },
+    "planRef": { "type": "string", "minLength": 1 },
+    "provider": {
+      "type": "object",
+      "required": ["id", "offerRevision"],
+      "properties": {
+        "id": { "type": "string" },
+        "offerRevision": { "type": "string" }
+      }
+    },
+    "bindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["bindingRef", "logicalRef", "providerId", "state", "providerDetails"],
+        "properties": {
+          "bindingRef": { "type": "string" },
+          "logicalRef": { "type": "string" },
+          "providerId": { "type": "string" },
+          "state": { "type": "string" },
+          "providerDetails": { "type": "object" }
+        }
+      }
+    },
+    "degradations": { "type": "array" },
+    "provenance": {
+      "type": "object",
+      "required": ["demandDigest", "providerId", "materialKey", "preparedFromPlan"],
+      "properties": {
+        "demandDigest": { "type": "string" },
+        "providerId": { "type": "string" },
+        "materialKey": { "type": "string" },
+        "preparedFromPlan": { "type": "string" }
+      }
+    }
+  }
+}

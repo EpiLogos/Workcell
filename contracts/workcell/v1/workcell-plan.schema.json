@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "workcell.plan/v1",
+  "title": "WorkcellPlan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "planRef", "workcellId", "demandId", "subjectRef", "status", "selectedProviderId", "degradations", "candidates"],
+  "properties": {
+    "schemaVersion": { "const": "workcell.plan/v1" },
+    "planRef": { "type": "string", "minLength": 1 },
+    "workcellId": { "type": "string", "minLength": 1 },
+    "demandId": { "type": "string", "minLength": 1 },
+    "subjectRef": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["satisfiable", "degraded", "unsatisfiable"] },
+    "selectedProviderId": { "type": ["string", "null"] },
+    "offerRevision": { "type": "string" },
+    "degradations": { "type": "array" },
+    "candidates": { "type": "array" }
+  }
+}
