@@ -10,3 +10,4 @@ export {
 export { WorkcellError } from './errors.js';
 export { Workcell } from './workcell.js';
 export { ReferenceProvider } from './providers/reference.js';
+export { FixtureProvider } from './providers/fixture.js';
