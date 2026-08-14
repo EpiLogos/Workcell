@@ -118,8 +118,7 @@ pub(crate) fn set_tree_readonly(root: &Path) -> Result<()> {
             .map_err(io_error("inspect workspace permissions"))?
             .permissions();
         permissions.set_readonly(true);
-        fs::set_permissions(&path, permissions)
-            .map_err(io_error("set workspace read-only"))?;
+        fs::set_permissions(&path, permissions).map_err(io_error("set workspace read-only"))?;
     }
     Ok(())
 }
