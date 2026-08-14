@@ -66,7 +66,10 @@ fn directory_provider_tracks_dirty_retention_and_rematerialisation() {
         "fixture-revision"
     );
     let path = PathBuf::from(allocation.properties.get("path").unwrap());
-    assert_eq!(fs::read_to_string(path.join("hello.txt")).unwrap(), "source\n");
+    assert_eq!(
+        fs::read_to_string(path.join("hello.txt")).unwrap(),
+        "source\n"
+    );
 
     let repeated = provider.prepare_workspace(&request).unwrap();
     assert_eq!(repeated.material_ref, allocation.material_ref);
