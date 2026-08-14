@@ -1,7 +1,7 @@
 use crate::{
-    CollectionBundle, Discovery, ExecutionDemand, ExposureBundle, MaterialisedExecutionWorld,
-    MaterialisationPlan, ObservationBundle, ReconciliationResult, ReleaseResult, Result,
-    DesiredMaterialState, WorldRef,
+    CollectionBundle, DesiredMaterialState, Discovery, ExecutionDemand, ExposureBundle,
+    MaterialisationPlan, MaterialisedExecutionWorld, ObservationBundle, ReconciliationResult,
+    ReleaseResult, Result, WorldRef,
 };
 
 /// Provider-neutral Workcell control-plane contract.
@@ -40,7 +40,9 @@ mod tests {
         }
 
         fn prepare(&mut self, _: &ExecutionDemand) -> Result<MaterialisedExecutionWorld> {
-            Err(WorkcellError::Unsupported("providers arrive in F.04".into()))
+            Err(WorkcellError::Unsupported(
+                "providers arrive in F.04".into(),
+            ))
         }
 
         fn observe(&self, _: &WorldRef) -> Result<ObservationBundle> {

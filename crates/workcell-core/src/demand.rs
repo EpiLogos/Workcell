@@ -147,7 +147,10 @@ mod tests {
         let source = include_str!("demand.rs").to_ascii_lowercase();
         let forbidden = ["container_id", "bridge_ip", "worktree_path", "microvm_id"];
         for term in forbidden {
-            assert!(!source.contains(term), "provider detail leaked into demand: {term}");
+            assert!(
+                !source.contains(term),
+                "provider detail leaked into demand: {term}"
+            );
         }
     }
 }

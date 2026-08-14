@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use crate::{BindingRef, DemandRef, ExternalRef, OfferRef, PlanRef, ProviderRef, WorkcellRef, WorldRef};
+use crate::{
+    BindingRef, DemandRef, ExternalRef, OfferRef, PlanRef, ProviderRef, WorkcellRef, WorldRef,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Availability {
