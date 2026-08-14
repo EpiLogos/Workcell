@@ -2,12 +2,14 @@ use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use epilogos_workcell_core::{
     Availability, HealthState, OfferRef, OperationalOffer, ProviderAllocation, ProviderObservation,
-    ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult, ReleaseDisposition,
-    RetentionExpectation, Result, WorkcellError, WorkspaceAccess, WorkspaceMaterialRequest,
+    ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult, ReleaseDisposition, Result,
+    RetentionExpectation, WorkcellError, WorkspaceAccess, WorkspaceMaterialRequest,
     WorkspaceProvider,
 };
 
-use crate::support::{copy_tree, fingerprint_tree, require_directory, set_files_readonly, stable_key};
+use crate::support::{
+    copy_tree, fingerprint_tree, require_directory, set_files_readonly, stable_key,
+};
 
 #[derive(Clone, Debug)]
 struct DirectoryRecord {
@@ -119,7 +121,10 @@ impl ProviderPort for DirectoryWorkspaceProvider {
 }
 
 impl WorkspaceProvider for DirectoryWorkspaceProvider {
-    fn prepare_workspace(&mut self, request: &WorkspaceMaterialRequest) -> Result<ProviderAllocation> {
+    fn prepare_workspace(
+        &mut self,
+        request: &WorkspaceMaterialRequest,
+    ) -> Result<ProviderAllocation> {
         let locator = request
             .material_source
             .as_ref()
@@ -216,7 +221,10 @@ impl WorkspaceProvider for DirectoryWorkspaceProvider {
         retention: &RetentionExpectation,
     ) -> Result<ProviderReleaseResult> {
         let observation = self.observe_workspace(allocation)?;
-        let dirty = observation.detail.get("dirty").is_some_and(|value| value == "true");
+        let dirty = observation
+            .detail
+            .get("dirty")
+            .is_some_and(|value| value == "true");
         match retention {
             RetentionExpectation::Preserve => Ok(ProviderReleaseResult {
                 provider_ref: self.provider_ref.clone(),
@@ -224,11 +232,10 @@ impl WorkspaceProvider for DirectoryWorkspaceProvider {
                 disposition: ReleaseDisposition::Preserved,
                 changed: false,
             }),
-            RetentionExpectation::SuspendIfSupported | RetentionExpectation::SnapshotIfSupported => {
-                Err(WorkcellError::Unsupported(
-                    "directory workspace provider does not support suspend/snapshot".into(),
-                ))
-            }
+            RetentionExpectation::SuspendIfSupported
+            | RetentionExpectation::SnapshotIfSupported => Err(WorkcellError::Unsupported(
+                "directory workspace provider does not support suspend/snapshot".into(),
+            )),
             RetentionExpectation::Release => {
                 if dirty {
                     return Err(WorkcellError::CleanupFailed(
