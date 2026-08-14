@@ -163,7 +163,7 @@ fn world_rejects_unsatisfied_or_mismatched_materialisation() {
         "offer:workspace",
         "writable-workspace",
     );
-    let plan = plan(vec![planned.clone()], "valid");
+    let valid_plan = plan(vec![planned.clone()], "valid");
     let wrong_offer = allocation(
         "workspace:source",
         "provider:workspace",
@@ -176,7 +176,7 @@ fn world_rejects_unsatisfied_or_mismatched_materialisation() {
     assert!(compose_world(
         WorkcellRef::new("workcell:test").unwrap(),
         &demand,
-        &plan,
+        &valid_plan,
         vec![wrong_offer],
         vec![],
     )
