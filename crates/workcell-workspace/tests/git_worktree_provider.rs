@@ -17,7 +17,10 @@ fn temp_path(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("epilogos-workcell-{label}-{}-{nonce}", std::process::id()))
+    std::env::temp_dir().join(format!(
+        "epilogos-workcell-{label}-{}-{nonce}",
+        std::process::id()
+    ))
 }
 
 fn git(repository: &Path, args: &[&str]) -> String {
@@ -75,15 +78,24 @@ fn git_provider_materialises_exact_revision_and_tracks_dirty_state() {
     );
 
     validate_provider_port(&provider).unwrap();
-    assert_eq!(provider.offers().unwrap()[0].availability, Availability::Available);
+    assert_eq!(
+        provider.offers().unwrap()[0].availability,
+        Availability::Available
+    );
     let req = request(&repository, &commit);
     let allocation = provider.prepare_workspace(&req).unwrap();
     assert_eq!(allocation.provenance.get("source_dirty").unwrap(), "true");
-    assert_eq!(allocation.provenance.get("source_ref").unwrap(), "client:source:git-fixture");
+    assert_eq!(
+        allocation.provenance.get("source_ref").unwrap(),
+        "client:source:git-fixture"
+    );
     assert_eq!(allocation.provenance.get("source_commit").unwrap(), &commit);
 
     let path = PathBuf::from(allocation.properties.get("path").unwrap());
-    assert_eq!(fs::read_to_string(path.join("hello.txt")).unwrap(), "committed\n");
+    assert_eq!(
+        fs::read_to_string(path.join("hello.txt")).unwrap(),
+        "committed\n"
+    );
     assert_eq!(
         provider
             .observe_workspace(&allocation)
