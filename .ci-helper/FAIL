@@ -3,42 +3,67 @@ verify: FAIL (exit=101)
 [1m[92m    Updating[0m crates.io index
 [1m[92m Downloading[0m crates ...
 [1m[92m  Downloaded[0m zmij v1.0.23
-[1m[92m  Downloaded[0m serde_core v1.0.229
 [1m[92m  Downloaded[0m itoa v1.0.18
 [1m[92m  Downloaded[0m memchr v2.8.3
+[1m[92m  Downloaded[0m serde_core v1.0.229
 [1m[92m  Downloaded[0m serde_json v1.0.151
+[1m[92m   Compiling[0m zmij v1.0.23
+[1m[92m    Checking[0m epilogos-workcell-artifact v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-artifact)
+[1m[92m   Compiling[0m serde_core v1.0.229
+[1m[92m   Compiling[0m serde_json v1.0.151
+[1m[92m    Checking[0m epilogos-workcell-arrakis v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-arrakis)
+[1m[92m    Checking[0m epilogos-workcell-candidate v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-candidate)
+[1m[92m    Checking[0m epilogos-workcell-runtime v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-runtime)
+[1m[92m    Checking[0m epilogos-workcell-workspace v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-workspace)
+[1m[92m    Checking[0m epilogos-workcell-docker v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-docker)
 [1m[92m    Checking[0m epilogos-workcell-core v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-core)
+[1m[92m    Checking[0m epilogos-workcell-interop v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-interop)
+[1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 2.38s
+[1m[92m   Compiling[0m epilogos-workcell-core v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-core)
 [1m[92m   Compiling[0m serde_core v1.0.229
 [1m[92m   Compiling[0m zmij v1.0.23
+[1m[92m   Compiling[0m itoa v1.0.18
+[1m[92m   Compiling[0m memchr v2.8.3
+[1m[92m   Compiling[0m epilogos-workcell-artifact v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-artifact)
+[1m[92m   Compiling[0m epilogos-workcell-runtime v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-runtime)
+[1m[92m   Compiling[0m epilogos-workcell-docker v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-docker)
+[1m[92m   Compiling[0m epilogos-workcell-arrakis v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-arrakis)
+[1m[92m   Compiling[0m epilogos-workcell-workspace v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-workspace)
 [1m[92m   Compiling[0m serde_json v1.0.151
-[1m[92m    Checking[0m epilogos-workcell-artifact v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-artifact)
-[1m[92m    Checking[0m epilogos-workcell-runtime v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-runtime)
-[1m[92m    Checking[0m epilogos-workcell-docker v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-docker)
-[1m[92m    Checking[0m epilogos-workcell-arrakis v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-arrakis)
-[1m[92m    Checking[0m epilogos-workcell-workspace v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-workspace)
-[1m[92m    Checking[0m epilogos-workcell-candidate v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-candidate)
-[1m[92m    Checking[0m epilogos-workcell-placement v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-placement)
-[1m[92m    Checking[0m epilogos-workcell-interop v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-interop)
-[1m[91merror[E0063][0m[1m: missing field `capacity` in initializer of `epilogos_workcell_core::Discovery`[0m
-  [1m[94m--> [0mcrates/workcell-core/tests/planning_requirements.rs:24:5
-   [1m[94m|[0m
-[1m[94m24[0m [1m[94m|[0m     Discovery {
-   [1m[94m|[0m     [1m[91m^^^^^^^^^[0m [1m[91mmissing `capacity`[0m
+[1m[92m   Compiling[0m epilogos-workcell-placement v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-placement)
+[1m[92m   Compiling[0m epilogos-workcell-candidate v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-candidate)
+[1m[92m   Compiling[0m epilogos-workcell-interop v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-interop)
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 5.97s
+[1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/epilogos_workcell_arrakis-8e81d0e41dc01e28)
 
-[1m[91merror[E0063][0m[1m: missing field `capacity` in initializer of `epilogos_workcell_core::Discovery`[0m
-  [1m[94m--> [0mcrates/workcell-core/tests/planning_composition.rs:24:5
-   [1m[94m|[0m
-[1m[94m24[0m [1m[94m|[0m     Discovery {
-   [1m[94m|[0m     [1m[91m^^^^^^^^^[0m [1m[91mmissing `capacity`[0m
+running 0 tests
 
-[1m[91merror[E0063][0m[1m: missing field `capacity` in initializer of `epilogos_workcell_core::Discovery`[0m
-  [1m[94m--> [0mcrates/workcell-core/tests/planning_degradation.rs:25:5
-   [1m[94m|[0m
-[1m[94m25[0m [1m[94m|[0m     Discovery {
-   [1m[94m|[0m     [1m[91m^^^^^^^^^[0m [1m[91mmissing `capacity`[0m
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-[1mFor more information about this error, try `rustc --explain E0063`.[0m
-[1m[91merror[0m: could not compile `epilogos-workcell-core` (test "planning_composition") due to 1 previous error
-[1m[33mwarning[0m: build failed, waiting for other jobs to finish...
-[1m[91merror[0m: could not compile `epilogos-workcell-core` (test "planning_degradation") due to 1 previous error
-[1m[91merror[0m: could not compile `epilogos-workcell-core` (test "planning_requirements") due to 1 previous error
+[1m[92m     Running[0m tests/arrakis_provider.rs (target/debug/deps/arrakis_provider-0d3f6463d36e29ed)
+
+running 8 tests
+test arrakis_service_disappearance_is_explicit ... ok
+test local_arrakis_offer_is_absent_when_kvm_is_unavailable ... ok
+test arrakis_provider_conforms_and_uses_first_party_client_surface ... ok
+test remote_arrakis_does_not_require_kvm_on_the_client_host ... ok
+test unsupported_per_vm_resource_sizing_is_rejected_not_ignored ... ok
+test same_semantic_demand_can_plan_reference_or_arrakis_without_brand_selection ... ok
+test core_semantic_demand_does_not_acquire_arrakis_or_microvm_brands ... FAILED
+test snapshot_destroy_restore_preserves_exact_provider_provenance ... ok
+
+failures:
+
+---- core_semantic_demand_does_not_acquire_arrakis_or_microvm_brands stdout ----
+
+thread 'core_semantic_demand_does_not_acquire_arrakis_or_microvm_brands' (3049) panicked at crates/workcell-arrakis/tests/arrakis_provider.rs:429:5:
+assertion failed: !source.contains("microvm")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    core_semantic_demand_does_not_acquire_arrakis_or_microvm_brands
+
+test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[91merror[0m: test failed, to rerun pass `-p epilogos-workcell-arrakis --test arrakis_provider`

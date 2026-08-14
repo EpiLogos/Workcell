@@ -25,6 +25,7 @@ fn discovery(offers: Vec<OperationalOffer>) -> Discovery {
     Discovery {
         workcell_ref: WorkcellRef::new("workcell:test").unwrap(),
         health: HealthState::Healthy,
+        capacity: BTreeMap::new(),
         offers,
     }
 }
