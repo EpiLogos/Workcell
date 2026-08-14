@@ -1,8 +1,6 @@
 use std::{collections::BTreeMap, path::Path};
 
-use epilogos_workcell_core::{
-    PersistenceScope, Result, RetentionExpectation, WorkcellError,
-};
+use epilogos_workcell_core::{PersistenceScope, Result, WorkcellError};
 
 use crate::{DockerCommand, DockerCommandRunner};
 
@@ -76,10 +74,6 @@ pub(crate) fn short_lived_persistence(scope: Option<&PersistenceScope>) -> bool 
             | Some(PersistenceScope::TaskOrRun)
             | Some(PersistenceScope::Candidate)
     )
-}
-
-pub(crate) fn preserve_requested(retention: &RetentionExpectation) -> bool {
-    matches!(retention, RetentionExpectation::Preserve)
 }
 
 pub(crate) fn path_string(path: &Path) -> String {
