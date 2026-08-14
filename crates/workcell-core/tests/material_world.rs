@@ -14,12 +14,7 @@ fn demand() -> ExecutionDemand {
     )
 }
 
-fn binding(
-    logical_ref: &str,
-    provider: &str,
-    offer: &str,
-    requirement: &str,
-) -> PlannedBinding {
+fn binding(logical_ref: &str, provider: &str, offer: &str, requirement: &str) -> PlannedBinding {
     PlannedBinding {
         logical_ref: logical_ref.into(),
         requirement: requirement.into(),
@@ -142,7 +137,10 @@ fn world_composes_multiple_providers_relations_and_material_provenance() {
         .unwrap();
     assert_ne!(workspace.provider_ref, service.provider_ref);
     assert_eq!(workspace.offer_ref.as_str(), "offer:workspace");
-    assert_eq!(workspace.properties.get("path").unwrap(), "/tmp/material-42");
+    assert_eq!(
+        workspace.properties.get("path").unwrap(),
+        "/tmp/material-42"
+    );
     assert_eq!(workspace.provenance.get("source_commit").unwrap(), "abc123");
     assert_eq!(
         service.properties.get("endpoint").unwrap(),
@@ -280,11 +278,17 @@ fn rematerialisation_changes_material_identity_without_changing_semantic_identit
             .unwrap(),
         "two"
     );
-    assert_eq!(released.subjects.get("candidate"), Some(&semantic_candidate));
+    assert_eq!(
+        released.subjects.get("candidate"),
+        Some(&semantic_candidate)
+    );
 
     let mut stale = second;
     stale.binding_graph.bindings[0].presence = BindingPresence::Stale;
     stale.binding_graph.bindings[0].health = HealthState::Unknown;
-    assert_eq!(stale.binding_graph.bindings[0].presence, BindingPresence::Stale);
+    assert_eq!(
+        stale.binding_graph.bindings[0].presence,
+        BindingPresence::Stale
+    );
     assert_eq!(stale.subjects.get("candidate"), Some(&semantic_candidate));
 }
