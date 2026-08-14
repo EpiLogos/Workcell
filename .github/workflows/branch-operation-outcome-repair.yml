@@ -1,0 +1,130 @@
+name: branch-operation-outcome-repair
+
+on:
+  push:
+    branches:
+      - build/rust-workcell-foundation
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: build/rust-workcell-foundation
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt,clippy
+      - name: Preserve typed plan outcomes on material worlds
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          material = Path("crates/workcell-core/src/contract/material.rs")
+          text = material.read_text()
+          text = text.replace(
+              "    BindingRef, DemandRef, ExternalRef, HealthState, OfferRef, PersistenceScope, PlannedConstraint,\n    PlannedExposure, ProviderPortKind, ProviderRef, RequirementNecessity, RetentionExpectation,\n",
+              "    BindingRef, Degradation, DemandRef, ExternalRef, HealthState, OfferRef, PersistenceScope,\n    PlanOmission, PlannedConstraint, PlannedExposure, ProviderPortKind, ProviderRef,\n    RequirementNecessity, RetentionExpectation,\n",
+          )
+          text = text.replace(
+              "    pub planned_exposures: Vec<PlannedExposure>,\n    pub planned_constraints: Vec<PlannedConstraint>,\n",
+              "    pub planned_exposures: Vec<PlannedExposure>,\n    pub planned_constraints: Vec<PlannedConstraint>,\n    pub plan_degradations: Vec<Degradation>,\n    pub plan_omissions: Vec<PlanOmission>,\n",
+          )
+          material.write_text(text)
+
+          compose = Path("crates/workcell-core/src/world/compose.rs")
+          text = compose.read_text()
+          text = text.replace(
+              "    provenance.insert(\n        \"planned_constraint_count\".into(),\n        plan.planned_constraints.len().to_string(),\n    );\n",
+              "    provenance.insert(\n        \"planned_constraint_count\".into(),\n        plan.planned_constraints.len().to_string(),\n    );\n    provenance.insert(\n        \"plan_degradation_count\".into(),\n        plan.degradations.len().to_string(),\n    );\n    provenance.insert(\n        \"plan_omission_count\".into(),\n        plan.omissions.len().to_string(),\n    );\n",
+          )
+          text = text.replace(
+              "        planned_exposures: plan.planned_exposures.clone(),\n        planned_constraints: plan.planned_constraints.clone(),\n",
+              "        planned_exposures: plan.planned_exposures.clone(),\n        planned_constraints: plan.planned_constraints.clone(),\n        plan_degradations: plan.degradations.clone(),\n        plan_omissions: plan.omissions.clone(),\n",
+          )
+          compose.write_text(text)
+
+          prepared = Path("crates/workcell-core/src/prepared.rs")
+          text = prepared.read_text()
+          old = """        let mut surfaces = Vec::new();
+        let mut degradations = Vec::new();
+        let mut omissions = Vec::new();
+
+        for planned in &world.planned_exposures {
+"""
+          new = """        let mut surfaces = Vec::new();
+        let mut degradations = world
+            .plan_degradations
+            .iter()
+            .filter(|item| item.requirement.starts_with(\"exposure:\"))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut omissions = world
+            .plan_omissions
+            .iter()
+            .filter(|item| item.requirement.starts_with(\"exposure:\"))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        for planned in &world.planned_exposures {
+"""
+          if old not in text:
+              raise SystemExit("expose outcome initialization not found")
+          text = text.replace(old, new, 1)
+
+          old = """        let mut outputs = Vec::new();
+        let mut degradations = Vec::new();
+        let mut omissions = Vec::new();
+
+        for binding in world
+"""
+          new = """        let mut outputs = Vec::new();
+        let mut degradations = world
+            .plan_degradations
+            .iter()
+            .filter(|item| item.requirement.starts_with(\"output:\"))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut omissions = world
+            .plan_omissions
+            .iter()
+            .filter(|item| item.requirement.starts_with(\"output:\"))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        for binding in world
+"""
+          if old not in text:
+              raise SystemExit("collect outcome initialization not found")
+          text = text.replace(old, new, 1)
+          prepared.write_text(text)
+          PY
+          cargo fmt --all
+      - name: Run clean repository verification and commit exact state
+        shell: bash
+        run: |
+          rm -rf target .ci-debug
+          set +e
+          ./scripts/verify.sh > /tmp/workcell-verify.log 2>&1
+          code=$?
+          set -e
+
+          rm -f .github/workflows/branch-operation-outcome-repair.yml
+          if [ "$code" -ne 0 ]; then
+            mkdir -p .ci-debug
+            {
+              printf 'clean-tree verify: FAIL (exit=%s)\n\n' "$code"
+              cat /tmp/workcell-verify.log
+            } > .ci-debug/FAIL
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if [ -f .ci-debug/FAIL ]; then git add -f .ci-debug/FAIL; fi
+          git commit -m "fix: retain plan-time expose and collect outcomes"
+          git push origin HEAD:build/rust-workcell-foundation
+          exit "$code"
