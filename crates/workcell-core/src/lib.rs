@@ -10,6 +10,7 @@ mod error;
 mod planner;
 mod provider;
 mod refs;
+mod world;
 
 pub use api::WorkcellControlPlane;
 pub use contract::*;
@@ -18,3 +19,4 @@ pub use error::{Result, WorkcellError};
 pub use planner::*;
 pub use provider::*;
 pub use refs::*;
+pub use world::*;
