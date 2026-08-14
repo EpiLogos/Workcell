@@ -51,7 +51,7 @@ fn runtime_request(demand: &ExecutionDemand) -> ProjectRuntimeMaterialRequest {
     ProjectRuntimeMaterialRequest {
         demand_ref: demand.demand_ref.clone(),
         mode: demand.project_runtime.as_ref().unwrap().as_str().into(),
-        connectivity: vec![],
+        connectivity: vec![LogicalConnectionRequirement::new("project:self").unwrap()],
         persistence: demand.persistence.clone(),
         retention: demand.retention.clone(),
     }
@@ -148,6 +148,10 @@ fn runtime_and_service_compose_into_one_native_data_plane_world() {
         "browser"
     );
     assert_eq!(
+        runtime_binding.properties.get("connections").unwrap(),
+        "project:self"
+    );
+    assert_eq!(
         service_binding.properties.get("endpoint").unwrap(),
         "neo4j://graph.internal:7687"
     );
@@ -165,6 +169,7 @@ fn runtime_is_ensured_observed_exposable_and_stopped_through_its_port() {
     let mut runtime = runtime_provider();
     let offer = runtime.offers().unwrap().remove(0);
     assert!(offer.exposures.iter().any(|value| value == "browser"));
+    assert!(offer.connections.iter().any(|value| value == "project:self"));
 
     let allocation = runtime.prepare_runtime(&runtime_request(&demand)).unwrap();
     assert_eq!(
