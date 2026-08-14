@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
 use epilogos_workcell_core::{
-    Availability, HealthState, OfferRef, OperationalOffer, ProjectRuntimeMaterialRequest,
-    ProjectRuntimeProvider, ProviderAllocation, ProviderObservation, ProviderPort,
-    ProviderPortKind, ProviderRef, ProviderReleaseResult, ReleaseDisposition, Result,
-    RetentionExpectation, WorkcellError,
+    Availability, HealthState, MaterialExposureProvider, OfferRef, OperationalOffer,
+    ProjectRuntimeMaterialRequest, ProjectRuntimeProvider, ProviderAllocation, ProviderExposedSurface,
+    ProviderExposureRequest, ProviderObservation, ProviderPort, ProviderPortKind, ProviderRef,
+    ProviderReleaseResult, ReleaseDisposition, Result, RetentionExpectation, WorkcellError,
 };
 
 use crate::support::stable_key;
@@ -231,5 +231,49 @@ impl ProjectRuntimeProvider for ReferenceProjectRuntimeProvider {
                 "reference project runtime does not support suspend/snapshot".into(),
             )),
         }
+    }
+}
+
+impl MaterialExposureProvider for ReferenceProjectRuntimeProvider {
+    fn expose_material(
+        &self,
+        allocation: &ProviderAllocation,
+        request: &ProviderExposureRequest,
+    ) -> Result<ProviderExposedSurface> {
+        let record = self.record(allocation)?;
+        let requirement = request.requirement.as_str();
+        if !record
+            .mode
+            .exposures
+            .iter()
+            .any(|exposure| exposure == requirement)
+        {
+            return Err(WorkcellError::UnsatisfiedDemand(format!(
+                "runtime mode `{}` does not expose `{requirement}`",
+                record.mode.name
+            )));
+        }
+        let endpoint = record.mode.endpoint.as_ref().ok_or_else(|| {
+            WorkcellError::Unavailable(format!(
+                "runtime mode `{}` has no material endpoint for `{requirement}`",
+                record.mode.name
+            ))
+        })?;
+
+        let mut material = BTreeMap::new();
+        material.insert("endpoint".into(), endpoint.clone());
+        material.insert("runtime_mode".into(), record.mode.name.clone());
+        let mut provenance = allocation.provenance.clone();
+        provenance.insert("exposure".into(), requirement.into());
+        provenance.insert("provider_ref".into(), self.provider_ref.to_string());
+
+        Ok(ProviderExposedSurface {
+            provider_ref: self.provider_ref.clone(),
+            material_ref: allocation.material_ref.clone(),
+            logical_ref: format!("exposure:{requirement}"),
+            interaction: requirement.into(),
+            material,
+            provenance,
+        })
     }
 }
