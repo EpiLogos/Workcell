@@ -9,11 +9,11 @@ use epilogos_workcell_arrakis::{
 };
 use epilogos_workcell_core::{
     plan, validate_allocation, validate_provider_port, AffordanceRequirement, Availability,
-    DemandRef, Discovery, ExecutionDemand, ExecutionMaterialRequest, ExecutionProvider, HealthState,
-    IsolationTrustRequirement, OfferRef, OperationalOffer, PlanStatus, ProviderAllocation,
-    ProviderObservation, ProviderOperation, ProviderOperationResult, ProviderPort, ProviderPortKind,
-    ProviderRef, ProviderReleaseResult, ReleaseDisposition, ResourceRequirement, Result,
-    RetentionExpectation, WorkcellError, WorkcellRef,
+    DemandRef, Discovery, ExecutionDemand, ExecutionMaterialRequest, ExecutionProvider,
+    HealthState, IsolationTrustRequirement, OfferRef, OperationalOffer, PlanStatus,
+    ProviderAllocation, ProviderObservation, ProviderOperation, ProviderOperationResult,
+    ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult, ReleaseDisposition,
+    ResourceRequirement, Result, RetentionExpectation, WorkcellError, WorkcellRef,
 };
 
 #[derive(Default)]
@@ -123,8 +123,14 @@ fn arrakis_provider_conforms_and_uses_first_party_client_surface() {
             },
         )
         .unwrap();
-    assert_eq!(shell.output.get("stdout").map(String::as_str), Some("hello\n"));
-    assert_eq!(provider.observe_execution(&allocation).unwrap().health, HealthState::Healthy);
+    assert_eq!(
+        shell.output.get("stdout").map(String::as_str),
+        Some("hello\n")
+    );
+    assert_eq!(
+        provider.observe_execution(&allocation).unwrap().health,
+        HealthState::Healthy
+    );
 
     let snapshot = provider
         .snapshot_execution(&allocation, Some("checkpoint-exact"))
@@ -154,11 +160,14 @@ fn arrakis_provider_conforms_and_uses_first_party_client_surface() {
     assert_eq!(released.disposition, ReleaseDisposition::Released);
 
     let commands = runner.commands();
-    assert!(commands.iter().any(|command| command.args.iter().any(|arg| arg == "start")));
+    assert!(commands
+        .iter()
+        .any(|command| command.args.iter().any(|arg| arg == "start")));
     assert!(commands.iter().any(|command| {
-        command.args.windows(2).any(|window| {
-            window == ["--id".to_string(), "checkpoint-exact".to_string()]
-        })
+        command
+            .args
+            .windows(2)
+            .any(|window| window == ["--id".to_string(), "checkpoint-exact".to_string()])
     }));
     assert!(commands.iter().all(|command| {
         !command.args.iter().any(|arg| arg == "cloud-hypervisor")
@@ -208,7 +217,10 @@ fn snapshot_destroy_restore_preserves_exact_provider_provenance() {
     );
     assert_eq!(snapshot.material_ref, restored.material_ref);
     assert_eq!(snapshot.provider_ref, restored.provider_ref);
-    assert_eq!(provider.observe_execution(&allocation).unwrap().health, HealthState::Healthy);
+    assert_eq!(
+        provider.observe_execution(&allocation).unwrap().health,
+        HealthState::Healthy
+    );
 }
 
 #[test]
@@ -322,7 +334,9 @@ impl ProviderPort for ReferenceExecutionProvider {
 
 impl ExecutionProvider for ReferenceExecutionProvider {
     fn prepare_execution(&mut self, _: &ExecutionMaterialRequest) -> Result<ProviderAllocation> {
-        Err(WorkcellError::Unsupported("planning-only reference provider".into()))
+        Err(WorkcellError::Unsupported(
+            "planning-only reference provider".into(),
+        ))
     }
 
     fn execute_operation(
@@ -330,11 +344,15 @@ impl ExecutionProvider for ReferenceExecutionProvider {
         _: &ProviderAllocation,
         _: &ProviderOperation,
     ) -> Result<ProviderOperationResult> {
-        Err(WorkcellError::Unsupported("planning-only reference provider".into()))
+        Err(WorkcellError::Unsupported(
+            "planning-only reference provider".into(),
+        ))
     }
 
     fn observe_execution(&self, _: &ProviderAllocation) -> Result<ProviderObservation> {
-        Err(WorkcellError::Unsupported("planning-only reference provider".into()))
+        Err(WorkcellError::Unsupported(
+            "planning-only reference provider".into(),
+        ))
     }
 
     fn release_execution(
@@ -342,7 +360,9 @@ impl ExecutionProvider for ReferenceExecutionProvider {
         _: &ProviderAllocation,
         _: &RetentionExpectation,
     ) -> Result<ProviderReleaseResult> {
-        Err(WorkcellError::Unsupported("planning-only reference provider".into()))
+        Err(WorkcellError::Unsupported(
+            "planning-only reference provider".into(),
+        ))
     }
 }
 
