@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::{HealthState, ProviderRef, WorldRef};
+use crate::{Degradation, HealthState, PlanOmission, ProviderRef, WorldRef};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MaterialObservation {
@@ -20,12 +20,15 @@ pub struct Exposure {
     pub logical_ref: String,
     pub interaction: String,
     pub material: BTreeMap<String, String>,
+    pub provenance: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExposureBundle {
     pub world_ref: WorldRef,
     pub surfaces: Vec<Exposure>,
+    pub degradations: Vec<Degradation>,
+    pub omissions: Vec<PlanOmission>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,6 +42,8 @@ pub struct CollectedOutput {
 pub struct CollectionBundle {
     pub world_ref: WorldRef,
     pub outputs: Vec<CollectedOutput>,
+    pub degradations: Vec<Degradation>,
+    pub omissions: Vec<PlanOmission>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
