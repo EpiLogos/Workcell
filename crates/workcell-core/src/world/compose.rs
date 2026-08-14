@@ -194,6 +194,7 @@ pub fn compose_world(
         },
         planned_exposures: plan.planned_exposures.clone(),
         planned_constraints: plan.planned_constraints.clone(),
+        persistence: demand.persistence.clone(),
         retention: demand.retention.clone(),
         state,
         provenance,
