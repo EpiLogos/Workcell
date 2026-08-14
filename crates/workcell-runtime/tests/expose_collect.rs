@@ -95,6 +95,7 @@ fn plan_for(
         &Discovery {
             workcell_ref: WorkcellRef::new("workcell:surface-test").unwrap(),
             health: HealthState::Healthy,
+            capacity: std::collections::BTreeMap::new(),
             offers,
         },
     )

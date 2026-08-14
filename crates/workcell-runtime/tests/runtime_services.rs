@@ -80,6 +80,7 @@ fn runtime_and_service_compose_into_one_native_data_plane_world() {
         &Discovery {
             workcell_ref: WorkcellRef::new("workcell:reference").unwrap(),
             health: HealthState::Healthy,
+            capacity: std::collections::BTreeMap::new(),
             offers,
         },
     )
@@ -210,6 +211,7 @@ fn required_and_preferred_service_failures_remain_explicit() {
         &Discovery {
             workcell_ref: WorkcellRef::new("workcell:required-missing").unwrap(),
             health: HealthState::Healthy,
+            capacity: std::collections::BTreeMap::new(),
             offers,
         },
     )
@@ -235,6 +237,7 @@ fn required_and_preferred_service_failures_remain_explicit() {
         &Discovery {
             workcell_ref: WorkcellRef::new("workcell:preferred-degraded").unwrap(),
             health: HealthState::Healthy,
+            capacity: std::collections::BTreeMap::new(),
             offers,
         },
     )

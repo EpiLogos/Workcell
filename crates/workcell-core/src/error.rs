@@ -33,3 +33,9 @@ impl fmt::Display for WorkcellError {
 }
 
 impl Error for WorkcellError {}
+
+impl From<&'static str> for WorkcellError {
+    fn from(value: &'static str) -> Self {
+        Self::InvalidDemand(value.into())
+    }
+}
