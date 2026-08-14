@@ -323,7 +323,10 @@ fn provider_failure_changes_availability_and_recovery_delta_not_candidate_identi
 
     let observed = plane.observe(&world_ref).unwrap();
     assert_eq!(observed.observations[0].state, HealthState::Unavailable);
-    assert_eq!(plane.world(&world_ref).unwrap().subjects.get("candidate"), Some(&candidate));
+    assert_eq!(
+        plane.world(&world_ref).unwrap().subjects.get("candidate"),
+        Some(&candidate)
+    );
 
     let reconciled = plane
         .reconcile(&[DesiredMaterialState {
