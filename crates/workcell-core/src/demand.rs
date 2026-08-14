@@ -45,6 +45,7 @@ macro_rules! semantic_requirement {
 semantic_requirement!(AffordanceRequirement);
 semantic_requirement!(LogicalConnectionRequirement);
 semantic_requirement!(ExposureRequirement);
+semantic_requirement!(OutputRequirement);
 semantic_requirement!(IsolationTrustRequirement);
 semantic_requirement!(ProjectRuntimeRequirement);
 
@@ -102,6 +103,7 @@ pub struct ExecutionDemand {
     pub resources: Vec<ResourceRequirement>,
     pub connectivity: Tiered<LogicalConnectionRequirement>,
     pub exposure: Tiered<ExposureRequirement>,
+    pub outputs: Tiered<OutputRequirement>,
     pub persistence: Option<PersistenceScope>,
     pub isolation_trust: Option<IsolationTrustRequirement>,
     pub retention: RetentionExpectation,
@@ -119,6 +121,7 @@ impl ExecutionDemand {
             resources: Vec::new(),
             connectivity: Tiered::default(),
             exposure: Tiered::default(),
+            outputs: Tiered::default(),
             persistence: None,
             isolation_trust: None,
             retention: RetentionExpectation::Release,
@@ -143,6 +146,7 @@ impl ExecutionDemand {
         validate_tiered("affordance", &self.affordances, |item| item.as_str())?;
         validate_tiered("connectivity", &self.connectivity, |item| item.as_str())?;
         validate_tiered("exposure", &self.exposure, |item| item.as_str())?;
+        validate_tiered("output", &self.outputs, |item| item.as_str())?;
 
         if let Some(workspace) = &self.workspace {
             if let Some(revision) = &workspace.revision {
@@ -253,6 +257,7 @@ mod tests {
         assert!(AffordanceRequirement::new(" ").is_err());
         assert!(LogicalConnectionRequirement::new("").is_err());
         assert!(ExposureRequirement::new("\t").is_err());
+        assert!(OutputRequirement::new(" ").is_err());
         assert!(IsolationTrustRequirement::new("  ").is_err());
         assert!(ProjectRuntimeRequirement::new(" ").is_err());
     }
@@ -287,6 +292,17 @@ mod tests {
         demand.project_runtime = Some(ProjectRuntimeRequirement::new("agent").unwrap());
         demand.validate().unwrap();
         assert_eq!(demand.project_runtime.unwrap().as_str(), "agent");
+    }
+
+    #[test]
+    fn output_channels_are_material_requests_not_artifact_identity() {
+        let mut demand = ExecutionDemand::new(DemandRef::new("demand:outputs").unwrap());
+        demand
+            .outputs
+            .required
+            .push(OutputRequirement::new("logs:run").unwrap());
+        demand.validate().unwrap();
+        assert_eq!(demand.outputs.required[0].as_str(), "logs:run");
     }
 
     #[test]
