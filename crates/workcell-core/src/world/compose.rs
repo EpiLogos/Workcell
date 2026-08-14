@@ -96,6 +96,7 @@ pub fn compose_world(
         bindings.push(Binding {
             binding_ref,
             logical_ref: item.logical_ref,
+            necessity: expected.necessity,
             provider_ref: item.allocation.provider_ref,
             offer_ref: item.offer_ref,
             port: item.allocation.port,
@@ -188,6 +189,7 @@ pub fn compose_world(
             relations: graph_relations,
         },
         planned_exposures: plan.planned_exposures.clone(),
+        retention: demand.retention.clone(),
         state,
         provenance,
     })
