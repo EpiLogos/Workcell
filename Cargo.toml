@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/workcell-core",
+  "crates/workcell-runtime",
   "crates/workcell-workspace",
 ]
 resolver = "2"
