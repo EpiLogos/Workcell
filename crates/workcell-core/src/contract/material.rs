@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    BindingRef, DemandRef, ExternalRef, HealthState, ProviderPortKind, ProviderRef, WorkcellRef,
-    WorldRef,
+    BindingRef, DemandRef, ExternalRef, HealthState, OfferRef, ProviderPortKind, ProviderRef,
+    WorkcellRef, WorldRef,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -18,10 +18,12 @@ pub struct Binding {
     pub binding_ref: BindingRef,
     pub logical_ref: String,
     pub provider_ref: ProviderRef,
+    pub offer_ref: OfferRef,
     pub port: ProviderPortKind,
     pub material_ref: String,
     pub health: HealthState,
     pub presence: BindingPresence,
+    pub properties: BTreeMap<String, String>,
     pub provenance: BTreeMap<String, String>,
 }
 
