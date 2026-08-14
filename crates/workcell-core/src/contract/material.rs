@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    BindingRef, DemandRef, ExternalRef, HealthState, OfferRef, ProviderPortKind, ProviderRef,
-    WorkcellRef, WorldRef,
+    BindingRef, DemandRef, ExternalRef, HealthState, OfferRef, PlannedExposure, ProviderPortKind,
+    ProviderRef, WorkcellRef, WorldRef,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,6 +47,7 @@ pub struct MaterialisedExecutionWorld {
     pub demand_ref: DemandRef,
     pub subjects: BTreeMap<String, ExternalRef>,
     pub binding_graph: BindingGraph,
+    pub planned_exposures: Vec<PlannedExposure>,
     pub state: HealthState,
     pub provenance: BTreeMap<String, String>,
 }
