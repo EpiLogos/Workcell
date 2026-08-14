@@ -2,9 +2,10 @@ use std::collections::BTreeMap;
 
 use epilogos_workcell_core::{
     Availability, HealthState, MaterialExposureProvider, OfferRef, OperationalOffer,
-    ProjectRuntimeMaterialRequest, ProjectRuntimeProvider, ProviderAllocation, ProviderExposedSurface,
-    ProviderExposureRequest, ProviderObservation, ProviderPort, ProviderPortKind, ProviderRef,
-    ProviderReleaseResult, ReleaseDisposition, Result, RetentionExpectation, WorkcellError,
+    ProjectRuntimeMaterialRequest, ProjectRuntimeProvider, ProviderAllocation,
+    ProviderExposedSurface, ProviderExposureRequest, ProviderObservation, ProviderPort,
+    ProviderPortKind, ProviderRef, ProviderReleaseResult, ReleaseDisposition, Result,
+    RetentionExpectation, WorkcellError,
 };
 
 use crate::support::stable_key;
