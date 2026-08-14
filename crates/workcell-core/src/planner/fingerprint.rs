@@ -1,10 +1,12 @@
 use crate::{
-    Degradation, ExecutionDemand, PlanOmission, PlanRef, PlannedBinding, Result, WorkcellError,
+    Degradation, ExecutionDemand, PlanOmission, PlanRef, PlannedBinding, PlannedExposure, Result,
+    WorkcellError,
 };
 
 pub(crate) fn make_plan_ref(
     demand: &ExecutionDemand,
     bindings: &[PlannedBinding],
+    exposures: &[PlannedExposure],
     degradations: &[Degradation],
     omissions: &[PlanOmission],
 ) -> Result<PlanRef> {
@@ -12,6 +14,10 @@ pub(crate) fn make_plan_ref(
     for binding in bindings {
         value.push_str(&binding.logical_ref);
         value.push_str(binding.offer_ref.as_str());
+    }
+    for exposure in exposures {
+        value.push_str(&exposure.logical_ref);
+        value.push_str(exposure.offer_ref.as_str());
     }
     for item in degradations {
         value.push_str(&item.requirement);
