@@ -216,13 +216,56 @@ impl DockerProjectRuntimeProvider {
         })
     }
 
-    fn record(&self, allocation: &ProviderAllocation) -> Result<&RuntimeRecord> {
+    fn record(&self, allocation: &ProviderAllocation) -> Result<RuntimeRecord> {
         validate_allocation(self, allocation)?;
-        self.records.get(&allocation.material_ref).ok_or_else(|| {
-            WorkcellError::NotFound(format!(
-                "Docker Compose runtime `{}` is not known by this provider",
+        if let Some(record) = self.records.get(&allocation.material_ref) {
+            return Ok(record.clone());
+        }
+
+        let mode_name = allocation.properties.get("mode").ok_or_else(|| {
+            WorkcellError::OperationFailed(format!(
+                "Docker Compose runtime `{}` cannot be recovered: mode provenance is missing",
                 allocation.material_ref
             ))
+        })?;
+        let mode = self.modes.get(mode_name).cloned().ok_or_else(|| {
+            WorkcellError::Unavailable(format!(
+                "Docker runtime mode `{mode_name}` needed by `{}` is no longer configured",
+                allocation.material_ref
+            ))
+        })?;
+        let project_name = allocation
+            .properties
+            .get("compose_project")
+            .or_else(|| allocation.provenance.get("compose_project"))
+            .cloned()
+            .ok_or_else(|| {
+                WorkcellError::OperationFailed(format!(
+                    "Docker Compose runtime `{}` cannot be recovered: compose project provenance is missing",
+                    allocation.material_ref
+                ))
+            })?;
+        let engine_version = allocation
+            .provenance
+            .get("docker_engine")
+            .cloned()
+            .unwrap_or_else(|| "unknown".into());
+        let compose_version = allocation
+            .provenance
+            .get("docker_compose")
+            .cloned()
+            .unwrap_or_else(|| "unknown".into());
+        let persistence = allocation
+            .properties
+            .get("persistence_scope")
+            .and_then(|value| parse_persistence(value));
+
+        Ok(RuntimeRecord {
+            mode,
+            project_name,
+            engine_version,
+            compose_version,
+            persistence,
         })
     }
 
@@ -236,12 +279,16 @@ impl DockerProjectRuntimeProvider {
         Ok((engine, compose))
     }
 
-    fn command(
+    fn command<I, S>(
         &self,
         mode: &DockerRuntimeMode,
         project_name: &str,
-        operation: impl IntoIterator<Item = impl Into<String>>,
-    ) -> DockerCommand {
+        operation: I,
+    ) -> DockerCommand
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
         let mut args = vec!["compose".into(), "-p".into(), project_name.into()];
         for file in &mode.compose_files {
             args.push("-f".into());
@@ -379,7 +426,7 @@ impl ProjectRuntimeProvider for DockerProjectRuntimeProvider {
             );
         }
         if let Some(persistence) = &request.persistence {
-            properties.insert("persistence".into(), format!("{persistence:?}"));
+            properties.insert("persistence_scope".into(), persistence_name(persistence).into());
         }
         let mut provenance = provider_metadata(&engine_version, Some(&compose_version));
         provenance.insert("compose_project".into(), project_name);
@@ -415,7 +462,11 @@ impl ProjectRuntimeProvider for DockerProjectRuntimeProvider {
             &record.project_name,
             ["ps", "--status", "running", "--quiet"],
         ))?;
-        let total_count = all.stdout.lines().filter(|line| !line.trim().is_empty()).count();
+        let total_count = all
+            .stdout
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count();
         let running_count = running
             .stdout
             .lines()
@@ -429,11 +480,11 @@ impl ProjectRuntimeProvider for DockerProjectRuntimeProvider {
             HealthState::Degraded
         };
         let mut detail = BTreeMap::new();
-        detail.insert("compose_project".into(), record.project_name.clone());
+        detail.insert("compose_project".into(), record.project_name);
         detail.insert("services_total".into(), total_count.to_string());
         detail.insert("services_running".into(), running_count.to_string());
-        detail.insert("docker_engine".into(), record.engine_version.clone());
-        detail.insert("docker_compose".into(), record.compose_version.clone());
+        detail.insert("docker_engine".into(), record.engine_version);
+        detail.insert("docker_compose".into(), record.compose_version);
         Ok(ProviderObservation {
             provider_ref: self.provider_ref.clone(),
             material_ref: allocation.material_ref.clone(),
@@ -447,7 +498,7 @@ impl ProjectRuntimeProvider for DockerProjectRuntimeProvider {
         allocation: &ProviderAllocation,
         retention: &RetentionExpectation,
     ) -> Result<ProviderReleaseResult> {
-        let record = self.record(allocation)?.clone();
+        let record = self.record(allocation)?;
         match retention {
             RetentionExpectation::Preserve => Ok(ProviderReleaseResult {
                 provider_ref: self.provider_ref.clone(),
@@ -532,7 +583,7 @@ impl MaterialExposureProvider for DockerProjectRuntimeProvider {
         material.insert("container_port".into(), target.container_port.to_string());
         material.insert("published_binding".into(), published_binding.into());
         let mut provenance = allocation.provenance.clone();
-        provenance.insert("compose_project".into(), record.project_name.clone());
+        provenance.insert("compose_project".into(), record.project_name);
         provenance.insert("provider_ref".into(), self.provider_ref.to_string());
         provenance.insert("exposure".into(), requirement.into());
 
@@ -544,5 +595,30 @@ impl MaterialExposureProvider for DockerProjectRuntimeProvider {
             material,
             provenance,
         })
+    }
+}
+
+fn persistence_name(scope: &PersistenceScope) -> &'static str {
+    match scope {
+        PersistenceScope::Ephemeral => "ephemeral",
+        PersistenceScope::TaskOrRun => "task-or-run",
+        PersistenceScope::Candidate => "candidate",
+        PersistenceScope::Project => "project",
+        PersistenceScope::Workcell => "workcell",
+        PersistenceScope::Factory => "factory",
+        PersistenceScope::External => "external",
+    }
+}
+
+fn parse_persistence(value: &str) -> Option<PersistenceScope> {
+    match value {
+        "ephemeral" => Some(PersistenceScope::Ephemeral),
+        "task-or-run" => Some(PersistenceScope::TaskOrRun),
+        "candidate" => Some(PersistenceScope::Candidate),
+        "project" => Some(PersistenceScope::Project),
+        "workcell" => Some(PersistenceScope::Workcell),
+        "factory" => Some(PersistenceScope::Factory),
+        "external" => Some(PersistenceScope::External),
+        _ => None,
     }
 }
