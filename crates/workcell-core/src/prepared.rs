@@ -7,7 +7,7 @@ use crate::{
     MaterialObservation, MaterialisationPlan, MaterialisedExecutionWorld, ObservationBundle,
     OperationalOffer, PersistenceScope, PlanOmission, ProjectRuntimeProvider, ProviderAllocation,
     ProviderCollectedMaterial, ProviderExposedSurface, ProviderExposureRequest,
-    ProviderObservation, ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult,
+    ProviderObservation, ProviderPort, ProviderPortKind, ProviderReleaseResult,
     ReconciliationDelta, ReconciliationResult, ReleaseDisposition, ReleaseResult,
     RequirementNecessity, Result, RetentionExpectation, ServiceProvider, WorkcellControlPlane,
     WorkcellError, WorkcellRef, WorkspaceProvider, WorldRef,
@@ -497,11 +497,22 @@ impl PreparedWorldControlPlane {
         };
 
         let (observed, presence, health) = match observation {
-            Ok(observation) => (
-                format!("present:{}", health_name(&observation.health)),
-                BindingPresence::Present,
-                observation.health,
-            ),
+            Ok(observation) => {
+                let presence = match snapshot.presence {
+                    BindingPresence::Suspended => BindingPresence::Suspended,
+                    BindingPresence::Snapshotted => BindingPresence::Snapshotted,
+                    _ => BindingPresence::Present,
+                };
+                (
+                    format!(
+                        "{}:{}",
+                        presence_name(&presence),
+                        health_name(&observation.health)
+                    ),
+                    presence,
+                    observation.health,
+                )
+            }
             Err(WorkcellError::NotFound(detail)) => (
                 format!("missing:{detail}"),
                 BindingPresence::Missing,

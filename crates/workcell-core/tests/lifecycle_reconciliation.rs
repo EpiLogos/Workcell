@@ -6,11 +6,11 @@ use std::{
 use epilogos_workcell_core::{
     Availability, Binding, BindingGraph, BindingPresence, BindingRef, DemandRef,
     DesiredMaterialState, ExecutionMaterialRequest, ExecutionProvider, ExternalRef, HealthState,
-    MaterialisationPlan, MaterialisedExecutionWorld, OfferRef, OperationalOffer, PersistenceScope,
-    PlanRef, PlanStatus, PreparedWorldControlPlane, ProviderAllocation, ProviderObservation,
-    ProviderOperation, ProviderOperationResult, ProviderPort, ProviderPortKind, ProviderRef,
-    ProviderReleaseResult, ReleaseDisposition, RequirementNecessity, RetentionExpectation,
-    WorkcellControlPlane, WorkcellError, WorkcellRef, WorldRef,
+    MaterialisedExecutionWorld, OfferRef, OperationalOffer, PersistenceScope,
+    PreparedWorldControlPlane, ProviderAllocation, ProviderObservation, ProviderOperation,
+    ProviderOperationResult, ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult,
+    ReleaseDisposition, RequirementNecessity, RetentionExpectation, WorkcellControlPlane,
+    WorkcellError, WorkcellRef, WorldRef,
 };
 
 #[derive(Default)]
@@ -528,17 +528,49 @@ fn reconcile_can_apply_lifecycle_action_and_report_unbound_target() {
 }
 
 #[test]
-fn material_world_persistence_is_separate_from_plan_identity() {
-    let plan = MaterialisationPlan {
-        plan_ref: PlanRef::new("plan:lifecycle-shape").unwrap(),
-        demand_ref: DemandRef::new("demand:lifecycle-shape").unwrap(),
-        status: PlanStatus::Satisfiable,
-        planned_bindings: vec![],
-        planned_exposures: vec![],
-        planned_constraints: vec![],
-        degradations: vec![],
-        omissions: vec![],
-        explanation: vec![],
-    };
-    assert_eq!(plan.status, PlanStatus::Satisfiable);
+fn repeated_reconcile_to_suspended_is_idempotent() {
+    let state = Arc::new(Mutex::new(ProviderState::default()));
+    state
+        .lock()
+        .unwrap()
+        .material
+        .insert("material:idempotent-suspend".into(), HealthState::Healthy);
+    let mut plane = PreparedWorldControlPlane::new(WorkcellRef::new("workcell:lifecycle").unwrap());
+    plane
+        .register_world(world(
+            "world:idempotent-suspend",
+            PersistenceScope::TaskOrRun,
+            RetentionExpectation::Preserve,
+            vec![binding(
+                "execution:idempotent-suspend",
+                "material:idempotent-suspend",
+            )],
+        ))
+        .unwrap();
+    plane
+        .register_execution_provider(LifecycleExecutionProvider::new(
+            "provider:lifecycle",
+            "offer:lifecycle",
+            state.clone(),
+        ))
+        .unwrap();
+
+    let desired = [DesiredMaterialState {
+        logical_ref: "execution:idempotent-suspend".into(),
+        desired: "suspended".into(),
+    }];
+    let first = plane.reconcile(&desired).unwrap();
+    let second = plane.reconcile(&desired).unwrap();
+
+    assert_eq!(first.deltas[0].action.as_deref(), Some("suspended"));
+    assert_eq!(second.deltas[0].action, None);
+    assert_eq!(
+        state
+            .lock()
+            .unwrap()
+            .releases
+            .get("material:idempotent-suspend")
+            .copied(),
+        Some(1)
+    );
 }

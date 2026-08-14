@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::VecDeque,
     sync::{Arc, Mutex},
 };
 
@@ -142,5 +142,4 @@ fn compose_allocation_survives_provider_process_restart() {
     assert!(allocation.provenance.contains_key("compose_project"));
     assert!(allocation.properties.contains_key("compose_project"));
     assert!(!allocation.material_ref.is_empty());
-    assert!(!BTreeMap::<String, String>::new().contains_key("semantic_identity"));
 }
