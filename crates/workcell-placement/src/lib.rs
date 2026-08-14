@@ -1,8 +1,11 @@
-use std::{cmp::Ordering, collections::{BTreeMap, BTreeSet}};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, BTreeSet},
+};
 
 use epilogos_workcell_core::{
-    plan, Capacity, Discovery, ExecutionDemand, HealthState, MaterialisationPlan, PlanStatus, Result,
-    WorkcellError, WorkcellRef,
+    plan, Capacity, Discovery, ExecutionDemand, HealthState, MaterialisationPlan, PlanStatus,
+    Result, WorkcellError, WorkcellRef,
 };
 
 /// Replaceable discovery/transport seam for one reachable Workcell.
@@ -274,7 +277,8 @@ pub fn evaluate_placement(
     }
 
     evaluation.eligible.sort_by(|left, right| {
-        compare_decisions(left, right, policy).then_with(|| left.workcell_ref.cmp(&right.workcell_ref))
+        compare_decisions(left, right, policy)
+            .then_with(|| left.workcell_ref.cmp(&right.workcell_ref))
     });
     Ok(evaluation)
 }
