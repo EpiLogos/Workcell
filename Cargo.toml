@@ -6,6 +6,7 @@ members = [
   "crates/workcell-core",
   "crates/workcell-docker",
   "crates/workcell-interop",
+  "crates/workcell-placement",
   "crates/workcell-runtime",
   "crates/workcell-workspace",
 ]
