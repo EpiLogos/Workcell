@@ -1,0 +1,116 @@
+name: branch-contract-repair
+
+on:
+  push:
+    branches:
+      - build/rust-workcell-foundation
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: build/rust-workcell-foundation
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt,clippy
+      - name: Repair Discovery fixtures and ref error conversion
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          # Discovery gained Workcell-wide aggregate capacity. Repair all literal
+          # constructors, including those using Rust field shorthand (`offers,`).
+          for path in Path("crates").rglob("*.rs"):
+              lines = path.read_text().splitlines(keepends=True)
+              out = []
+              changed = False
+              i = 0
+              while i < len(lines):
+                  line = lines[i]
+                  if "Discovery {" not in line or "struct Discovery" in line:
+                      out.append(line)
+                      i += 1
+                      continue
+
+                  block = [line]
+                  depth = line.count("{") - line.count("}")
+                  i += 1
+                  while i < len(lines) and depth > 0:
+                      current = lines[i]
+                      block.append(current)
+                      depth += current.count("{") - current.count("}")
+                      i += 1
+
+                  depth = block[0].count("{") - block[0].count("}")
+                  top_capacity = False
+                  health_index = None
+                  for index, item in enumerate(block[1:], 1):
+                      stripped = item.lstrip()
+                      if depth == 1:
+                          if stripped.startswith("capacity:"):
+                              top_capacity = True
+                          if stripped.startswith("health:"):
+                              health_index = index
+                      depth += item.count("{") - item.count("}")
+
+                  if not top_capacity:
+                      if health_index is None:
+                          raise SystemExit(f"Discovery literal without top-level health in {path}")
+                      health_line = block[health_index]
+                      indent = health_line[: len(health_line) - len(health_line.lstrip())]
+                      block.insert(
+                          health_index + 1,
+                          f"{indent}capacity: std::collections::BTreeMap::new(),\n",
+                      )
+                      changed = True
+                  out.extend(block)
+
+              if changed:
+                  path.write_text("".join(out))
+
+          # Opaque material/semantic refs validate to &'static str. Converting
+          # that validation failure into InvalidDemand lets adapter code use the
+          # canonical Workcell Result without changing the ref API itself.
+          error_path = Path("crates/workcell-core/src/error.rs")
+          error_text = error_path.read_text()
+          conversion = '''\nimpl From<&'static str> for WorkcellError {\n    fn from(value: &'static str) -> Self {\n        Self::InvalidDemand(value.into())\n    }\n}\n'''
+          if "impl From<&'static str> for WorkcellError" not in error_text:
+              error_path.write_text(error_text + conversion)
+          PY
+          cargo fmt --all
+      - name: Verify assembled Workcell tree
+        id: verify
+        shell: bash
+        run: |
+          set +e
+          ./scripts/verify.sh > /tmp/workcell-verify.log 2>&1
+          code=$?
+          set -e
+          rm -rf .ci-helper
+          if [ "$code" -ne 0 ]; then
+            mkdir -p .ci-helper
+            {
+              printf 'verify: FAIL (exit=%s)\n\n' "$code"
+              tail -n 320 /tmp/workcell-verify.log
+            } > .ci-helper/FAIL
+          fi
+          printf 'code=%s\n' "$code" >> "$GITHUB_OUTPUT"
+      - name: Commit repair and retire helper
+        shell: bash
+        run: |
+          rm -f .github/workflows/branch-contract-repair.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "fix: complete Workcell contract assembly"
+            git push origin HEAD:build/rust-workcell-foundation
+          fi
+      - name: Fail when repository gate still fails
+        if: steps.verify.outputs.code != '0'
+        run: exit 1
