@@ -18,24 +18,35 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt,clippy
-      - name: Verify cleaned tree and persist failure
+      - name: Add planning outcomes to lifecycle fixture only
         shell: bash
         run: |
-          rm -rf target .ci-debug
-          set +e
-          ./scripts/verify.sh > /tmp/workcell-verify.log 2>&1
-          code=$?
-          set -e
-          if [ "$code" -ne 0 ]; then
-            mkdir -p .ci-debug
-            {
-              printf 'clean-tree verify: FAIL (exit=%s)\n\n' "$code"
-              cat /tmp/workcell-verify.log
-            } > .ci-debug/FAIL
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add -f .ci-debug/FAIL
-            git commit -m "chore: record remaining Workcell verification failure"
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("crates/workcell-core/tests/lifecycle_reconciliation.rs")
+          text = path.read_text()
+          needle = "        planned_exposures: vec![],\n        planned_constraints: vec![],\n"
+          replacement = (
+              "        planned_exposures: vec![],\n"
+              "        planned_constraints: vec![],\n"
+              "        plan_degradations: vec![],\n"
+              "        plan_omissions: vec![],\n"
+          )
+          if "plan_degradations: vec![]" not in text:
+              if needle not in text:
+                  raise SystemExit("expected MaterialisedExecutionWorld fixture not found")
+              path.write_text(text.replace(needle, replacement, 1))
+          PY
+          cargo fmt --all
+          rm -rf .ci-debug .ci-helper
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "test: migrate lifecycle world planning outcomes"
             git push origin HEAD:build/rust-workcell-foundation
           fi
-          exit "$code"
+      - name: Verify minimally migrated tree
+        run: |
+          rm -rf target
+          ./scripts/verify.sh
