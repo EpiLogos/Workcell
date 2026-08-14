@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::{
     BindingRef, DemandRef, ExternalRef, HealthState, OfferRef, PlannedExposure, ProviderPortKind,
-    ProviderRef, WorkcellRef, WorldRef,
+    ProviderRef, RequirementNecessity, RetentionExpectation, WorkcellRef, WorldRef,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -17,6 +17,7 @@ pub enum BindingPresence {
 pub struct Binding {
     pub binding_ref: BindingRef,
     pub logical_ref: String,
+    pub necessity: RequirementNecessity,
     pub provider_ref: ProviderRef,
     pub offer_ref: OfferRef,
     pub port: ProviderPortKind,
@@ -48,6 +49,7 @@ pub struct MaterialisedExecutionWorld {
     pub subjects: BTreeMap<String, ExternalRef>,
     pub binding_graph: BindingGraph,
     pub planned_exposures: Vec<PlannedExposure>,
+    pub retention: RetentionExpectation,
     pub state: HealthState,
     pub provenance: BTreeMap<String, String>,
 }
