@@ -145,10 +145,16 @@ mod tests {
     #[test]
     fn demand_source_has_no_concrete_provider_vocabulary() {
         let source = include_str!("demand.rs").to_ascii_lowercase();
-        let forbidden = ["container_id", "bridge_ip", "worktree_path", "microvm_id"];
-        for term in forbidden {
+        let forbidden_parts = [
+            ("container", "_id"),
+            ("bridge", "_ip"),
+            ("worktree", "_path"),
+            ("microvm", "_id"),
+        ];
+        for (left, right) in forbidden_parts {
+            let term = format!("{left}{right}");
             assert!(
-                !source.contains(term),
+                !source.contains(&term),
                 "provider detail leaked into demand: {term}"
             );
         }
