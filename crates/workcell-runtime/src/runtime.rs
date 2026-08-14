@@ -121,7 +121,10 @@ impl ProviderPort for ReferenceProjectRuntimeProvider {
                 .map_err(|error| WorkcellError::OperationFailed(error.into()))?,
                 provider_ref: self.provider_ref.clone(),
                 port: ProviderPortKind::ProjectRuntime.as_str().into(),
-                affordances: vec![format!("runtime-mode:{}", mode.name)],
+                affordances: vec![
+                    format!("runtime-mode:{}", mode.name),
+                    "retention:preserve".into(),
+                ],
                 connections: mode.connections.clone(),
                 exposures: mode.exposures.clone(),
                 isolation_trust: vec![],
