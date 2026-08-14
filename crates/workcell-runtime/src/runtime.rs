@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 
 use epilogos_workcell_core::{
     Availability, HealthState, OfferRef, OperationalOffer, ProjectRuntimeMaterialRequest,
-    ProjectRuntimeProvider, ProviderAllocation, ProviderObservation, ProviderPort, ProviderPortKind,
-    ProviderRef, ProviderReleaseResult, ReleaseDisposition, Result, RetentionExpectation,
-    WorkcellError,
+    ProjectRuntimeProvider, ProviderAllocation, ProviderObservation, ProviderPort,
+    ProviderPortKind, ProviderRef, ProviderReleaseResult, ReleaseDisposition, Result,
+    RetentionExpectation, WorkcellError,
 };
 
 use crate::support::stable_key;
@@ -63,7 +63,10 @@ pub struct ReferenceProjectRuntimeProvider {
 }
 
 impl ReferenceProjectRuntimeProvider {
-    pub fn new(provider_ref: ProviderRef, modes: impl IntoIterator<Item = RuntimeMode>) -> Result<Self> {
+    pub fn new(
+        provider_ref: ProviderRef,
+        modes: impl IntoIterator<Item = RuntimeMode>,
+    ) -> Result<Self> {
         let mut by_name = BTreeMap::new();
         for mode in modes {
             if mode.name.trim().is_empty() {
@@ -132,7 +135,10 @@ impl ProviderPort for ReferenceProjectRuntimeProvider {
 }
 
 impl ProjectRuntimeProvider for ReferenceProjectRuntimeProvider {
-    fn prepare_runtime(&mut self, request: &ProjectRuntimeMaterialRequest) -> Result<ProviderAllocation> {
+    fn prepare_runtime(
+        &mut self,
+        request: &ProjectRuntimeMaterialRequest,
+    ) -> Result<ProviderAllocation> {
         let mode = self.modes.get(&request.mode).cloned().ok_or_else(|| {
             WorkcellError::UnsatisfiedDemand(format!(
                 "project runtime mode `{}` is not offered",
@@ -170,10 +176,8 @@ impl ProjectRuntimeProvider for ReferenceProjectRuntimeProvider {
         provenance.insert("implementation".into(), "reference-runtime".into());
         provenance.insert("runtime_mode".into(), mode.name.clone());
 
-        self.records.insert(
-            material_ref.clone(),
-            RuntimeRecord { mode: mode.clone() },
-        );
+        self.records
+            .insert(material_ref.clone(), RuntimeRecord { mode: mode.clone() });
         Ok(ProviderAllocation {
             provider_ref: self.provider_ref.clone(),
             port: ProviderPortKind::ProjectRuntime,
