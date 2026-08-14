@@ -193,6 +193,8 @@ fn world(
         },
         planned_exposures: vec![],
         planned_constraints: vec![],
+        plan_degradations: vec![],
+        plan_omissions: vec![],
         persistence: Some(persistence),
         retention,
         state: HealthState::Unknown,
