@@ -80,11 +80,8 @@ impl ProviderPort for DirectoryArtifactStorageProvider {
             metadata.insert("implementation".into(), "directory-artifact-storage".into());
             metadata.insert("logical_channel".into(), channel.clone());
             offers.push(OperationalOffer {
-                offer_ref: OfferRef::new(format!(
-                    "offer:{}:artifact:{key}",
-                    self.provider_ref
-                ))
-                .map_err(|error| WorkcellError::OperationFailed(error.into()))?,
+                offer_ref: OfferRef::new(format!("offer:{}:artifact:{key}", self.provider_ref))
+                    .map_err(|error| WorkcellError::OperationFailed(error.into()))?,
                 provider_ref: self.provider_ref.clone(),
                 port: ProviderPortKind::ArtifactStorage.as_str().into(),
                 affordances: vec![format!("artifact-channel:{channel}")],
