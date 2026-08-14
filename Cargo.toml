@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/workcell-artifact",
   "crates/workcell-core",
   "crates/workcell-runtime",
   "crates/workcell-workspace",
