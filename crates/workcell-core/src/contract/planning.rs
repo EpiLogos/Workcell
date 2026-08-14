@@ -42,6 +42,10 @@ pub struct OperationalOffer {
 pub struct Discovery {
     pub workcell_ref: WorkcellRef,
     pub health: HealthState,
+    /// Workcell-wide currently discoverable capacity. Provider-local capacity
+    /// remains available on each offer; this field describes the operational
+    /// domain itself and is intentionally provider-neutral.
+    pub capacity: BTreeMap<String, Capacity>,
     pub offers: Vec<OperationalOffer>,
 }
 
