@@ -23,7 +23,10 @@ pub(super) fn world_ref(
     demand_ref: &DemandRef,
     binding_refs: impl Iterator<Item = String>,
 ) -> Result<WorldRef> {
-    let mut values = vec![workcell_ref.as_str().to_owned(), demand_ref.as_str().to_owned()];
+    let mut values = vec![
+        workcell_ref.as_str().to_owned(),
+        demand_ref.as_str().to_owned(),
+    ];
     values.extend(binding_refs);
     values.sort();
     let borrowed: Vec<&str> = values.iter().map(String::as_str).collect();
