@@ -178,6 +178,10 @@ pub fn compose_world(
         "planned_exposure_count".into(),
         plan.planned_exposures.len().to_string(),
     );
+    provenance.insert(
+        "planned_constraint_count".into(),
+        plan.planned_constraints.len().to_string(),
+    );
 
     Ok(MaterialisedExecutionWorld {
         world_ref,
@@ -189,6 +193,7 @@ pub fn compose_world(
             relations: graph_relations,
         },
         planned_exposures: plan.planned_exposures.clone(),
+        planned_constraints: plan.planned_constraints.clone(),
         retention: demand.retention.clone(),
         state,
         provenance,
