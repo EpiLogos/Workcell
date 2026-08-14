@@ -98,6 +98,15 @@ pub(crate) fn atoms(demand: &ExecutionDemand) -> Vec<RequirementAtom> {
             MatchRule::Affordance(key.into()),
         ));
     }
+    if let Some(runtime) = &demand.project_runtime {
+        let key = format!("runtime-mode:{}", runtime.as_str());
+        out.push(RequirementAtom {
+            kind: "project-runtime",
+            key: key.clone(),
+            necessity: RequirementNecessity::Required,
+            rule: MatchRule::Affordance(key),
+        });
+    }
     for resource in &demand.resources {
         out.push(RequirementAtom {
             kind: "resource",
