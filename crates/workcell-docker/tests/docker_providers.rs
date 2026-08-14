@@ -129,7 +129,7 @@ fn execution_provider_satisfies_shared_conformance_and_materialises_logical_netw
     let create = commands
         .iter()
         .find(|command| {
-            command.args.get(0).map(String::as_str) == Some("container")
+            command.args.first().map(String::as_str) == Some("container")
                 && command.args.get(1).map(String::as_str) == Some("create")
         })
         .unwrap();
