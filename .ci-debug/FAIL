@@ -1,0 +1,52 @@
+clean-tree verify: FAIL (exit=101)
+
+[1m[92m    Updating[0m crates.io index
+[1m[92m Downloading[0m crates ...
+[1m[92m  Downloaded[0m itoa v1.0.18
+[1m[92m  Downloaded[0m serde_core v1.0.229
+[1m[92m  Downloaded[0m serde_json v1.0.151
+[1m[92m  Downloaded[0m zmij v1.0.23
+[1m[92m  Downloaded[0m memchr v2.8.3
+[1m[92m    Checking[0m epilogos-workcell-core v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-core)
+[1m[92m   Compiling[0m serde_core v1.0.229
+[1m[92m   Compiling[0m zmij v1.0.23
+[1m[92m   Compiling[0m serde_json v1.0.151
+[1m[92m    Checking[0m memchr v2.8.3
+[1m[92m    Checking[0m itoa v1.0.18
+[1m[92m    Checking[0m epilogos-workcell-artifact v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-artifact)
+[1m[92m    Checking[0m epilogos-workcell-runtime v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-runtime)
+[1m[92m    Checking[0m epilogos-workcell-docker v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-docker)
+[1m[92m    Checking[0m epilogos-workcell-arrakis v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-arrakis)
+[1m[92m    Checking[0m epilogos-workcell-workspace v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-workspace)
+[1m[92m    Checking[0m epilogos-workcell-candidate v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-candidate)
+[1m[92m    Checking[0m epilogos-workcell-placement v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-placement)
+[1m[91merror[E0432][0m[1m: unresolved import `epilogos_workcell_core::ReconciliationAction`[0m
+  [1m[94m--> [0mcrates/workcell-core/tests/lifecycle_reconciliation.rs:11:5
+   [1m[94m|[0m
+[1m[94m11[0m [1m[94m|[0m     ReconciliationAction, ReleaseDisposition, RequirementNecessity, RetentionExpectation,
+   [1m[94m|[0m     [1m[91m^^^^^^^^^^^^^^^^^^^^[0m [1m[91mno `ReconciliationAction` in the root[0m
+   [1m[94m|[0m
+[1m[96mhelp[0m: a similar name exists in the module
+   [1m[94m|[0m
+[1m[94m11[0m [91m- [0m    [91mReconciliationAction[0m, ReleaseDisposition, RequirementNecessity, RetentionExpectation,
+[1m[94m11[0m [92m+ [0m    [92mReconciliationResult[0m, ReleaseDisposition, RequirementNecessity, RetentionExpectation,
+   [1m[94m|[0m
+
+[1m[92m    Checking[0m epilogos-workcell-interop v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-interop)
+[1m[91merror[E0046][0m[1m: not all trait items implemented, missing: `execute_operation`[0m
+  [1m[94m--> [0mcrates/workcell-core/tests/lifecycle_reconciliation.rs:70:1
+   [1m[94m|[0m
+[1m[94m70[0m [1m[94m|[0m impl ExecutionProvider for LifecycleExecutionProvider {
+   [1m[94m|[0m [1m[91m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m [1m[91mmissing `execute_operation` in implementation[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mhelp[0m: implement the missing item: `fn execute_operation(&mut self, _: &epilogos_workcell_core::ProviderAllocation, _: &epilogos_workcell_core::ProviderOperation) -> std::result::Result<epilogos_workcell_core::ProviderOperationResult, epilogos_workcell_core::WorkcellError> { todo!() }`
+
+[1m[91merror[E0599][0m[1m: no associated function or constant named `Units` found for struct `epilogos_workcell_core::Capacity` in the current scope[0m
+  [1m[94m--> [0mcrates/workcell-core/tests/lifecycle_reconciliation.rs:64:64
+   [1m[94m|[0m
+[1m[94m64[0m [1m[94m|[0m             capacity: BTreeMap::from([("cpu".into(), Capacity::Units(4))]),
+   [1m[94m|[0m                                                                [1m[91m^^^^^[0m [1m[91massociated function or constant not found in `epilogos_workcell_core::Capacity`[0m
+
+[1mSome errors have detailed explanations: E0046, E0432, E0599.[0m
+[1mFor more information about an error, try `rustc --explain E0046`.[0m
+[1m[91merror[0m: could not compile `epilogos-workcell-core` (test "lifecycle_reconciliation") due to 3 previous errors
