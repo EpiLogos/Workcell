@@ -40,11 +40,7 @@ impl GitWorktreeWorkspaceProvider {
         })
     }
 
-    pub(super) fn allocation(
-        &self,
-        material_ref: &str,
-        record: &GitRecord,
-    ) -> ProviderAllocation {
+    pub(super) fn allocation(&self, material_ref: &str, record: &GitRecord) -> ProviderAllocation {
         let mut properties = BTreeMap::new();
         properties.insert("path".into(), record.path.display().to_string());
         properties.insert(
