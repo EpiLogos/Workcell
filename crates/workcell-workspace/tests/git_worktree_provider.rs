@@ -1,3 +1,5 @@
+mod common;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -6,9 +8,9 @@ use std::{
 };
 
 use epilogos_workcell_core::{
-    validate_provider_port, Availability, DemandRef, ExternalRef, HealthState, ProviderPort,
-    ProviderRef, ReleaseDisposition, RetentionExpectation, WorkspaceAccess,
-    WorkspaceMaterialRequest, WorkspaceMaterialSource, WorkspaceProvider,
+    Availability, DemandRef, ExternalRef, HealthState, ProviderPort, ProviderRef,
+    ReleaseDisposition, RetentionExpectation, WorkspaceAccess, WorkspaceMaterialRequest,
+    WorkspaceMaterialSource, WorkspaceProvider,
 };
 use epilogos_workcell_workspace::GitWorktreeWorkspaceProvider;
 
@@ -45,6 +47,7 @@ fn repository() -> (PathBuf, String) {
     git(&path, &["init"]);
     git(&path, &["config", "user.email", "workcell@example.invalid"]);
     git(&path, &["config", "user.name", "Workcell Fixture"]);
+    git(&path, &["config", "commit.gpgsign", "false"]);
     fs::write(path.join("hello.txt"), "committed\n").unwrap();
     git(&path, &["add", "hello.txt"]);
     git(&path, &["commit", "-m", "fixture"]);
@@ -53,6 +56,14 @@ fn repository() -> (PathBuf, String) {
 }
 
 fn request(repository: &Path, revision: &str) -> WorkspaceMaterialRequest {
+    request_with_access(repository, revision, WorkspaceAccess::Writable)
+}
+
+fn request_with_access(
+    repository: &Path,
+    revision: &str,
+    access: WorkspaceAccess,
+) -> WorkspaceMaterialRequest {
     WorkspaceMaterialRequest {
         demand_ref: DemandRef::new("demand:git-worktree").unwrap(),
         source: Some(ExternalRef::new("client:source:git-fixture").unwrap()),
@@ -61,7 +72,7 @@ fn request(repository: &Path, revision: &str) -> WorkspaceMaterialRequest {
             provenance: Default::default(),
         }),
         revision: Some(revision.into()),
-        access: WorkspaceAccess::Writable,
+        access,
         persistence: None,
         retention: RetentionExpectation::Release,
     }
@@ -77,13 +88,12 @@ fn git_provider_materialises_exact_revision_and_tracks_dirty_state() {
         &root,
     );
 
-    validate_provider_port(&provider).unwrap();
     assert_eq!(
         provider.offers().unwrap()[0].availability,
         Availability::Available
     );
     let req = request(&repository, &commit);
-    let allocation = provider.prepare_workspace(&req).unwrap();
+    let allocation = common::assert_workspace_provider_basics(&mut provider, &req);
     assert_eq!(allocation.provenance.get("source_dirty").unwrap(), "true");
     assert_eq!(
         allocation.provenance.get("source_ref").unwrap(),
@@ -161,6 +171,39 @@ fn git_provider_reports_stale_revision_and_deleted_worktree() {
         .release_workspace(&allocation, &RetentionExpectation::Release)
         .unwrap();
     assert!(!released.changed);
+
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&repository);
+}
+
+#[test]
+fn git_provider_enforces_readonly_workspace_and_can_release_it() {
+    let (repository, commit) = repository();
+    let root = temp_path("git-worktree-readonly-root");
+    let mut provider = GitWorktreeWorkspaceProvider::new(
+        ProviderRef::new("provider:git-worktree-readonly").unwrap(),
+        &root,
+    );
+    let request = request_with_access(&repository, &commit, WorkspaceAccess::ReadOnly);
+    let allocation = common::assert_workspace_provider_basics(&mut provider, &request);
+    let path = PathBuf::from(allocation.properties.get("path").unwrap());
+
+    assert!(fs::metadata(path.join("hello.txt"))
+        .unwrap()
+        .permissions()
+        .readonly());
+    assert!(fs::metadata(&path).unwrap().permissions().readonly());
+    #[cfg(unix)]
+    {
+        assert!(fs::write(path.join("hello.txt"), "should fail\n").is_err());
+        assert!(fs::write(path.join("new.txt"), "should fail\n").is_err());
+    }
+
+    let released = provider
+        .release_workspace(&allocation, &RetentionExpectation::Release)
+        .unwrap();
+    assert_eq!(released.disposition, ReleaseDisposition::Released);
+    assert!(!path.exists());
 
     let _ = fs::remove_dir_all(&root);
     let _ = fs::remove_dir_all(&repository);
