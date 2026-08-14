@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::{ProviderAllocation, ProviderObservation, ProviderPort, ProviderReleaseResult};
-use crate::{DemandRef, PersistenceScope, ProviderRef, RetentionExpectation, Result};
+use crate::{DemandRef, PersistenceScope, ProviderRef, Result, RetentionExpectation};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArtifactChannelRequest {

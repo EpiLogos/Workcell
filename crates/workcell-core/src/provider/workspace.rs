@@ -1,6 +1,6 @@
 use super::{ProviderAllocation, ProviderObservation, ProviderPort, ProviderReleaseResult};
 use crate::{
-    DemandRef, ExternalRef, PersistenceScope, RetentionExpectation, Result, WorkspaceAccess,
+    DemandRef, ExternalRef, PersistenceScope, Result, RetentionExpectation, WorkspaceAccess,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
 use super::{ProviderAllocation, ProviderObservation, ProviderPort, ProviderReleaseResult};
+use crate::Result;
 use crate::{
     DemandRef, IsolationTrustRequirement, LogicalConnectionRequirement, ProviderRef,
-    ResourceRequirement, RetentionExpectation, Result,
+    ResourceRequirement, RetentionExpectation,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
