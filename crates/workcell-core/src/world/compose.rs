@@ -36,7 +36,7 @@ pub fn compose_world(
         ));
     }
     if plan.status == PlanStatus::Unsatisfiable {
-        return Err(WorkcellError::Unsatisfiable(
+        return Err(WorkcellError::UnsatisfiedDemand(
             "cannot compose a world from an unsatisfiable plan".into(),
         ));
     }
