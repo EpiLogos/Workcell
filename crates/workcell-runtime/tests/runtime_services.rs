@@ -1,9 +1,9 @@
 use epilogos_workcell_core::{
     compose_world, plan, validate_allocation, validate_provider_port, DemandRef, Discovery,
     ExecutionDemand, HealthState, LogicalConnectionRequirement, PlanStatus, PlannedAllocation,
-    PlannedRelation, ProjectRuntimeMaterialRequest, ProjectRuntimeProvider, ProjectRuntimeRequirement,
-    ProviderPort, ProviderRef, RetentionExpectation, ServiceMaterialRequest, ServiceProvider,
-    WorkcellRef,
+    PlannedRelation, ProjectRuntimeMaterialRequest, ProjectRuntimeProvider,
+    ProjectRuntimeRequirement, ProviderPort, ProviderRef, RetentionExpectation,
+    ServiceMaterialRequest, ServiceProvider, WorkcellRef,
 };
 use epilogos_workcell_runtime::{
     ReferenceProjectRuntimeProvider, RuntimeMode, StaticService, StaticServiceProvider,
@@ -143,7 +143,10 @@ fn runtime_and_service_compose_into_one_native_data_plane_world() {
         runtime_binding.properties.get("endpoint").unwrap(),
         "http://project.internal:3000"
     );
-    assert_eq!(runtime_binding.properties.get("exposures").unwrap(), "browser");
+    assert_eq!(
+        runtime_binding.properties.get("exposures").unwrap(),
+        "browser"
+    );
     assert_eq!(
         service_binding.properties.get("endpoint").unwrap(),
         "neo4j://graph.internal:7687"
@@ -189,11 +192,9 @@ fn runtime_is_ensured_observed_exposable_and_stopped_through_its_port() {
 fn required_and_preferred_service_failures_remain_explicit() {
     let required = demand();
     let runtime = runtime_provider();
-    let empty_services = StaticServiceProvider::new(
-        ProviderRef::new("provider:services:empty").unwrap(),
-        [],
-    )
-    .unwrap();
+    let empty_services =
+        StaticServiceProvider::new(ProviderRef::new("provider:services:empty").unwrap(), [])
+            .unwrap();
     let mut offers = runtime.offers().unwrap();
     offers.extend(empty_services.offers().unwrap());
     let required_plan = plan(
@@ -217,10 +218,8 @@ fn required_and_preferred_service_failures_remain_explicit() {
         .preferred
         .push(LogicalConnectionRequirement::new("search:web").unwrap());
     let runtime = runtime_provider();
-    let degraded_services = service_provider(
-        "neo4j://graph.internal:7687",
-        Some(HealthState::Degraded),
-    );
+    let degraded_services =
+        service_provider("neo4j://graph.internal:7687", Some(HealthState::Degraded));
     let mut offers = runtime.offers().unwrap();
     offers.extend(degraded_services.offers().unwrap());
     let preferred_plan = plan(
@@ -258,5 +257,8 @@ fn logical_service_can_move_between_providers_without_changing_demand() {
         remote_allocation.properties.get("endpoint").unwrap(),
         "neo4j+s://managed.example:7687"
     );
-    assert_ne!(local_allocation.provider_ref, remote_allocation.provider_ref);
+    assert_ne!(
+        local_allocation.provider_ref,
+        remote_allocation.provider_ref
+    );
 }
