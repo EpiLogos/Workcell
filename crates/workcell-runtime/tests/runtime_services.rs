@@ -169,7 +169,10 @@ fn runtime_is_ensured_observed_exposable_and_stopped_through_its_port() {
     let mut runtime = runtime_provider();
     let offer = runtime.offers().unwrap().remove(0);
     assert!(offer.exposures.iter().any(|value| value == "browser"));
-    assert!(offer.connections.iter().any(|value| value == "project:self"));
+    assert!(offer
+        .connections
+        .iter()
+        .any(|value| value == "project:self"));
 
     let allocation = runtime.prepare_runtime(&runtime_request(&demand)).unwrap();
     assert_eq!(
