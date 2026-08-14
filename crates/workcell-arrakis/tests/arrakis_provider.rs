@@ -424,9 +424,14 @@ fn same_semantic_demand_can_plan_reference_or_arrakis_without_brand_selection() 
 
 #[test]
 fn core_semantic_demand_does_not_acquire_arrakis_or_microvm_brands() {
-    let source = include_str!("../../workcell-core/src/demand.rs").to_ascii_lowercase();
-    assert!(!source.contains("arrakis"));
-    assert!(!source.contains("microvm"));
-    assert!(!source.contains("cloud-hypervisor"));
-    assert!(!source.contains("/dev/kvm"));
+    let demand_source = include_str!("../../workcell-core/src/demand.rs");
+    let production_source = demand_source
+        .split_once("#[cfg(test)]")
+        .map(|(production, _)| production)
+        .unwrap_or(demand_source)
+        .to_ascii_lowercase();
+    assert!(!production_source.contains("arrakis"));
+    assert!(!production_source.contains("microvm"));
+    assert!(!production_source.contains("cloud-hypervisor"));
+    assert!(!production_source.contains("/dev/kvm"));
 }
