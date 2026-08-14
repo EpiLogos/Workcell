@@ -2,8 +2,9 @@ use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use epilogos_workcell_core::{
     Availability, HealthState, OfferRef, OperationalOffer, ProviderAllocation, ProviderObservation,
-    ProviderPort, ProviderPortKind, ProviderReleaseResult, ReleaseDisposition, RetentionExpectation,
-    Result, WorkcellError, WorkspaceAccess, WorkspaceMaterialRequest, WorkspaceProvider,
+    ProviderPort, ProviderPortKind, ProviderReleaseResult, ReleaseDisposition, Result,
+    RetentionExpectation, WorkcellError, WorkspaceAccess, WorkspaceMaterialRequest,
+    WorkspaceProvider,
 };
 
 use super::{command, state::GitRecord, state::GitWorktreeWorkspaceProvider};
@@ -203,11 +204,10 @@ impl WorkspaceProvider for GitWorktreeWorkspaceProvider {
                 disposition: ReleaseDisposition::Preserved,
                 changed: false,
             }),
-            RetentionExpectation::SuspendIfSupported | RetentionExpectation::SnapshotIfSupported => {
-                Err(WorkcellError::Unsupported(
-                    "git worktree provider does not support suspend/snapshot".into(),
-                ))
-            }
+            RetentionExpectation::SuspendIfSupported
+            | RetentionExpectation::SnapshotIfSupported => Err(WorkcellError::Unsupported(
+                "git worktree provider does not support suspend/snapshot".into(),
+            )),
             RetentionExpectation::Release => {
                 if dirty {
                     return Err(WorkcellError::CleanupFailed(
@@ -218,11 +218,7 @@ impl WorkspaceProvider for GitWorktreeWorkspaceProvider {
                 let changed = if record.path.exists() {
                     command::run(
                         &record.repository,
-                        &[
-                            "worktree",
-                            "remove",
-                            command::path_arg(&record.path)?,
-                        ],
+                        &["worktree", "remove", command::path_arg(&record.path)?],
                         "remove git worktree",
                     )?;
                     true
