@@ -4,6 +4,7 @@ members = [
   "crates/workcell-artifact",
   "crates/workcell-core",
   "crates/workcell-docker",
+  "crates/workcell-interop",
   "crates/workcell-runtime",
   "crates/workcell-workspace",
 ]
