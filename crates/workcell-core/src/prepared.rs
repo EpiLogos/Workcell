@@ -4,9 +4,10 @@ use crate::{
     plan, ArtifactStorageProvider, Binding, BindingPresence, CollectionBundle, CollectedOutput,
     Degradation, DesiredMaterialState, Discovery, ExecutionDemand, Exposure, ExposureBundle,
     ExposureRequirement, HealthState, MaterialExposureProvider, MaterialObservation,
-    MaterialisationPlan, MaterialisedExecutionWorld, ObservationBundle, PlanOmission,
-    ProjectRuntimeProvider, ProviderAllocation, ProviderExposureRequest, ProviderPort,
-    ProviderPortKind, ReconciliationResult, ReleaseDisposition, ReleaseResult,
+    MaterialisationPlan, MaterialisedExecutionWorld, ObservationBundle, OperationalOffer,
+    PlanOmission, ProjectRuntimeProvider, ProviderAllocation, ProviderCollectedMaterial,
+    ProviderExposedSurface, ProviderExposureRequest, ProviderPort, ProviderPortKind, ProviderRef,
+    ProviderReleaseResult, ReconciliationResult, ReleaseDisposition, ReleaseResult,
     RequirementNecessity, Result, RetentionExpectation, WorkcellControlPlane, WorkcellError,
     WorkcellRef, WorldRef,
 };
@@ -15,14 +16,100 @@ pub trait RuntimeExposureProvider: ProjectRuntimeProvider + MaterialExposureProv
 
 impl<T> RuntimeExposureProvider for T where T: ProjectRuntimeProvider + MaterialExposureProvider {}
 
+trait ErasedRuntimeProvider {
+    fn provider_ref(&self) -> &ProviderRef;
+    fn offers(&self) -> Result<Vec<OperationalOffer>>;
+    fn expose_material(
+        &self,
+        allocation: &ProviderAllocation,
+        request: &ProviderExposureRequest,
+    ) -> Result<ProviderExposedSurface>;
+    fn release_runtime(
+        &mut self,
+        allocation: &ProviderAllocation,
+        retention: &RetentionExpectation,
+    ) -> Result<ProviderReleaseResult>;
+}
+
+impl<P> ErasedRuntimeProvider for P
+where
+    P: RuntimeExposureProvider,
+{
+    fn provider_ref(&self) -> &ProviderRef {
+        ProviderPort::provider_ref(self)
+    }
+
+    fn offers(&self) -> Result<Vec<OperationalOffer>> {
+        ProviderPort::offers(self)
+    }
+
+    fn expose_material(
+        &self,
+        allocation: &ProviderAllocation,
+        request: &ProviderExposureRequest,
+    ) -> Result<ProviderExposedSurface> {
+        MaterialExposureProvider::expose_material(self, allocation, request)
+    }
+
+    fn release_runtime(
+        &mut self,
+        allocation: &ProviderAllocation,
+        retention: &RetentionExpectation,
+    ) -> Result<ProviderReleaseResult> {
+        ProjectRuntimeProvider::release_runtime(self, allocation, retention)
+    }
+}
+
+trait ErasedArtifactProvider {
+    fn provider_ref(&self) -> &ProviderRef;
+    fn offers(&self) -> Result<Vec<OperationalOffer>>;
+    fn collect_material(
+        &self,
+        allocation: &ProviderAllocation,
+    ) -> Result<Vec<ProviderCollectedMaterial>>;
+    fn release_artifact_channel(
+        &mut self,
+        allocation: &ProviderAllocation,
+        retention: &RetentionExpectation,
+    ) -> Result<ProviderReleaseResult>;
+}
+
+impl<P> ErasedArtifactProvider for P
+where
+    P: ArtifactStorageProvider,
+{
+    fn provider_ref(&self) -> &ProviderRef {
+        ProviderPort::provider_ref(self)
+    }
+
+    fn offers(&self) -> Result<Vec<OperationalOffer>> {
+        ProviderPort::offers(self)
+    }
+
+    fn collect_material(
+        &self,
+        allocation: &ProviderAllocation,
+    ) -> Result<Vec<ProviderCollectedMaterial>> {
+        ArtifactStorageProvider::collect_material(self, allocation)
+    }
+
+    fn release_artifact_channel(
+        &mut self,
+        allocation: &ProviderAllocation,
+        retention: &RetentionExpectation,
+    ) -> Result<ProviderReleaseResult> {
+        ArtifactStorageProvider::release_artifact_channel(self, allocation, retention)
+    }
+}
+
 /// Operational control-plane surface for material worlds that have already
 /// been prepared and composed. Generic preparation/reconciliation remains a
 /// later orchestration concern; expose/collect/release are real here.
 pub struct PreparedWorldControlPlane {
     workcell_ref: WorkcellRef,
     worlds: BTreeMap<String, MaterialisedExecutionWorld>,
-    runtime_providers: BTreeMap<String, Box<dyn RuntimeExposureProvider>>,
-    artifact_providers: BTreeMap<String, Box<dyn ArtifactStorageProvider>>,
+    runtime_providers: BTreeMap<String, Box<dyn ErasedRuntimeProvider>>,
+    artifact_providers: BTreeMap<String, Box<dyn ErasedArtifactProvider>>,
 }
 
 impl PreparedWorldControlPlane {
@@ -50,7 +137,7 @@ impl PreparedWorldControlPlane {
     where
         P: RuntimeExposureProvider + 'static,
     {
-        let key = provider.provider_ref().to_string();
+        let key = ProviderPort::provider_ref(&provider).to_string();
         if self.runtime_providers.contains_key(&key) {
             return Err(WorkcellError::OperationFailed(format!(
                 "runtime provider `{key}` is already registered"
@@ -64,7 +151,7 @@ impl PreparedWorldControlPlane {
     where
         P: ArtifactStorageProvider + 'static,
     {
-        let key = provider.provider_ref().to_string();
+        let key = ProviderPort::provider_ref(&provider).to_string();
         if self.artifact_providers.contains_key(&key) {
             return Err(WorkcellError::OperationFailed(format!(
                 "artifact provider `{key}` is already registered"
@@ -136,7 +223,7 @@ impl WorkcellControlPlane for PreparedWorldControlPlane {
         let mut omissions = Vec::new();
 
         for planned in &world.planned_exposures {
-            let result = (|| {
+            let result: Result<Exposure> = (|| {
                 let provider = self
                     .runtime_providers
                     .get(planned.provider_ref.as_str())
@@ -222,7 +309,7 @@ impl WorkcellControlPlane for PreparedWorldControlPlane {
             .iter()
             .filter(|binding| binding.port == ProviderPortKind::ArtifactStorage)
         {
-            let result = (|| {
+            let result: Result<Vec<CollectedOutput>> = (|| {
                 if binding.presence != BindingPresence::Present {
                     return Err(WorkcellError::Unavailable(format!(
                         "artifact binding `{}` is not present",
