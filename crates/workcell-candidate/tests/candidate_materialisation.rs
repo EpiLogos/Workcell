@@ -2,10 +2,10 @@ use std::collections::BTreeMap;
 
 use epilogos_workcell_candidate::CandidateMaterialisationDemand;
 use epilogos_workcell_core::{
-    compose_world, AffordanceRequirement, Availability, BindingPresence, DemandRef, ExecutionDemand,
-    ExecutionMaterialRequest, ExecutionProvider, ExternalRef, HealthState, MaterialisationPlan,
-    OfferRef, OperationalOffer, PlanRef, PlanStatus, PlannedAllocation, PlannedBinding,
-    PlannedExposure, ProviderAllocation, ProviderObservation, ProviderOperation,
+    compose_world, AffordanceRequirement, Availability, BindingPresence, DemandRef,
+    ExecutionDemand, ExecutionMaterialRequest, ExecutionProvider, ExternalRef, HealthState,
+    MaterialisationPlan, OfferRef, OperationalOffer, PlanRef, PlanStatus, PlannedAllocation,
+    PlannedBinding, PlannedExposure, ProviderAllocation, ProviderObservation, ProviderOperation,
     ProviderOperationResult, ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult,
     ReleaseDisposition, RequirementNecessity, Result, RetentionExpectation, WorkcellError,
     WorkcellRef,
@@ -17,11 +17,8 @@ fn semantic_view() -> CandidateMaterialisationDemand {
         .affordances
         .required
         .push(AffordanceRequirement::new("shell").unwrap());
-    CandidateMaterialisationDemand::new(
-        ExternalRef::new("factory:candidate:c-42").unwrap(),
-        demand,
-    )
-    .unwrap()
+    CandidateMaterialisationDemand::new(ExternalRef::new("factory:candidate:c-42").unwrap(), demand)
+        .unwrap()
 }
 
 fn materialise(
@@ -141,7 +138,10 @@ fn same_candidate_ref_survives_provider_workcell_material_and_exposure_rebind() 
         first.binding_graph.bindings[0].properties.get("endpoint"),
         second.binding_graph.bindings[0].properties.get("endpoint")
     );
-    assert_ne!(first.planned_exposures[0].provider_ref, second.planned_exposures[0].provider_ref);
+    assert_ne!(
+        first.planned_exposures[0].provider_ref,
+        second.planned_exposures[0].provider_ref
+    );
 }
 
 struct BoundExecutionProvider {
@@ -182,7 +182,9 @@ impl ProviderPort for BoundExecutionProvider {
 
 impl ExecutionProvider for BoundExecutionProvider {
     fn prepare_execution(&mut self, _: &ExecutionMaterialRequest) -> Result<ProviderAllocation> {
-        Err(WorkcellError::Unsupported("fixture is already materialised".into()))
+        Err(WorkcellError::Unsupported(
+            "fixture is already materialised".into(),
+        ))
     }
 
     fn execute_operation(
@@ -190,7 +192,9 @@ impl ExecutionProvider for BoundExecutionProvider {
         _: &ProviderAllocation,
         _: &ProviderOperation,
     ) -> Result<ProviderOperationResult> {
-        Err(WorkcellError::Unsupported("fixture does not execute".into()))
+        Err(WorkcellError::Unsupported(
+            "fixture does not execute".into(),
+        ))
     }
 
     fn observe_execution(&self, allocation: &ProviderAllocation) -> Result<ProviderObservation> {
@@ -198,7 +202,9 @@ impl ExecutionProvider for BoundExecutionProvider {
             return Err(WorkcellError::NotFound(allocation.material_ref.clone()));
         }
         if !self.available {
-            return Err(WorkcellError::Unavailable("fixture provider disappeared".into()));
+            return Err(WorkcellError::Unavailable(
+                "fixture provider disappeared".into(),
+            ));
         }
         Ok(ProviderObservation {
             provider_ref: self.provider_ref.clone(),
