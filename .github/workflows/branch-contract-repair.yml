@@ -23,7 +23,7 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          # Discovery gained Workcell-wide aggregate capacity. Repair all literal
+          # Discovery gained Workcell-wide aggregate capacity. Repair literal
           # constructors, including those using Rust field shorthand (`offers,`).
           for path in Path("crates").rglob("*.rs"):
               lines = path.read_text().splitlines(keepends=True)
@@ -58,9 +58,10 @@ jobs:
                               health_index = index
                       depth += item.count("{") - item.count("}")
 
-                  if not top_capacity:
-                      if health_index is None:
-                          raise SystemExit(f"Discovery literal without top-level health in {path}")
+                  # Trait return types and patterns can contain `Discovery {`
+                  # without being a struct literal. Only a top-level health field
+                  # identifies the constructors we need to migrate.
+                  if not top_capacity and health_index is not None:
                       health_line = block[health_index]
                       indent = health_line[: len(health_line) - len(health_line.lstrip())]
                       block.insert(
@@ -73,9 +74,8 @@ jobs:
               if changed:
                   path.write_text("".join(out))
 
-          # Opaque material/semantic refs validate to &'static str. Converting
-          # that validation failure into InvalidDemand lets adapter code use the
-          # canonical Workcell Result without changing the ref API itself.
+          # Opaque refs deliberately keep their small validation API. At the
+          # Workcell Result boundary, a ref validation failure is invalid demand.
           error_path = Path("crates/workcell-core/src/error.rs")
           error_text = error_path.read_text()
           conversion = '''\nimpl From<&'static str> for WorkcellError {\n    fn from(value: &'static str) -> Self {\n        Self::InvalidDemand(value.into())\n    }\n}\n'''
