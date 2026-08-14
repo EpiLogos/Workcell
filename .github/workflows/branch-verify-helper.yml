@@ -1,0 +1,22 @@
+name: branch-verify-helper
+
+on:
+  push:
+    branches:
+      - build/rust-workcell-foundation
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: build/rust-workcell-foundation
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt,clippy
+      - name: Verify assembled Rust workspace
+        run: ./scripts/verify.sh
