@@ -46,6 +46,7 @@ semantic_requirement!(AffordanceRequirement);
 semantic_requirement!(LogicalConnectionRequirement);
 semantic_requirement!(ExposureRequirement);
 semantic_requirement!(IsolationTrustRequirement);
+semantic_requirement!(ProjectRuntimeRequirement);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkspaceAccess {
@@ -97,6 +98,7 @@ pub struct ExecutionDemand {
     pub subjects: BTreeMap<String, ExternalRef>,
     pub affordances: Tiered<AffordanceRequirement>,
     pub workspace: Option<WorkspaceRequirement>,
+    pub project_runtime: Option<ProjectRuntimeRequirement>,
     pub resources: Vec<ResourceRequirement>,
     pub connectivity: Tiered<LogicalConnectionRequirement>,
     pub exposure: Tiered<ExposureRequirement>,
@@ -113,6 +115,7 @@ impl ExecutionDemand {
             subjects: BTreeMap::new(),
             affordances: Tiered::default(),
             workspace: None,
+            project_runtime: None,
             resources: Vec::new(),
             connectivity: Tiered::default(),
             exposure: Tiered::default(),
@@ -251,6 +254,7 @@ mod tests {
         assert!(LogicalConnectionRequirement::new("").is_err());
         assert!(ExposureRequirement::new("\t").is_err());
         assert!(IsolationTrustRequirement::new("  ").is_err());
+        assert!(ProjectRuntimeRequirement::new(" ").is_err());
     }
 
     #[test]
@@ -275,6 +279,14 @@ mod tests {
             .push(LogicalConnectionRequirement::new("search:web").unwrap());
         demand.validate().unwrap();
         assert_eq!(demand.connectivity.required[0].as_str(), "state:graph");
+    }
+
+    #[test]
+    fn project_runtime_mode_is_open_and_provider_neutral() {
+        let mut demand = ExecutionDemand::new(DemandRef::new("demand:runtime").unwrap());
+        demand.project_runtime = Some(ProjectRuntimeRequirement::new("agent").unwrap());
+        demand.validate().unwrap();
+        assert_eq!(demand.project_runtime.unwrap().as_str(), "agent");
     }
 
     #[test]
