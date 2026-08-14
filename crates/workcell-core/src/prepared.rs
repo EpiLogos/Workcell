@@ -626,8 +626,18 @@ impl WorkcellControlPlane for PreparedWorldControlPlane {
     fn expose(&self, world_ref: &WorldRef) -> Result<ExposureBundle> {
         let world = self.require_world(world_ref)?;
         let mut surfaces = Vec::new();
-        let mut degradations = Vec::new();
-        let mut omissions = Vec::new();
+        let mut degradations = world
+            .plan_degradations
+            .iter()
+            .filter(|item| item.requirement.starts_with("exposure:"))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut omissions = world
+            .plan_omissions
+            .iter()
+            .filter(|item| item.requirement.starts_with("exposure:"))
+            .cloned()
+            .collect::<Vec<_>>();
 
         for planned in &world.planned_exposures {
             let result: Result<Exposure> = (|| {
@@ -707,8 +717,18 @@ impl WorkcellControlPlane for PreparedWorldControlPlane {
     fn collect(&self, world_ref: &WorldRef) -> Result<CollectionBundle> {
         let world = self.require_world(world_ref)?;
         let mut outputs = Vec::new();
-        let mut degradations = Vec::new();
-        let mut omissions = Vec::new();
+        let mut degradations = world
+            .plan_degradations
+            .iter()
+            .filter(|item| item.requirement.starts_with("output:"))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut omissions = world
+            .plan_omissions
+            .iter()
+            .filter(|item| item.requirement.starts_with("output:"))
+            .cloned()
+            .collect::<Vec<_>>();
 
         for binding in world
             .binding_graph

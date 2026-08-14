@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    BindingRef, DemandRef, ExternalRef, HealthState, OfferRef, PersistenceScope, PlannedConstraint,
-    PlannedExposure, ProviderPortKind, ProviderRef, RequirementNecessity, RetentionExpectation,
-    WorkcellRef, WorldRef,
+    BindingRef, Degradation, DemandRef, ExternalRef, HealthState, OfferRef, PersistenceScope,
+    PlanOmission, PlannedConstraint, PlannedExposure, ProviderPortKind, ProviderRef,
+    RequirementNecessity, RetentionExpectation, WorkcellRef, WorldRef,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -53,6 +53,8 @@ pub struct MaterialisedExecutionWorld {
     pub binding_graph: BindingGraph,
     pub planned_exposures: Vec<PlannedExposure>,
     pub planned_constraints: Vec<PlannedConstraint>,
+    pub plan_degradations: Vec<Degradation>,
+    pub plan_omissions: Vec<PlanOmission>,
     pub persistence: Option<PersistenceScope>,
     pub retention: RetentionExpectation,
     pub state: HealthState,

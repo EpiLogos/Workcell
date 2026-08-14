@@ -182,6 +182,14 @@ pub fn compose_world(
         "planned_constraint_count".into(),
         plan.planned_constraints.len().to_string(),
     );
+    provenance.insert(
+        "plan_degradation_count".into(),
+        plan.degradations.len().to_string(),
+    );
+    provenance.insert(
+        "plan_omission_count".into(),
+        plan.omissions.len().to_string(),
+    );
 
     Ok(MaterialisedExecutionWorld {
         world_ref,
@@ -194,6 +202,8 @@ pub fn compose_world(
         },
         planned_exposures: plan.planned_exposures.clone(),
         planned_constraints: plan.planned_constraints.clone(),
+        plan_degradations: plan.degradations.clone(),
+        plan_omissions: plan.omissions.clone(),
         persistence: demand.persistence.clone(),
         retention: demand.retention.clone(),
         state,
