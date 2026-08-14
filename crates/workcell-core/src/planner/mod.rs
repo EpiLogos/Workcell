@@ -1,4 +1,5 @@
 mod assemble;
+mod fingerprint;
 mod policy;
 mod requirements;
 mod resolve;
