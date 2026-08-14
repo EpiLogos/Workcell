@@ -18,37 +18,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt,clippy
-      - name: Finalize product tree
+      - name: Format and clean product source
         shell: bash
         run: |
           cargo fmt --all
           rm -rf .ci-debug .ci-helper
           rm -f .github/workflows/branch-operation-outcome-repair.yml
-          cat > .github/workflows/verify.yml <<'EOF'
-          name: verify
-
-          on:
-            push:
-            pull_request:
-
-          jobs:
-            verify:
-              runs-on: ubuntu-latest
-              steps:
-                - uses: actions/checkout@v5
-                - uses: dtolnay/rust-toolchain@stable
-                  with:
-                    components: rustfmt,clippy
-                - run: ./scripts/verify.sh
-          EOF
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           if ! git diff --cached --quiet; then
-            git commit -m "chore: finalize clean Workcell product tree"
+            git commit -m "chore: format and clean Workcell product tree"
             git push origin HEAD:build/rust-workcell-foundation
           fi
-      - name: Verify finalized tree
+      - name: Verify cleaned tree
         run: |
           rm -rf target
           ./scripts/verify.sh
