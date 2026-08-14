@@ -51,7 +51,10 @@ pub struct StaticServiceProvider {
 }
 
 impl StaticServiceProvider {
-    pub fn new(provider_ref: ProviderRef, services: impl IntoIterator<Item = StaticService>) -> Result<Self> {
+    pub fn new(
+        provider_ref: ProviderRef,
+        services: impl IntoIterator<Item = StaticService>,
+    ) -> Result<Self> {
         let mut by_ref = BTreeMap::new();
         for service in services {
             if by_ref
