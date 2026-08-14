@@ -30,6 +30,8 @@ fn plan(bindings: Vec<PlannedBinding>, suffix: &str) -> MaterialisationPlan {
         demand_ref: DemandRef::new("demand:material-world").unwrap(),
         status: PlanStatus::Satisfiable,
         planned_bindings: bindings,
+        planned_exposures: vec![],
+        planned_constraints: vec![],
         degradations: vec![],
         omissions: vec![],
         explanation: vec![],
