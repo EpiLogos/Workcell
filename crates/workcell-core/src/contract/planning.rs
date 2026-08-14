@@ -83,11 +83,21 @@ pub struct PlannedBinding {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlannedExposure {
+    pub logical_ref: String,
+    pub requirement: String,
+    pub necessity: RequirementNecessity,
+    pub provider_ref: ProviderRef,
+    pub offer_ref: OfferRef,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MaterialisationPlan {
     pub plan_ref: PlanRef,
     pub demand_ref: DemandRef,
     pub status: PlanStatus,
     pub planned_bindings: Vec<PlannedBinding>,
+    pub planned_exposures: Vec<PlannedExposure>,
     pub degradations: Vec<Degradation>,
     pub omissions: Vec<PlanOmission>,
     pub explanation: Vec<String>,
