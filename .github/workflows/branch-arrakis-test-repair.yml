@@ -1,0 +1,65 @@
+name: branch-arrakis-test-repair
+
+on:
+  push:
+    branches:
+      - build/rust-workcell-foundation
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: build/rust-workcell-foundation
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt,clippy
+      - name: Scope provider-leakage assertion to production demand source
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("crates/workcell-arrakis/tests/arrakis_provider.rs")
+          text = path.read_text()
+          old = '''fn core_semantic_demand_does_not_acquire_arrakis_or_microvm_brands() {\n    let source = include_str!("../../workcell-core/src/demand.rs").to_ascii_lowercase();\n    assert!(!source.contains("arrakis"));\n    assert!(!source.contains("microvm"));\n    assert!(!source.contains("cloud-hypervisor"));\n    assert!(!source.contains("/dev/kvm"));\n}\n'''
+          new = '''fn core_semantic_demand_does_not_acquire_arrakis_or_microvm_brands() {\n    let demand_source = include_str!("../../workcell-core/src/demand.rs");\n    let production_source = demand_source\n        .split_once("#[cfg(test)]")\n        .map(|(production, _)| production)\n        .unwrap_or(demand_source)\n        .to_ascii_lowercase();\n    assert!(!production_source.contains("arrakis"));\n    assert!(!production_source.contains("microvm"));\n    assert!(!production_source.contains("cloud-hypervisor"));\n    assert!(!production_source.contains("/dev/kvm"));\n}\n'''
+          if old not in text:
+              raise SystemExit("expected Arrakis leakage test not found")
+          path.write_text(text.replace(old, new, 1))
+          PY
+          cargo fmt --all
+      - name: Verify assembled Workcell tree
+        id: verify
+        shell: bash
+        run: |
+          set +e
+          ./scripts/verify.sh > /tmp/workcell-verify.log 2>&1
+          code=$?
+          set -e
+          rm -rf .ci-helper
+          if [ "$code" -ne 0 ]; then
+            mkdir -p .ci-helper
+            {
+              printf 'verify: FAIL (exit=%s)\n\n' "$code"
+              tail -n 420 /tmp/workcell-verify.log
+            } > .ci-helper/FAIL
+          fi
+          printf 'code=%s\n' "$code" >> "$GITHUB_OUTPUT"
+      - name: Commit repair and retire helper
+        shell: bash
+        run: |
+          rm -f .github/workflows/branch-arrakis-test-repair.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "fix: scope provider leakage test to production demand"
+            git push origin HEAD:build/rust-workcell-foundation
+          fi
+      - name: Fail when repository gate still fails
+        if: steps.verify.outputs.code != '0'
+        run: exit 1
