@@ -3,13 +3,11 @@ use std::collections::BTreeMap;
 use epilogos_workcell_core::{
     AffordanceRequirement, Availability, Capacity, DemandRef, ExecutionDemand,
     ExecutionMaterialRequest, ExecutionProvider, HealthState, OfferRef, OperationalOffer,
-    PlanStatus, ProviderAllocation, ProviderObservation, ProviderOperation, ProviderOperationResult,
-    ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult, Result,
-    RetentionExpectation, WorkcellControlPlane, WorkcellError, WorkcellRef,
+    PlanStatus, ProviderAllocation, ProviderObservation, ProviderOperation,
+    ProviderOperationResult, ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult,
+    Result, RetentionExpectation, WorkcellControlPlane, WorkcellError, WorkcellRef,
 };
-use epilogos_workcell_runtime::{
-    deployment_parity_report, DeploymentProfile, PlacementRef,
-};
+use epilogos_workcell_runtime::{deployment_parity_report, DeploymentProfile, PlacementRef};
 
 struct FixtureExecutionProvider {
     provider_ref: ProviderRef,
@@ -177,7 +175,10 @@ fn plan_with(
     profile: &DeploymentProfile,
     provider: FixtureExecutionProvider,
     demand: &ExecutionDemand,
-) -> (epilogos_workcell_core::Discovery, epilogos_workcell_core::MaterialisationPlan) {
+) -> (
+    epilogos_workcell_core::Discovery,
+    epilogos_workcell_core::MaterialisationPlan,
+) {
     let mut plane = profile.control_plane().unwrap();
     plane.register_execution_provider(provider).unwrap();
     let discovery = plane.discover().unwrap();
@@ -194,11 +195,7 @@ fn same_semantic_demand_plans_across_local_ubuntu_and_distributed_profiles() {
 
     let (local_discovery, local_plan) = plan_with(
         &local,
-        FixtureExecutionProvider::new(
-            "provider:profile-local",
-            "offer:profile-local",
-            "same-host",
-        ),
+        FixtureExecutionProvider::new("provider:profile-local", "offer:profile-local", "same-host"),
         &demand,
     );
     let (ubuntu_discovery, ubuntu_plan) = plan_with(
@@ -244,7 +241,10 @@ fn same_semantic_demand_plans_across_local_ubuntu_and_distributed_profiles() {
         distributed_plan.planned_bindings[0].provider_ref
     );
     assert_ne!(local_discovery.workcell_ref, ubuntu_discovery.workcell_ref);
-    assert_ne!(ubuntu_discovery.workcell_ref, distributed_discovery.workcell_ref);
+    assert_ne!(
+        ubuntu_discovery.workcell_ref,
+        distributed_discovery.workcell_ref
+    );
     assert_ne!(local_discovery.capacity, ubuntu_discovery.capacity);
     assert_ne!(ubuntu_discovery.capacity, distributed_discovery.capacity);
     assert_eq!(local_discovery.health, HealthState::Healthy);
@@ -335,12 +335,9 @@ fn provider_removal_changes_discovery_offer_set_only() {
 
 #[test]
 fn parity_report_describes_physical_difference_without_new_semantic_types() {
-    let report = deployment_parity_report([
-        local_profile(),
-        ubuntu_profile(),
-        distributed_profile(),
-    ])
-    .unwrap();
+    let report =
+        deployment_parity_report([local_profile(), ubuntu_profile(), distributed_profile()])
+            .unwrap();
     assert_eq!(report.len(), 3);
     assert_eq!(report[0].profile_id, "collapsed-local");
     assert_eq!(report[1].profile_id, "distributed-fake-provider");
@@ -353,10 +350,7 @@ fn parity_report_describes_physical_difference_without_new_semantic_types() {
         Some("same-host")
     );
     assert_eq!(
-        report[1]
-            .placements
-            .get("state")
-            .map(PlacementRef::as_str),
+        report[1].placements.get("state").map(PlacementRef::as_str),
         Some("state-domain-b")
     );
 }

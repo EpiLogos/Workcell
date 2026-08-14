@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    plan, ArtifactStorageProvider, Binding, BindingPresence, CollectedOutput, CollectionBundle,
-    Degradation, DesiredMaterialState, Discovery, ExecutionDemand, ExecutionProvider, Exposure,
-    ExposureBundle, ExposureRequirement, HealthState, MaterialExposureProvider,
-    MaterialObservation, MaterialisationPlan, MaterialisedExecutionWorld, ObservationBundle,
-    OperationalOffer, PersistenceScope, PlanOmission, ProjectRuntimeProvider, ProviderAllocation,
-    ProviderCollectedMaterial, ProviderExposedSurface, ProviderExposureRequest,
+    plan, ArtifactStorageProvider, Binding, BindingPresence, Capacity, CollectedOutput,
+    CollectionBundle, Degradation, DesiredMaterialState, Discovery, ExecutionDemand,
+    ExecutionProvider, Exposure, ExposureBundle, ExposureRequirement, HealthState,
+    MaterialExposureProvider, MaterialObservation, MaterialisationPlan, MaterialisedExecutionWorld,
+    ObservationBundle, OperationalOffer, PersistenceScope, PlanOmission, ProjectRuntimeProvider,
+    ProviderAllocation, ProviderCollectedMaterial, ProviderExposedSurface, ProviderExposureRequest,
     ProviderObservation, ProviderPort, ProviderPortKind, ProviderReleaseResult,
     ReconciliationDelta, ReconciliationResult, ReleaseDisposition, ReleaseResult,
     RequirementNecessity, Result, RetentionExpectation, ServiceProvider, WorkcellControlPlane,
@@ -205,6 +205,8 @@ where
 /// orchestration concern.
 pub struct PreparedWorldControlPlane {
     workcell_ref: WorkcellRef,
+    health: HealthState,
+    capacity: BTreeMap<String, Capacity>,
     worlds: BTreeMap<String, MaterialisedExecutionWorld>,
     workspace_providers: BTreeMap<String, Box<dyn ErasedWorkspaceProvider>>,
     execution_providers: BTreeMap<String, Box<dyn ErasedExecutionProvider>>,
@@ -217,6 +219,8 @@ impl PreparedWorldControlPlane {
     pub fn new(workcell_ref: WorkcellRef) -> Self {
         Self {
             workcell_ref,
+            health: HealthState::Healthy,
+            capacity: BTreeMap::new(),
             worlds: BTreeMap::new(),
             workspace_providers: BTreeMap::new(),
             execution_providers: BTreeMap::new(),
@@ -224,6 +228,29 @@ impl PreparedWorldControlPlane {
             service_providers: BTreeMap::new(),
             artifact_providers: BTreeMap::new(),
         }
+    }
+
+    pub fn with_discovery_state(
+        mut self,
+        health: HealthState,
+        capacity: BTreeMap<String, Capacity>,
+    ) -> Result<Self> {
+        if capacity.keys().any(|key| key.trim().is_empty()) {
+            return Err(WorkcellError::InvalidDemand(
+                "Workcell discovery capacity keys must not be empty".into(),
+            ));
+        }
+        self.health = health;
+        self.capacity = capacity;
+        Ok(self)
+    }
+
+    pub fn discovery_health(&self) -> &HealthState {
+        &self.health
+    }
+
+    pub fn discovery_capacity(&self) -> &BTreeMap<String, Capacity> {
+        &self.capacity
     }
 
     pub fn register_world(&mut self, world: MaterialisedExecutionWorld) -> Result<()> {
@@ -567,7 +594,8 @@ impl WorkcellControlPlane for PreparedWorldControlPlane {
         }
         Ok(Discovery {
             workcell_ref: self.workcell_ref.clone(),
-            health: HealthState::Healthy,
+            health: self.health.clone(),
+            capacity: self.capacity.clone(),
             offers,
         })
     }
