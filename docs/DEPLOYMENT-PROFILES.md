@@ -41,7 +41,7 @@ The conformance fixture uses three deliberately different arrangements.
 
 These strings are fixture/configuration values, not variants in the Rust type system. There is no `UbuntuWorkcell`, `LocalWorkcell`, `DistributedWorkcell`, semantic cluster type, or Kubernetes prerequisite.
 
-The Ubuntu specimen is particularly important: it is the first rich deployment target described by the architecture, but it must continue to prove the abstraction rather than define it. fileciteturn0file4
+The Ubuntu specimen is particularly important: it is the first rich deployment target described by the Workcell architecture, but it must continue to prove the abstraction rather than define it.
 
 ## Discovery
 
