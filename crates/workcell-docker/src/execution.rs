@@ -137,13 +137,50 @@ impl DockerExecutionProvider {
         }
     }
 
-    fn record(&self, allocation: &ProviderAllocation) -> Result<&ExecutionRecord> {
+    fn record(&self, allocation: &ProviderAllocation) -> Result<ExecutionRecord> {
         validate_allocation(self, allocation)?;
-        self.records.get(&allocation.material_ref).ok_or_else(|| {
-            WorkcellError::NotFound(format!(
-                "Docker execution `{}` is not known by this provider",
-                allocation.material_ref
-            ))
+        if let Some(record) = self.records.get(&allocation.material_ref) {
+            return Ok(record.clone());
+        }
+
+        let container_id = allocation
+            .properties
+            .get("container_id")
+            .or_else(|| allocation.provenance.get("container_id"))
+            .cloned()
+            .ok_or_else(|| {
+                WorkcellError::OperationFailed(format!(
+                    "Docker execution `{}` cannot be recovered: container_id provenance is missing",
+                    allocation.material_ref
+                ))
+            })?;
+        let container_name = allocation
+            .properties
+            .get("container_name")
+            .cloned()
+            .unwrap_or_default();
+        let engine_version = allocation
+            .provenance
+            .get("docker_engine")
+            .cloned()
+            .unwrap_or_else(|| "unknown".into());
+        let logical_networks = allocation
+            .properties
+            .get("logical_connections")
+            .map(|value| {
+                value
+                    .split(',')
+                    .filter(|item| !item.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(ExecutionRecord {
+            container_id,
+            container_name,
+            engine_version,
+            logical_networks,
         })
     }
 
@@ -411,7 +448,7 @@ impl ExecutionProvider for DockerExecutionProvider {
         let command = operation.parameters.get("command").ok_or_else(|| {
             WorkcellError::InvalidDemand("shell operation requires `command` parameter".into())
         })?;
-        let record = self.record(allocation)?.clone();
+        let record = self.record(allocation)?;
         let output = self.runner.run(&DockerCommand::new([
             "container",
             "exec",
@@ -455,9 +492,9 @@ impl ExecutionProvider for DockerExecutionProvider {
         };
         let mut detail = BTreeMap::new();
         detail.insert("status".into(), status.into());
-        detail.insert("container_id".into(), record.container_id.clone());
-        detail.insert("container_name".into(), record.container_name.clone());
-        detail.insert("docker_engine".into(), record.engine_version.clone());
+        detail.insert("container_id".into(), record.container_id);
+        detail.insert("container_name".into(), record.container_name);
+        detail.insert("docker_engine".into(), record.engine_version);
         if !record.logical_networks.is_empty() {
             detail.insert(
                 "logical_connections".into(),
@@ -477,7 +514,7 @@ impl ExecutionProvider for DockerExecutionProvider {
         allocation: &ProviderAllocation,
         retention: &RetentionExpectation,
     ) -> Result<ProviderReleaseResult> {
-        let record = self.record(allocation)?.clone();
+        let record = self.record(allocation)?;
         match retention {
             RetentionExpectation::Preserve => Ok(ProviderReleaseResult {
                 provider_ref: self.provider_ref.clone(),
