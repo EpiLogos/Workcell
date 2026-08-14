@@ -1,0 +1,45 @@
+verify: FAIL (exit=101)
+
+[1m[92m    Updating[0m crates.io index
+[1m[92m     Locking[0m 11 packages to latest compatible versions
+[1m[92m Downloading[0m crates ...
+[1m[92m  Downloaded[0m itoa v1.0.18
+[1m[92m  Downloaded[0m serde_core v1.0.229
+[1m[92m  Downloaded[0m zmij v1.0.23
+[1m[92m  Downloaded[0m serde_json v1.0.151
+[1m[92m  Downloaded[0m memchr v2.8.3
+[1m[92m    Checking[0m epilogos-workcell-core v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-core)
+[1m[92m   Compiling[0m zmij v1.0.23
+[1m[92m   Compiling[0m serde_core v1.0.229
+[1m[92m   Compiling[0m serde_json v1.0.151
+[1m[92m    Checking[0m epilogos-workcell-artifact v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-artifact)
+[1m[92m    Checking[0m epilogos-workcell-runtime v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-runtime)
+[1m[92m    Checking[0m memchr v2.8.3
+[1m[92m    Checking[0m itoa v1.0.18
+[1m[92m    Checking[0m epilogos-workcell-docker v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-docker)
+[1m[92m    Checking[0m epilogos-workcell-arrakis v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-arrakis)
+[1m[92m    Checking[0m epilogos-workcell-workspace v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-workspace)
+[1m[92m    Checking[0m epilogos-workcell-candidate v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-candidate)
+[1m[92m    Checking[0m epilogos-workcell-placement v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-placement)
+[1m[91merror[0m[1m: this `impl` can be derived[0m
+  [1m[94m--> [0mcrates/workcell-placement/src/lib.rs:43:1
+   [1m[94m|[0m
+[1m[94m43[0m [1m[94m|[0m [1m[91m/[0m impl Default for PlacementPolicy {
+[1m[94m44[0m [1m[94m|[0m [1m[91m|[0m     fn default() -> Self {
+[1m[94m45[0m [1m[94m|[0m [1m[91m|[0m         Self {
+[1m[94m46[0m [1m[94m|[0m [1m[91m|[0m             required_tags: BTreeSet::new(),
+[1m[94m...[0m  [1m[91m|[0m
+[1m[94m52[0m [1m[94m|[0m [1m[91m|[0m }
+   [1m[94m|[0m [1m[91m|_^[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#derivable_impls
+   [1m[94m= [0m[1mnote[0m: `-D clippy::derivable-impls` implied by `-D warnings`
+   [1m[94m= [0m[1mhelp[0m: to override `-D warnings` add `#[allow(clippy::derivable_impls)]`
+[1m[96mhelp[0m: replace the manual implementation with a derive attribute
+   [1m[94m|[0m
+[1m[94m30[0m [92m+ #[derive(Default)][0m
+[1m[94m31[0m [1m[94m|[0m pub struct PlacementPolicy {
+   [1m[94m|[0m
+
+[1m[91merror[0m: could not compile `epilogos-workcell-placement` (lib) due to 1 previous error
+[1m[33mwarning[0m: build failed, waiting for other jobs to finish...
