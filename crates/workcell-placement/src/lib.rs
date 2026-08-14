@@ -10,8 +10,7 @@ use epilogos_workcell_core::{
 
 /// Replaceable discovery/transport seam for one reachable Workcell.
 ///
-/// Implementations may be in-process, RPC, SSH-backed, HTTP, test doubles, or
-/// future transports. Placement sees only the canonical Workcell `Discovery`
+/// Implementations may be in-process, remote, test doubles, or future transports. Placement sees only the canonical Workcell `Discovery`
 /// result plus opaque locality/policy metadata; transport/auth details remain
 /// outside the semantic Workcell contract.
 pub trait WorkcellDiscoverySource: Send + Sync {
