@@ -8,6 +8,7 @@ mod contract;
 mod demand;
 mod error;
 mod planner;
+mod provider;
 mod refs;
 
 pub use api::WorkcellControlPlane;
@@ -15,4 +16,5 @@ pub use contract::*;
 pub use demand::*;
 pub use error::{Result, WorkcellError};
 pub use planner::*;
+pub use provider::*;
 pub use refs::*;
