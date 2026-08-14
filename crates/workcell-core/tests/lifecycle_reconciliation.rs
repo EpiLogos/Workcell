@@ -27,11 +27,7 @@ struct LifecycleExecutionProvider {
 }
 
 impl LifecycleExecutionProvider {
-    fn new(
-        provider_ref: &str,
-        offer_ref: &str,
-        state: Arc<Mutex<ProviderState>>,
-    ) -> Self {
+    fn new(provider_ref: &str, offer_ref: &str, state: Arc<Mutex<ProviderState>>) -> Self {
         state.lock().unwrap().advertise_offer = true;
         Self {
             provider_ref: ProviderRef::new(provider_ref).unwrap(),
@@ -97,9 +93,15 @@ impl ExecutionProvider for LifecycleExecutionProvider {
         allocation: &ProviderAllocation,
     ) -> epilogos_workcell_core::Result<ProviderObservation> {
         let state = self.state.lock().unwrap();
-        let health = state.material.get(&allocation.material_ref).ok_or_else(|| {
-            WorkcellError::NotFound(format!("material `{}` is missing", allocation.material_ref))
-        })?;
+        let health = state
+            .material
+            .get(&allocation.material_ref)
+            .ok_or_else(|| {
+                WorkcellError::NotFound(format!(
+                    "material `{}` is missing",
+                    allocation.material_ref
+                ))
+            })?;
         Ok(ProviderObservation {
             provider_ref: self.provider_ref.clone(),
             material_ref: allocation.material_ref.clone(),
@@ -323,11 +325,8 @@ fn withdrawn_offer_marks_binding_stale_and_requests_recovery() {
         RetentionExpectation::Preserve,
         vec![binding("execution:main", "material:withdrawn")],
     );
-    let mut provider = LifecycleExecutionProvider::new(
-        "provider:lifecycle",
-        "offer:lifecycle",
-        state.clone(),
-    );
+    let mut provider =
+        LifecycleExecutionProvider::new("provider:lifecycle", "offer:lifecycle", state.clone());
     state.lock().unwrap().advertise_offer = false;
 
     let mut control =
@@ -342,7 +341,10 @@ fn withdrawn_offer_marks_binding_stale_and_requests_recovery() {
         .unwrap();
     assert_eq!(result.deltas[0].action, ReconciliationAction::Recover);
     let world = control.world(&persisted.world_ref).unwrap();
-    assert_eq!(world.binding_graph.bindings[0].presence, BindingPresence::Stale);
+    assert_eq!(
+        world.binding_graph.bindings[0].presence,
+        BindingPresence::Stale
+    );
 }
 
 #[test]
@@ -464,8 +466,14 @@ fn partial_cleanup_failure_preserves_successful_release_state() {
 
     assert!(control.release(&releasable.world_ref).is_err());
     let world = control.world(&releasable.world_ref).unwrap();
-    assert_eq!(world.binding_graph.bindings[0].presence, BindingPresence::Stale);
-    assert_eq!(world.binding_graph.bindings[1].presence, BindingPresence::Released);
+    assert_eq!(
+        world.binding_graph.bindings[0].presence,
+        BindingPresence::Stale
+    );
+    assert_eq!(
+        world.binding_graph.bindings[1].presence,
+        BindingPresence::Released
+    );
 }
 
 #[test]
