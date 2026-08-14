@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     Availability, Degradation, Discovery, ExecutionDemand, HealthState, MaterialisationPlan,
-    PlanOmission, PlanStatus, PlannedBinding, RequirementNecessity, Result,
+    PlanOmission, PlanStatus, PlannedBinding, PlannedExposure, RequirementNecessity, Result,
 };
 
 pub fn plan(demand: &ExecutionDemand, discovery: &Discovery) -> Result<MaterialisationPlan> {
@@ -18,6 +18,7 @@ pub fn plan_with_policy(
 ) -> Result<MaterialisationPlan> {
     demand.validate()?;
     let mut bindings = Vec::new();
+    let mut exposures = Vec::new();
     let mut degradations = Vec::new();
     let mut omissions = Vec::new();
     let mut explanation = Vec::new();
@@ -42,13 +43,23 @@ pub fn plan_with_policy(
                     reason: "selected offer is degraded or health is not fully known".into(),
                 });
             }
-            bindings.push(PlannedBinding {
-                logical_ref,
-                requirement: requirement.key,
-                necessity: requirement.necessity,
-                provider_ref: selected.provider_ref.clone(),
-                offer_ref: selected.offer_ref.clone(),
-            });
+            if requirement.kind == "exposure" {
+                exposures.push(PlannedExposure {
+                    logical_ref,
+                    requirement: requirement.key,
+                    necessity: requirement.necessity,
+                    provider_ref: selected.provider_ref.clone(),
+                    offer_ref: selected.offer_ref.clone(),
+                });
+            } else {
+                bindings.push(PlannedBinding {
+                    logical_ref,
+                    requirement: requirement.key,
+                    necessity: requirement.necessity,
+                    provider_ref: selected.provider_ref.clone(),
+                    offer_ref: selected.offer_ref.clone(),
+                });
+            }
             continue;
         }
         let label = format!("{}:{}", requirement.kind, requirement.key);
@@ -80,12 +91,13 @@ pub fn plan_with_policy(
     } else {
         PlanStatus::Degraded
     };
-    let plan_ref = make_plan_ref(demand, &bindings, &degradations, &omissions)?;
+    let plan_ref = make_plan_ref(demand, &bindings, &exposures, &degradations, &omissions)?;
     Ok(MaterialisationPlan {
         plan_ref,
         demand_ref: demand.demand_ref.clone(),
         status,
         planned_bindings: bindings,
+        planned_exposures: exposures,
         degradations,
         omissions,
         explanation,
