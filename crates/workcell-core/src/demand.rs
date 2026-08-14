@@ -28,11 +28,9 @@ macro_rules! semantic_requirement {
             pub fn new(value: impl Into<String>) -> Result<Self> {
                 let value = value.into();
                 if value.trim().is_empty() {
-                    return Err(WorkcellError::InvalidDemand(concat!(
-                        stringify!($name),
-                        " must not be empty"
-                    )
-                    .into()));
+                    return Err(WorkcellError::InvalidDemand(
+                        concat!(stringify!($name), " must not be empty").into(),
+                    ));
                 }
                 Ok(Self(value))
             }
@@ -310,7 +308,9 @@ mod tests {
             minimum: Some(16),
             unit: Some("GiB".into()),
         });
-        demand.extensions.insert("future.material.key".into(), "v1".into());
+        demand
+            .extensions
+            .insert("future.material.key".into(), "v1".into());
         demand.validate().unwrap();
 
         demand.resources[0].unit = Some(" ".into());
