@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/workcell-arrakis",
   "crates/workcell-artifact",
   "crates/workcell-core",
   "crates/workcell-docker",
