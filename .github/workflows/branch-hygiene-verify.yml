@@ -18,20 +18,35 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt,clippy
-      - name: Remove generated branch artifacts
+      - name: Clean generated artifacts, verify, and persist exact result
+        shell: bash
         run: |
-          git rm -r --ignore-unmatch target .ci-helper
+          git rm -r --ignore-unmatch target .ci-helper .ci-debug
           cat > .gitignore <<'EOF'
           /target/
           /.ci-helper/
           EOF
-      - name: Verify clean product tree
-        run: ./scripts/verify.sh
-      - name: Commit hygiene cleanup and retire helper
-        run: |
+
+          set +e
+          ./scripts/verify.sh > /tmp/workcell-clean-verify.log 2>&1
+          code=$?
+          set -e
+
           rm -f .github/workflows/branch-hygiene-verify.yml
+          if [ "$code" -ne 0 ]; then
+            mkdir -p .ci-debug
+            {
+              printf 'clean-tree verify: FAIL (exit=%s)\n\n' "$code"
+              cat /tmp/workcell-clean-verify.log
+            } > .ci-debug/FAIL
+          else
+            rm -rf .ci-debug
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "chore: remove generated Cargo artifacts from Workcell branch"
+          git commit -m "chore: clean generated artifacts and verify source tree"
           git push origin HEAD:build/rust-workcell-foundation
+
+          exit "$code"
