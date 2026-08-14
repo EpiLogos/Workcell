@@ -20,13 +20,23 @@ pub enum HealthState {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Capacity {
+    pub amount: u64,
+    pub unit: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationalOffer {
     pub offer_ref: OfferRef,
     pub provider_ref: ProviderRef,
     pub port: String,
     pub affordances: Vec<String>,
+    pub connections: Vec<String>,
+    pub exposures: Vec<String>,
+    pub isolation_trust: Vec<String>,
     pub availability: Availability,
-    pub capacity: BTreeMap<String, u64>,
+    pub health: HealthState,
+    pub capacity: BTreeMap<String, Capacity>,
     pub metadata: BTreeMap<String, String>,
 }
 
@@ -35,6 +45,13 @@ pub struct Discovery {
     pub workcell_ref: WorkcellRef,
     pub health: HealthState,
     pub offers: Vec<OperationalOffer>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequirementNecessity {
+    Required,
+    Preferred,
+    Optional,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,12 +64,22 @@ pub enum PlanStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Degradation {
     pub requirement: String,
+    pub necessity: RequirementNecessity,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanOmission {
+    pub requirement: String,
+    pub necessity: RequirementNecessity,
     pub reason: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlannedBinding {
     pub logical_ref: String,
+    pub requirement: String,
+    pub necessity: RequirementNecessity,
     pub provider_ref: ProviderRef,
     pub offer_ref: OfferRef,
 }
@@ -64,6 +91,7 @@ pub struct MaterialisationPlan {
     pub status: PlanStatus,
     pub planned_bindings: Vec<PlannedBinding>,
     pub degradations: Vec<Degradation>,
+    pub omissions: Vec<PlanOmission>,
     pub explanation: Vec<String>,
 }
 
