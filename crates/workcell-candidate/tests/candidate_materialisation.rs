@@ -3,11 +3,12 @@ use std::collections::BTreeMap;
 use epilogos_workcell_candidate::CandidateMaterialisationDemand;
 use epilogos_workcell_core::{
     compose_world, AffordanceRequirement, Availability, BindingPresence, DemandRef,
-    ExecutionDemand, ExecutionMaterialRequest, ExecutionProvider, ExternalRef, HealthState,
-    MaterialisationPlan, OfferRef, OperationalOffer, PlanRef, PlanStatus, PlannedAllocation,
-    PlannedBinding, PlannedExposure, ProviderAllocation, ProviderObservation, ProviderOperation,
-    ProviderOperationResult, ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult,
-    ReleaseDisposition, RequirementNecessity, Result, RetentionExpectation, WorkcellError,
+    DesiredMaterialState, ExecutionDemand, ExecutionMaterialRequest, ExecutionProvider,
+    ExternalRef, HealthState, MaterialisationPlan, OfferRef, OperationalOffer, PlanRef, PlanStatus,
+    PlannedAllocation, PlannedBinding, PlannedExposure, PreparedWorldControlPlane,
+    ProviderAllocation, ProviderObservation, ProviderOperation, ProviderOperationResult,
+    ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult, ReleaseDisposition,
+    RequirementNecessity, Result, RetentionExpectation, WorkcellControlPlane, WorkcellError,
     WorkcellRef,
 };
 
@@ -237,9 +238,9 @@ impl ExecutionProvider for BoundExecutionProvider {
 }
 
 #[test]
-fn release_failure_and_stale_material_change_availability_not_candidate_identity() {
+fn release_and_rematerialisation_change_material_state_not_candidate_identity() {
     let view = semantic_view();
-    let mut world = materialise(
+    let world = materialise(
         &view,
         "workcell:lifecycle",
         "provider:lifecycle-candidate",
@@ -247,13 +248,38 @@ fn release_failure_and_stale_material_change_availability_not_candidate_identity
         "material:lifecycle-candidate",
         "http://127.0.0.1:4200",
     );
+    let world_ref = world.world_ref.clone();
     let candidate = world.subjects.get("candidate").unwrap().clone();
+    let workcell_ref = world.workcell_ref.clone();
 
-    world.binding_graph.bindings[0].presence = BindingPresence::Stale;
-    world.binding_graph.bindings[0].health = HealthState::Unavailable;
-    world.state = HealthState::Unavailable;
-    assert_eq!(world.subjects.get("candidate"), Some(&candidate));
-    assert_eq!(candidate.as_str(), "factory:candidate:c-42");
+    let mut plane = PreparedWorldControlPlane::new(workcell_ref);
+    plane.register_world(world).unwrap();
+    plane
+        .register_execution_provider(BoundExecutionProvider {
+            provider_ref: ProviderRef::new("provider:lifecycle-candidate").unwrap(),
+            offer_ref: OfferRef::new("offer:lifecycle-candidate").unwrap(),
+            material_ref: "material:lifecycle-candidate".into(),
+            available: true,
+        })
+        .unwrap();
+
+    let observed = plane.observe(&world_ref).unwrap();
+    assert_eq!(observed.observations[0].state, HealthState::Healthy);
+    assert_eq!(
+        observed.observations[0]
+            .detail
+            .get("provider_observation")
+            .map(String::as_str),
+        Some("live")
+    );
+    let released = plane.release(&world_ref).unwrap();
+    assert_eq!(released.disposition, ReleaseDisposition::Released);
+    let released_world = plane.world(&world_ref).unwrap();
+    assert_eq!(released_world.subjects.get("candidate"), Some(&candidate));
+    assert_eq!(
+        released_world.binding_graph.bindings[0].presence,
+        BindingPresence::Released
+    );
 
     let rematerialised = materialise(
         &view,
@@ -265,6 +291,57 @@ fn release_failure_and_stale_material_change_availability_not_candidate_identity
     );
     assert_eq!(rematerialised.subjects.get("candidate"), Some(&candidate));
     assert_eq!(rematerialised.state, HealthState::Healthy);
+    assert_ne!(
+        released_world.binding_graph.bindings[0].material_ref,
+        rematerialised.binding_graph.bindings[0].material_ref
+    );
+}
+
+#[test]
+fn provider_failure_changes_availability_and_recovery_delta_not_candidate_identity() {
+    let view = semantic_view();
+    let world = materialise(
+        &view,
+        "workcell:failure",
+        "provider:failure-candidate",
+        "offer:failure-candidate",
+        "material:failure-candidate",
+        "http://127.0.0.1:4400",
+    );
+    let world_ref = world.world_ref.clone();
+    let candidate = world.subjects.get("candidate").unwrap().clone();
+    let mut plane = PreparedWorldControlPlane::new(world.workcell_ref.clone());
+    plane.register_world(world).unwrap();
+    plane
+        .register_execution_provider(BoundExecutionProvider {
+            provider_ref: ProviderRef::new("provider:failure-candidate").unwrap(),
+            offer_ref: OfferRef::new("offer:failure-candidate").unwrap(),
+            material_ref: "material:failure-candidate".into(),
+            available: false,
+        })
+        .unwrap();
+
+    let observed = plane.observe(&world_ref).unwrap();
+    assert_eq!(observed.observations[0].state, HealthState::Unavailable);
+    assert_eq!(plane.world(&world_ref).unwrap().subjects.get("candidate"), Some(&candidate));
+
+    let reconciled = plane
+        .reconcile(&[DesiredMaterialState {
+            logical_ref: "execution:main".into(),
+            desired: "present".into(),
+        }])
+        .unwrap();
+    assert!(reconciled.deltas[0]
+        .observed
+        .as_deref()
+        .is_some_and(|value| value.starts_with("stale:")));
+    assert_eq!(reconciled.deltas[0].action.as_deref(), Some("recover"));
+    let failed_world = plane.world(&world_ref).unwrap();
+    assert_eq!(failed_world.subjects.get("candidate"), Some(&candidate));
+    assert_eq!(
+        failed_world.binding_graph.bindings[0].presence,
+        BindingPresence::Stale
+    );
 }
 
 #[test]
