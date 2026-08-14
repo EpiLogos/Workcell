@@ -1,31 +1,77 @@
-clean-tree verify: FAIL (exit=101)
+clean-tree verify: FAIL (exit=1)
 
-[1m[92m    Updating[0m crates.io index
-[1m[92m Downloading[0m crates ...
-[1m[92m  Downloaded[0m itoa v1.0.18
-[1m[92m  Downloaded[0m zmij v1.0.23
-[1m[92m  Downloaded[0m memchr v2.8.3
-[1m[92m  Downloaded[0m serde_core v1.0.229
-[1m[92m  Downloaded[0m serde_json v1.0.151
-[1m[92m    Checking[0m epilogos-workcell-core v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-core)
-[1m[92m   Compiling[0m zmij v1.0.23
-[1m[92m   Compiling[0m serde_core v1.0.229
-[1m[92m   Compiling[0m serde_json v1.0.151
-[1m[92m    Checking[0m epilogos-workcell-artifact v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-artifact)
-[1m[92m    Checking[0m epilogos-workcell-runtime v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-runtime)
-[1m[92m    Checking[0m memchr v2.8.3
-[1m[92m    Checking[0m itoa v1.0.18
-[1m[92m    Checking[0m epilogos-workcell-docker v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-docker)
-[1m[92m    Checking[0m epilogos-workcell-workspace v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-workspace)
-[1m[92m    Checking[0m epilogos-workcell-arrakis v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-arrakis)
-[1m[92m    Checking[0m epilogos-workcell-candidate v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-candidate)
-[1m[92m    Checking[0m epilogos-workcell-placement v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-placement)
-[1m[91merror[E0063][0m[1m: missing fields `plan_degradations` and `plan_omissions` in initializer of `epilogos_workcell_core::MaterialisedExecutionWorld`[0m
-   [1m[94m--> [0mcrates/workcell-core/tests/lifecycle_reconciliation.rs:182:5
-    [1m[94m|[0m
-[1m[94m182[0m [1m[94m|[0m     MaterialisedExecutionWorld {
-    [1m[94m|[0m     [1m[91m^^^^^^^^^^^^^^^^^^^^^^^^^^[0m [1m[91mmissing `plan_degradations` and `plan_omissions`[0m
-
-[1mFor more information about this error, try `rustc --explain E0063`.[0m
-[1m[91merror[0m: could not compile `epilogos-workcell-core` (test "lifecycle_reconciliation") due to 1 previous error
-[1m[33mwarning[0m: build failed, waiting for other jobs to finish...
+Diff in /home/runner/work/Workcell/Workcell/crates/workcell-core/tests/lifecycle_reconciliation.rs:27:
+ }
+ 
+ impl LifecycleExecutionProvider {
+-    fn new(
+-        provider_ref: &str,
+-        offer_ref: &str,
+-        state: Arc<Mutex<ProviderState>>,
+-    ) -> Self {
++    fn new(provider_ref: &str, offer_ref: &str, state: Arc<Mutex<ProviderState>>) -> Self {
+         state.lock().unwrap().advertise_offer = true;
+         Self {
+             provider_ref: ProviderRef::new(provider_ref).unwrap(),
+Diff in /home/runner/work/Workcell/Workcell/crates/workcell-core/tests/lifecycle_reconciliation.rs:97:
+         allocation: &ProviderAllocation,
+     ) -> epilogos_workcell_core::Result<ProviderObservation> {
+         let state = self.state.lock().unwrap();
+-        let health = state.material.get(&allocation.material_ref).ok_or_else(|| {
+-            WorkcellError::NotFound(format!("material `{}` is missing", allocation.material_ref))
+-        })?;
++        let health = state
++            .material
++            .get(&allocation.material_ref)
++            .ok_or_else(|| {
++                WorkcellError::NotFound(format!(
++                    "material `{}` is missing",
++                    allocation.material_ref
++                ))
++            })?;
+         Ok(ProviderObservation {
+             provider_ref: self.provider_ref.clone(),
+             material_ref: allocation.material_ref.clone(),
+Diff in /home/runner/work/Workcell/Workcell/crates/workcell-core/tests/lifecycle_reconciliation.rs:323:
+         RetentionExpectation::Preserve,
+         vec![binding("execution:main", "material:withdrawn")],
+     );
+-    let mut provider = LifecycleExecutionProvider::new(
+-        "provider:lifecycle",
+-        "offer:lifecycle",
+-        state.clone(),
+-    );
++    let mut provider =
++        LifecycleExecutionProvider::new("provider:lifecycle", "offer:lifecycle", state.clone());
+     state.lock().unwrap().advertise_offer = false;
+ 
+     let mut control =
+Diff in /home/runner/work/Workcell/Workcell/crates/workcell-core/tests/lifecycle_reconciliation.rs:342:
+         .unwrap();
+     assert_eq!(result.deltas[0].action, ReconciliationAction::Recover);
+     let world = control.world(&persisted.world_ref).unwrap();
+-    assert_eq!(world.binding_graph.bindings[0].presence, BindingPresence::Stale);
++    assert_eq!(
++        world.binding_graph.bindings[0].presence,
++        BindingPresence::Stale
++    );
+ }
+ 
+ #[test]
+Diff in /home/runner/work/Workcell/Workcell/crates/workcell-core/tests/lifecycle_reconciliation.rs:464:
+ 
+     assert!(control.release(&releasable.world_ref).is_err());
+     let world = control.world(&releasable.world_ref).unwrap();
+-    assert_eq!(world.binding_graph.bindings[0].presence, BindingPresence::Stale);
+-    assert_eq!(world.binding_graph.bindings[1].presence, BindingPresence::Released);
++    assert_eq!(
++        world.binding_graph.bindings[0].presence,
++        BindingPresence::Stale
++    );
++    assert_eq!(
++        world.binding_graph.bindings[1].presence,
++        BindingPresence::Released
++    );
+ }
+ 
+ #[test]
