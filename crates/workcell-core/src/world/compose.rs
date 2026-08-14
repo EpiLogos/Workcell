@@ -173,6 +173,10 @@ pub fn compose_world(
     let mut provenance = BTreeMap::new();
     provenance.insert("plan_ref".into(), plan.plan_ref.to_string());
     provenance.insert("binding_count".into(), bindings.len().to_string());
+    provenance.insert(
+        "planned_exposure_count".into(),
+        plan.planned_exposures.len().to_string(),
+    );
 
     Ok(MaterialisedExecutionWorld {
         world_ref,
@@ -183,6 +187,7 @@ pub fn compose_world(
             bindings,
             relations: graph_relations,
         },
+        planned_exposures: plan.planned_exposures.clone(),
         state,
         provenance,
     })
