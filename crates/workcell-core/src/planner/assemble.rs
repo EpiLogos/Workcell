@@ -4,7 +4,8 @@ use super::{
 };
 use crate::{
     Availability, Degradation, Discovery, ExecutionDemand, HealthState, MaterialisationPlan,
-    PlanOmission, PlanStatus, PlannedBinding, PlannedExposure, RequirementNecessity, Result,
+    PlanOmission, PlanStatus, PlannedBinding, PlannedConstraint, PlannedExposure,
+    RequirementNecessity, Result,
 };
 
 pub fn plan(demand: &ExecutionDemand, discovery: &Discovery) -> Result<MaterialisationPlan> {
@@ -19,6 +20,7 @@ pub fn plan_with_policy(
     demand.validate()?;
     let mut bindings = Vec::new();
     let mut exposures = Vec::new();
+    let mut constraints = Vec::new();
     let mut degradations = Vec::new();
     let mut omissions = Vec::new();
     let mut explanation = Vec::new();
@@ -45,6 +47,14 @@ pub fn plan_with_policy(
             }
             if requirement.kind == "exposure" {
                 exposures.push(PlannedExposure {
+                    logical_ref,
+                    requirement: requirement.key,
+                    necessity: requirement.necessity,
+                    provider_ref: selected.provider_ref.clone(),
+                    offer_ref: selected.offer_ref.clone(),
+                });
+            } else if is_constraint_kind(requirement.kind) {
+                constraints.push(PlannedConstraint {
                     logical_ref,
                     requirement: requirement.key,
                     necessity: requirement.necessity,
@@ -91,15 +101,30 @@ pub fn plan_with_policy(
     } else {
         PlanStatus::Degraded
     };
-    let plan_ref = make_plan_ref(demand, &bindings, &exposures, &degradations, &omissions)?;
+    let plan_ref = make_plan_ref(
+        demand,
+        &bindings,
+        &exposures,
+        &constraints,
+        &degradations,
+        &omissions,
+    )?;
     Ok(MaterialisationPlan {
         plan_ref,
         demand_ref: demand.demand_ref.clone(),
         status,
         planned_bindings: bindings,
         planned_exposures: exposures,
+        planned_constraints: constraints,
         degradations,
         omissions,
         explanation,
     })
+}
+
+fn is_constraint_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "resource" | "persistence" | "isolation-trust" | "retention"
+    )
 }
