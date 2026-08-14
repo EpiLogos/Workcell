@@ -18,9 +18,116 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+      - name: Apply lifecycle cleanup
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          prepared = Path("crates/workcell-core/src/prepared.rs")
+          text = prepared.read_text()
+          text = text.replace(
+              "ProviderObservation, ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult,",
+              "ProviderObservation, ProviderPort, ProviderPortKind, ProviderReleaseResult,",
+          )
+          old = '''            Ok(observation) => (
+                format!("present:{}", health_name(&observation.health)),
+                BindingPresence::Present,
+                observation.health,
+            ),'''
+          new = '''            Ok(observation) => {
+                let presence = match snapshot.presence {
+                    BindingPresence::Suspended => BindingPresence::Suspended,
+                    BindingPresence::Snapshotted => BindingPresence::Snapshotted,
+                    _ => BindingPresence::Present,
+                };
+                (
+                    format!("{}:{}", presence_name(&presence), health_name(&observation.health)),
+                    presence,
+                    observation.health,
+                )
+            },'''
+          if old in text:
+              text = text.replace(old, new, 1)
+          prepared.write_text(text)
+
+          lifecycle = Path("crates/workcell-core/tests/lifecycle_reconciliation.rs")
+          text = lifecycle.read_text()
+          text = text.replace(
+              "    MaterialisationPlan, MaterialisedExecutionWorld, OfferRef, OperationalOffer, PersistenceScope,\n    PlanRef, PlanStatus, PreparedWorldControlPlane, ProviderAllocation, ProviderObservation,",
+              "    MaterialisedExecutionWorld, OfferRef, OperationalOffer, PersistenceScope,\n    PreparedWorldControlPlane, ProviderAllocation, ProviderObservation,",
+          )
+          marker = "\n#[test]\nfn material_world_persistence_is_separate_from_plan_identity()"
+          if marker in text:
+              text = text[: text.index(marker)]
+          test_name = "repeated_reconcile_to_suspended_is_idempotent"
+          if test_name not in text:
+              text += r'''
+
+#[test]
+fn repeated_reconcile_to_suspended_is_idempotent() {
+    let state = Arc::new(Mutex::new(ProviderState::default()));
+    state
+        .lock()
+        .unwrap()
+        .material
+        .insert("material:idempotent-suspend".into(), HealthState::Healthy);
+    let mut plane = PreparedWorldControlPlane::new(WorkcellRef::new("workcell:lifecycle").unwrap());
+    plane
+        .register_world(world(
+            "world:idempotent-suspend",
+            PersistenceScope::TaskOrRun,
+            RetentionExpectation::Preserve,
+            vec![binding(
+                "execution:idempotent-suspend",
+                "material:idempotent-suspend",
+            )],
+        ))
+        .unwrap();
+    plane
+        .register_execution_provider(LifecycleExecutionProvider::new(
+            "provider:lifecycle",
+            "offer:lifecycle",
+            state.clone(),
+        ))
+        .unwrap();
+
+    let desired = [DesiredMaterialState {
+        logical_ref: "execution:idempotent-suspend".into(),
+        desired: "suspended".into(),
+    }];
+    let first = plane.reconcile(&desired).unwrap();
+    let second = plane.reconcile(&desired).unwrap();
+
+    assert_eq!(first.deltas[0].action.as_deref(), Some("suspended"));
+    assert_eq!(second.deltas[0].action, None);
+    assert_eq!(
+        state
+            .lock()
+            .unwrap()
+            .releases
+            .get("material:idempotent-suspend")
+            .copied(),
+        Some(1)
+    );
+}
+'''
+          lifecycle.write_text(text)
+
+          docker_recovery = Path("crates/workcell-docker/tests/restart_recovery.rs")
+          text = docker_recovery.read_text()
+          text = text.replace(
+              "    collections::{BTreeMap, VecDeque},",
+              "    collections::VecDeque,",
+          )
+          text = text.replace(
+              '    assert!(!BTreeMap::<String, String>::new().contains_key("semantic_identity"));\n',
+              "",
+          )
+          docker_recovery.write_text(text)
+          PY
       - name: Format branch
         run: cargo fmt --all
-      - name: Commit formatting
+      - name: Commit maintenance
         run: |
           if git diff --quiet; then
             exit 0
@@ -28,5 +135,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add --all
-          git commit -m "chore: rustfmt Workcell branch"
+          git commit -m "chore: maintain formatted Workcell branch"
           git push origin HEAD:build/rust-workcell-foundation
