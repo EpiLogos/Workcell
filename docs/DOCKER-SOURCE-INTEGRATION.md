@@ -75,6 +75,12 @@ A `DockerRuntimeMode` is provider configuration for one provider-neutral runtime
 
 For explicitly short-lived persistence (`ephemeral`, `task-or-run`, `candidate`), release also passes `--volumes`. Project/workcell/factory/external persistence leaves volumes intact when the runtime is released. Snapshot semantics are not claimed by this Docker provider.
 
+## Recovery after process restart
+
+Provider-local in-memory records are an optimisation, not identity. Execution and Compose runtime allocations retain the provider handle and lifecycle metadata required to reconstruct an operational record after the Workcell process restarts. A newly instantiated provider can therefore inspect or release already materialised Docker resources from persisted `ProviderAllocation` properties/provenance without allocating a replacement or changing the caller's semantic subject identity.
+
+If the physical resource has disappeared, provider observation reports that absence to the reconciliation layer; it does not silently fabricate a resource under the old material identity.
+
 ## Exposure
 
 Application/browser exposure is derived from an already materialised runtime. The semantic request remains an `ExposureRequirement`; provider configuration maps it to a service/container port. `docker compose port` discovers the current published binding at invocation time.
@@ -89,7 +95,7 @@ The ordinary repository gate is:
 ./scripts/verify.sh
 ```
 
-Deterministic tests use an injected command runner and cover provider conformance, logical-to-physical network mapping, shell execution, runtime materialisation, observation, restart, exposure, persistence-aware cleanup, provider disappearance and provider replacement without requiring Docker on the CI host.
+Deterministic tests use an injected command runner and cover provider conformance, logical-to-physical network mapping, shell execution, runtime materialisation, observation, restart, exposure, persistence-aware cleanup, provider disappearance, provider replacement and provider-process restart without requiring Docker on the CI host.
 
 A real-provider smoke is opt-in:
 
