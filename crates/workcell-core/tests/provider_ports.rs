@@ -95,6 +95,7 @@ fn workspace_provider_uses_shared_offer_and_allocation_conformance() {
     let request = WorkspaceMaterialRequest {
         demand_ref: epilogos_workcell_core::DemandRef::new("demand:workspace-fixture").unwrap(),
         source: None,
+        material_source: None,
         revision: None,
         access: epilogos_workcell_core::WorkspaceAccess::Writable,
         persistence: None,
