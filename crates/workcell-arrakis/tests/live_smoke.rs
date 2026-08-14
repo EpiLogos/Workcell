@@ -36,18 +36,12 @@ fn live_arrakis_prepare_shell_snapshot_restore_observe_release() {
         return;
     }
 
-    let mut provider = ArrakisExecutionProvider::new(
-        ProviderRef::new("provider:arrakis-live").unwrap(),
-        config(),
-    );
+    let mut provider =
+        ArrakisExecutionProvider::new(ProviderRef::new("provider:arrakis-live").unwrap(), config());
     assert!(!provider.offers().unwrap().is_empty());
 
     let request = ExecutionMaterialRequest {
-        demand_ref: DemandRef::new(format!(
-            "demand:arrakis-live-{}",
-            std::process::id()
-        ))
-        .unwrap(),
+        demand_ref: DemandRef::new(format!("demand:arrakis-live-{}", std::process::id())).unwrap(),
         affordances: vec!["shell".into(), "snapshot".into(), "restore".into()],
         resources: vec![],
         connectivity: vec![],
