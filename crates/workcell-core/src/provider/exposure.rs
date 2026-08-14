@@ -1,9 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::{ProviderAllocation, ProviderPort};
-use crate::{
-    DemandRef, ExposureRequirement, ProviderRef, RequirementNecessity, Result,
-};
+use crate::{DemandRef, ExposureRequirement, ProviderRef, RequirementNecessity, Result};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderExposureRequest {
