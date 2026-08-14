@@ -123,10 +123,9 @@ fn semantic_demand() -> ExecutionDemand {
         "project".into(),
         ExternalRef::new("factory:project:factory").unwrap(),
     );
-    demand.subjects.insert(
-        "run".into(),
-        ExternalRef::new("factory:run:r-16").unwrap(),
-    );
+    demand
+        .subjects
+        .insert("run".into(), ExternalRef::new("factory:run:r-16").unwrap());
     demand.subjects.insert(
         "candidate".into(),
         ExternalRef::new("factory:candidate:c-16").unwrap(),
@@ -241,20 +240,21 @@ fn remote_workcell_loss_is_structured_and_does_not_mutate_semantic_refs() {
     .unavailable_transport();
     let sources: [&dyn WorkcellDiscoverySource; 2] = [&local, &remote];
 
-    let evaluation = evaluate_placement(
-        &demand,
-        &sources,
-        &PlacementPolicy::default(),
-        None,
-    )
-    .unwrap();
-    assert_eq!(evaluation.selected().unwrap().workcell_ref.as_str(), "workcell:local");
+    let evaluation =
+        evaluate_placement(&demand, &sources, &PlacementPolicy::default(), None).unwrap();
+    assert_eq!(
+        evaluation.selected().unwrap().workcell_ref.as_str(),
+        "workcell:local"
+    );
     let diagnostic = evaluation
         .diagnostics
         .iter()
         .find(|diagnostic| diagnostic.source_ref == "source:remote")
         .unwrap();
-    assert_eq!(diagnostic.kind, PlacementDiagnosticKind::TransportUnavailable);
+    assert_eq!(
+        diagnostic.kind,
+        PlacementDiagnosticKind::TransportUnavailable
+    );
     assert_eq!(
         diagnostic.workcell_ref.as_ref().map(|item| item.as_str()),
         Some("workcell:remote")
@@ -275,13 +275,8 @@ fn discovered_unavailable_workcell_is_distinct_from_transport_loss() {
     )
     .unavailable_workcell();
     let sources: [&dyn WorkcellDiscoverySource; 1] = [&remote];
-    let evaluation = evaluate_placement(
-        &demand,
-        &sources,
-        &PlacementPolicy::default(),
-        None,
-    )
-    .unwrap();
+    let evaluation =
+        evaluate_placement(&demand, &sources, &PlacementPolicy::default(), None).unwrap();
     assert!(evaluation.eligible.is_empty());
     assert_eq!(
         evaluation.diagnostics[0].kind,
@@ -302,13 +297,8 @@ fn re_placement_substitutes_workcell_and_provider_but_retains_semantic_subjects_
         0,
     );
     let first_sources: [&dyn WorkcellDiscoverySource; 1] = [&first_source];
-    let first = select_placement(
-        &demand,
-        &first_sources,
-        &PlacementPolicy::default(),
-        None,
-    )
-    .unwrap();
+    let first =
+        select_placement(&demand, &first_sources, &PlacementPolicy::default(), None).unwrap();
     assert_eq!(first.workcell_ref.as_str(), "workcell:first");
 
     let lost_first = first_source.clone().unavailable_transport();
