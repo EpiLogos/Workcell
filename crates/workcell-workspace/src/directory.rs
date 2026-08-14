@@ -8,7 +8,8 @@ use epilogos_workcell_core::{
 };
 
 use crate::support::{
-    copy_tree, fingerprint_tree, require_directory, set_files_readonly, stable_key,
+    copy_tree, fingerprint_tree, make_directories_writable, require_directory, set_tree_readonly,
+    stable_key,
 };
 
 #[derive(Clone, Debug)]
@@ -170,7 +171,7 @@ impl WorkspaceProvider for DirectoryWorkspaceProvider {
 
         let baseline = fingerprint_tree(&target)?;
         if request.access == WorkspaceAccess::ReadOnly {
-            set_files_readonly(&target)?;
+            set_tree_readonly(&target)?;
         }
 
         let record = DirectoryRecord {
@@ -244,6 +245,9 @@ impl WorkspaceProvider for DirectoryWorkspaceProvider {
                 }
                 let record = self.record(allocation)?.clone();
                 let changed = if record.path.exists() {
+                    if record.access == WorkspaceAccess::ReadOnly {
+                        make_directories_writable(&record.path)?;
+                    }
                     fs::remove_dir_all(&record.path).map_err(|error| {
                         WorkcellError::CleanupFailed(format!(
                             "remove directory workspace `{}`: {error}",
