@@ -110,18 +110,50 @@ fn fingerprint_dir(root: &Path, current: &Path, hash: &mut u64) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn set_files_readonly(root: &Path) -> Result<()> {
-    for path in walk(root)? {
-        if path.is_file() {
-            let mut permissions = fs::metadata(&path)
-                .map_err(io_error("inspect workspace file permissions"))?
-                .permissions();
-            permissions.set_readonly(true);
-            fs::set_permissions(&path, permissions)
-                .map_err(io_error("set workspace file read-only"))?;
-        }
+pub(crate) fn set_tree_readonly(root: &Path) -> Result<()> {
+    let mut paths = walk(root)?;
+    paths.push(root.to_path_buf());
+    for path in paths {
+        let mut permissions = fs::metadata(&path)
+            .map_err(io_error("inspect workspace permissions"))?
+            .permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&path, permissions)
+            .map_err(io_error("set workspace read-only"))?;
     }
     Ok(())
+}
+
+pub(crate) fn make_directories_writable(root: &Path) -> Result<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+    let mut paths = walk(root)?;
+    paths.push(root.to_path_buf());
+    for path in paths {
+        if !path.is_dir() {
+            continue;
+        }
+        let mut permissions = fs::metadata(&path)
+            .map_err(io_error("inspect workspace directory permissions"))?
+            .permissions();
+        make_owner_writable(&mut permissions);
+        fs::set_permissions(&path, permissions)
+            .map_err(io_error("make workspace directory writable for cleanup"))?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn make_owner_writable(permissions: &mut fs::Permissions) {
+    use std::os::unix::fs::PermissionsExt;
+
+    permissions.set_mode(permissions.mode() | 0o700);
+}
+
+#[cfg(not(unix))]
+fn make_owner_writable(permissions: &mut fs::Permissions) {
+    permissions.set_readonly(false);
 }
 
 fn walk(root: &Path) -> Result<Vec<PathBuf>> {
