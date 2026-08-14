@@ -1,45 +1,110 @@
 verify: FAIL (exit=101)
 
 [1m[92m    Updating[0m crates.io index
-[1m[92m     Locking[0m 11 packages to latest compatible versions
 [1m[92m Downloading[0m crates ...
 [1m[92m  Downloaded[0m itoa v1.0.18
-[1m[92m  Downloaded[0m serde_core v1.0.229
 [1m[92m  Downloaded[0m zmij v1.0.23
-[1m[92m  Downloaded[0m serde_json v1.0.151
 [1m[92m  Downloaded[0m memchr v2.8.3
-[1m[92m    Checking[0m epilogos-workcell-core v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-core)
-[1m[92m   Compiling[0m zmij v1.0.23
+[1m[92m  Downloaded[0m serde_core v1.0.229
+[1m[92m  Downloaded[0m serde_json v1.0.151
 [1m[92m   Compiling[0m serde_core v1.0.229
-[1m[92m   Compiling[0m serde_json v1.0.151
+[1m[92m   Compiling[0m zmij v1.0.23
 [1m[92m    Checking[0m epilogos-workcell-artifact v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-artifact)
-[1m[92m    Checking[0m epilogos-workcell-runtime v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-runtime)
-[1m[92m    Checking[0m memchr v2.8.3
-[1m[92m    Checking[0m itoa v1.0.18
-[1m[92m    Checking[0m epilogos-workcell-docker v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-docker)
+[1m[92m   Compiling[0m serde_json v1.0.151
 [1m[92m    Checking[0m epilogos-workcell-arrakis v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-arrakis)
-[1m[92m    Checking[0m epilogos-workcell-workspace v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-workspace)
 [1m[92m    Checking[0m epilogos-workcell-candidate v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-candidate)
 [1m[92m    Checking[0m epilogos-workcell-placement v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-placement)
-[1m[91merror[0m[1m: this `impl` can be derived[0m
-  [1m[94m--> [0mcrates/workcell-placement/src/lib.rs:43:1
+[1m[92m    Checking[0m epilogos-workcell-runtime v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-runtime)
+[1m[91merror[E0063][0m[1m: missing field `capacity` in initializer of `epilogos_workcell_core::Discovery`[0m
+  [1m[94m--> [0mcrates/workcell-runtime/tests/runtime_services.rs:80:10
    [1m[94m|[0m
-[1m[94m43[0m [1m[94m|[0m [1m[91m/[0m impl Default for PlacementPolicy {
-[1m[94m44[0m [1m[94m|[0m [1m[91m|[0m     fn default() -> Self {
-[1m[94m45[0m [1m[94m|[0m [1m[91m|[0m         Self {
-[1m[94m46[0m [1m[94m|[0m [1m[91m|[0m             required_tags: BTreeSet::new(),
-[1m[94m...[0m  [1m[91m|[0m
-[1m[94m52[0m [1m[94m|[0m [1m[91m|[0m }
-   [1m[94m|[0m [1m[91m|_^[0m
-   [1m[94m|[0m
-   [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#derivable_impls
-   [1m[94m= [0m[1mnote[0m: `-D clippy::derivable-impls` implied by `-D warnings`
-   [1m[94m= [0m[1mhelp[0m: to override `-D warnings` add `#[allow(clippy::derivable_impls)]`
-[1m[96mhelp[0m: replace the manual implementation with a derive attribute
-   [1m[94m|[0m
-[1m[94m30[0m [92m+ #[derive(Default)][0m
-[1m[94m31[0m [1m[94m|[0m pub struct PlacementPolicy {
-   [1m[94m|[0m
+[1m[94m80[0m [1m[94m|[0m         &Discovery {
+   [1m[94m|[0m          [1m[91m^^^^^^^^^[0m [1m[91mmissing `capacity`[0m
 
-[1m[91merror[0m: could not compile `epilogos-workcell-placement` (lib) due to 1 previous error
+[1m[91merror[E0063][0m[1m: missing field `capacity` in initializer of `epilogos_workcell_core::Discovery`[0m
+  [1m[94m--> [0mcrates/workcell-runtime/tests/expose_collect.rs:95:10
+   [1m[94m|[0m
+[1m[94m95[0m [1m[94m|[0m         &Discovery {
+   [1m[94m|[0m          [1m[91m^^^^^^^^^[0m [1m[91mmissing `capacity`[0m
+
+[1m[91merror[E0063][0m[1m: missing field `capacity` in initializer of `epilogos_workcell_core::Discovery`[0m
+   [1m[94m--> [0mcrates/workcell-runtime/tests/runtime_services.rs:210:10
+    [1m[94m|[0m
+[1m[94m210[0m [1m[94m|[0m         &Discovery {
+    [1m[94m|[0m          [1m[91m^^^^^^^^^[0m [1m[91mmissing `capacity`[0m
+
+[1m[91merror[E0063][0m[1m: missing field `capacity` in initializer of `epilogos_workcell_core::Discovery`[0m
+   [1m[94m--> [0mcrates/workcell-runtime/tests/runtime_services.rs:235:10
+    [1m[94m|[0m
+[1m[94m235[0m [1m[94m|[0m         &Discovery {
+    [1m[94m|[0m          [1m[91m^^^^^^^^^[0m [1m[91mmissing `capacity`[0m
+
+[1m[92m    Checking[0m epilogos-workcell-workspace v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-workspace)
+[1m[92m    Checking[0m epilogos-workcell-interop v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-interop)
+[1mFor more information about this error, try `rustc --explain E0063`.[0m
+[1m[91merror[0m: could not compile `epilogos-workcell-runtime` (test "expose_collect") due to 1 previous error
 [1m[33mwarning[0m: build failed, waiting for other jobs to finish...
+[1m[91merror[0m: could not compile `epilogos-workcell-runtime` (test "runtime_services") due to 3 previous errors
+[1m[91merror[E0277][0m[1m: `?` couldn't convert the error to `epilogos_workcell_core::WorkcellError`[0m
+   [1m[94m--> [0mcrates/workcell-interop/src/lib.rs:149:62
+    [1m[94m|[0m
+[1m[94m149[0m [1m[94m|[0m         WorkcellRef::new(workcell_offer.workcell_ref.clone())?;
+    [1m[94m|[0m         [1m[94m-----------------------------------------------------[0m[1m[91m^[0m [1m[91mthe trait `std::convert::From<&str>` is not implemented for `epilogos_workcell_core::WorkcellError`[0m
+    [1m[94m|[0m         [1m[94m|[0m
+    [1m[94m|[0m         [1m[94mthis can't be annotated with `?` because it has type `Result<_, &'static str>`[0m
+    [1m[94m|[0m
+    [1m[94m= [0m[1mnote[0m: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+[1m[91merror[E0277][0m[1m: `?` couldn't convert the error to `epilogos_workcell_core::WorkcellError`[0m
+   [1m[94m--> [0mcrates/workcell-interop/src/lib.rs:151:55
+    [1m[94m|[0m
+[1m[94m151[0m [1m[94m|[0m         WorkcellRef::new(binding.workcell_ref.clone())?;
+    [1m[94m|[0m         [1m[94m----------------------------------------------[0m[1m[91m^[0m [1m[91mthe trait `std::convert::From<&str>` is not implemented for `epilogos_workcell_core::WorkcellError`[0m
+    [1m[94m|[0m         [1m[94m|[0m
+    [1m[94m|[0m         [1m[94mthis can't be annotated with `?` because it has type `Result<_, &'static str>`[0m
+    [1m[94m|[0m
+    [1m[94m= [0m[1mnote[0m: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+[1m[91merror[E0277][0m[1m: `?` couldn't convert the error to `epilogos_workcell_core::WorkcellError`[0m
+   [1m[94m--> [0mcrates/workcell-interop/src/lib.rs:238:88
+    [1m[94m|[0m
+[1m[94m238[0m [1m[94m|[0m         let mut demand = ExecutionDemand::new(DemandRef::new(source.demand_ref.clone())?);
+    [1m[94m|[0m                                               [1m[94m-----------------------------------------[0m[1m[91m^[0m [1m[91mthe trait `std::convert::From<&str>` is not implemented for `epilogos_workcell_core::WorkcellError`[0m
+    [1m[94m|[0m                                               [1m[94m|[0m
+    [1m[94m|[0m                                               [1m[94mthis can't be annotated with `?` because it has type `Result<_, &'static str>`[0m
+    [1m[94m|[0m
+    [1m[94m= [0m[1mnote[0m: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+[1m[91merror[E0277][0m[1m: `?` couldn't convert the error to `epilogos_workcell_core::WorkcellError`[0m
+   [1m[94m--> [0mcrates/workcell-interop/src/lib.rs:241:57
+    [1m[94m|[0m
+[1m[94m241[0m [1m[94m|[0m             ExternalRef::new(source.project_ref.clone())?,
+    [1m[94m|[0m             [1m[94m--------------------------------------------[0m[1m[91m^[0m [1m[91mthe trait `std::convert::From<&str>` is not implemented for `epilogos_workcell_core::WorkcellError`[0m
+    [1m[94m|[0m             [1m[94m|[0m
+    [1m[94m|[0m             [1m[94mthis can't be annotated with `?` because it has type `Result<_, &'static str>`[0m
+    [1m[94m|[0m
+    [1m[94m= [0m[1mnote[0m: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+[1m[91merror[E0277][0m[1m: `?` couldn't convert the error to `epilogos_workcell_core::WorkcellError`[0m
+   [1m[94m--> [0mcrates/workcell-interop/src/lib.rs:245:75
+    [1m[94m|[0m
+[1m[94m245[0m [1m[94m|[0m             .insert("run".into(), ExternalRef::new(source.run_ref.clone())?);
+    [1m[94m|[0m                                   [1m[94m----------------------------------------[0m[1m[91m^[0m [1m[91mthe trait `std::convert::From<&str>` is not implemented for `epilogos_workcell_core::WorkcellError`[0m
+    [1m[94m|[0m                                   [1m[94m|[0m
+    [1m[94m|[0m                                   [1m[94mthis can't be annotated with `?` because it has type `Result<_, &'static str>`[0m
+    [1m[94m|[0m
+    [1m[94m= [0m[1mnote[0m: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+[1m[91merror[E0277][0m[1m: `?` couldn't convert the error to `epilogos_workcell_core::WorkcellError`[0m
+   [1m[94m--> [0mcrates/workcell-interop/src/lib.rs:248:59
+    [1m[94m|[0m
+[1m[94m248[0m [1m[94m|[0m             ExternalRef::new(source.candidate_ref.clone())?,
+    [1m[94m|[0m             [1m[94m----------------------------------------------[0m[1m[91m^[0m [1m[91mthe trait `std::convert::From<&str>` is not implemented for `epilogos_workcell_core::WorkcellError`[0m
+    [1m[94m|[0m             [1m[94m|[0m
+    [1m[94m|[0m             [1m[94mthis can't be annotated with `?` because it has type `Result<_, &'static str>`[0m
+    [1m[94m|[0m
+    [1m[94m= [0m[1mnote[0m: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+[1mFor more information about this error, try `rustc --explain E0277`.[0m
+[1m[91merror[0m: could not compile `epilogos-workcell-interop` (lib) due to 6 previous errors
+[1m[91merror[0m: could not compile `epilogos-workcell-interop` (lib test) due to 6 previous errors

@@ -26,7 +26,7 @@ pub trait WorkcellDiscoverySource: Send + Sync {
     fn discover(&self) -> Result<Discovery>;
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PlacementPolicy {
     pub required_tags: BTreeSet<String>,
     /// Reject sources farther away than this opaque locality cost.
@@ -38,17 +38,6 @@ pub struct PlacementPolicy {
     /// Workcell-wide aggregate capacity entry. Provider offer capacity is still
     /// checked independently by the core planner.
     pub require_declared_aggregate_capacity: bool,
-}
-
-impl Default for PlacementPolicy {
-    fn default() -> Self {
-        Self {
-            required_tags: BTreeSet::new(),
-            max_locality_cost: None,
-            prefer_locality_over_capacity: false,
-            require_declared_aggregate_capacity: false,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
