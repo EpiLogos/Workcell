@@ -1,4 +1,5 @@
 mod command;
 mod provider;
+mod state;
 
-pub use provider::GitWorktreeWorkspaceProvider;
+pub use state::GitWorktreeWorkspaceProvider;
