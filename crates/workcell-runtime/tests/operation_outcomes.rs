@@ -33,6 +33,7 @@ fn prepared_runtime_world(
     let discovery = Discovery {
         workcell_ref: WorkcellRef::new("workcell:operation-outcomes").unwrap(),
         health: HealthState::Healthy,
+        capacity: std::collections::BTreeMap::new(),
         offers: runtime.offers().unwrap(),
     };
     let plan = plan(demand, &discovery).unwrap();
