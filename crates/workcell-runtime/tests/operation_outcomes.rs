@@ -70,10 +70,8 @@ fn expose_replays_plan_time_preferred_and_optional_absence() {
         .exposure
         .preferred
         .push(ExposureRequirement::new("browser").unwrap());
-    let (control, world_ref) = prepared_runtime_world(
-        &preferred,
-        runtime("provider:preferred-exposure-outcome"),
-    );
+    let (control, world_ref) =
+        prepared_runtime_world(&preferred, runtime("provider:preferred-exposure-outcome"));
     let result = control.expose(&world_ref).unwrap();
     assert_eq!(result.surfaces.len(), 0);
     assert_eq!(result.degradations.len(), 1);
@@ -90,14 +88,15 @@ fn expose_replays_plan_time_preferred_and_optional_absence() {
         .exposure
         .optional
         .push(ExposureRequirement::new("browser").unwrap());
-    let (control, world_ref) = prepared_runtime_world(
-        &optional,
-        runtime("provider:optional-exposure-outcome"),
-    );
+    let (control, world_ref) =
+        prepared_runtime_world(&optional, runtime("provider:optional-exposure-outcome"));
     let result = control.expose(&world_ref).unwrap();
     assert_eq!(result.surfaces.len(), 0);
     assert_eq!(result.omissions.len(), 1);
-    assert_eq!(result.omissions[0].necessity, RequirementNecessity::Optional);
+    assert_eq!(
+        result.omissions[0].necessity,
+        RequirementNecessity::Optional
+    );
     assert_eq!(result.omissions[0].requirement, "exposure:browser");
 }
 
@@ -110,10 +109,8 @@ fn collect_replays_plan_time_preferred_and_optional_absence() {
         .outputs
         .preferred
         .push(OutputRequirement::new("logs:run").unwrap());
-    let (control, world_ref) = prepared_runtime_world(
-        &preferred,
-        runtime("provider:preferred-output-outcome"),
-    );
+    let (control, world_ref) =
+        prepared_runtime_world(&preferred, runtime("provider:preferred-output-outcome"));
     let result = control.collect(&world_ref).unwrap();
     assert_eq!(result.outputs.len(), 0);
     assert_eq!(result.degradations.len(), 1);
@@ -130,13 +127,14 @@ fn collect_replays_plan_time_preferred_and_optional_absence() {
         .outputs
         .optional
         .push(OutputRequirement::new("logs:run").unwrap());
-    let (control, world_ref) = prepared_runtime_world(
-        &optional,
-        runtime("provider:optional-output-outcome"),
-    );
+    let (control, world_ref) =
+        prepared_runtime_world(&optional, runtime("provider:optional-output-outcome"));
     let result = control.collect(&world_ref).unwrap();
     assert_eq!(result.outputs.len(), 0);
     assert_eq!(result.omissions.len(), 1);
-    assert_eq!(result.omissions[0].necessity, RequirementNecessity::Optional);
+    assert_eq!(
+        result.omissions[0].necessity,
+        RequirementNecessity::Optional
+    );
     assert_eq!(result.omissions[0].requirement, "output:logs:run");
 }

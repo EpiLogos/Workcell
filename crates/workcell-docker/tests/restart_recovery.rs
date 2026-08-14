@@ -34,10 +34,7 @@ impl ScriptedRunner {
 }
 
 impl DockerCommandRunner for ScriptedRunner {
-    fn run(
-        &self,
-        command: &DockerCommand,
-    ) -> epilogos_workcell_core::Result<DockerCommandOutput> {
+    fn run(&self, command: &DockerCommand) -> epilogos_workcell_core::Result<DockerCommandOutput> {
         self.commands.lock().unwrap().push(command.clone());
         self.responses
             .lock()
@@ -63,11 +60,8 @@ fn execution_allocation_survives_provider_process_restart() {
     ]);
     let config = DockerExecutionConfig::new("alpine:3.22").unwrap();
     let provider_ref = ProviderRef::new("provider:docker-recovery").unwrap();
-    let mut first = DockerExecutionProvider::with_runner(
-        provider_ref.clone(),
-        config.clone(),
-        prepare_runner,
-    );
+    let mut first =
+        DockerExecutionProvider::with_runner(provider_ref.clone(), config.clone(), prepare_runner);
     let allocation = first
         .prepare_execution(&ExecutionMaterialRequest {
             demand_ref: DemandRef::new("demand:docker-recovery").unwrap(),
@@ -80,10 +74,7 @@ fn execution_allocation_survives_provider_process_restart() {
         .unwrap();
     drop(first);
 
-    let recovery_runner = ScriptedRunner::new([
-        output("running\n"),
-        output("container-recover\n"),
-    ]);
+    let recovery_runner = ScriptedRunner::new([output("running\n"), output("container-recover\n")]);
     let mut restarted =
         DockerExecutionProvider::with_runner(provider_ref, config, recovery_runner.clone());
     let observed = restarted.observe_execution(&allocation).unwrap();
@@ -105,11 +96,7 @@ fn execution_allocation_survives_provider_process_restart() {
 
 #[test]
 fn compose_allocation_survives_provider_process_restart() {
-    let prepare_runner = ScriptedRunner::new([
-        output("29.6.2\n"),
-        output("5.1.4\n"),
-        output(""),
-    ]);
+    let prepare_runner = ScriptedRunner::new([output("29.6.2\n"), output("5.1.4\n"), output("")]);
     let mode = DockerRuntimeMode::new("agent", "/project", "compose.yaml").unwrap();
     let provider_ref = ProviderRef::new("provider:docker-runtime-recovery").unwrap();
     let mut first = DockerProjectRuntimeProvider::with_runner(
@@ -129,17 +116,10 @@ fn compose_allocation_survives_provider_process_restart() {
         .unwrap();
     drop(first);
 
-    let recovery_runner = ScriptedRunner::new([
-        output("one\n"),
-        output("one\n"),
-        output(""),
-    ]);
-    let mut restarted = DockerProjectRuntimeProvider::with_runner(
-        provider_ref,
-        [mode],
-        recovery_runner.clone(),
-    )
-    .unwrap();
+    let recovery_runner = ScriptedRunner::new([output("one\n"), output("one\n"), output("")]);
+    let mut restarted =
+        DockerProjectRuntimeProvider::with_runner(provider_ref, [mode], recovery_runner.clone())
+            .unwrap();
     let observed = restarted.observe_runtime(&allocation).unwrap();
     assert_eq!(observed.health, HealthState::Healthy);
     restarted

@@ -1,8 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use epilogos_workcell_core::{
     validate_allocation, Availability, HealthState, MaterialExposureProvider, OfferRef,
@@ -13,8 +9,8 @@ use epilogos_workcell_core::{
 };
 
 use crate::{
-    path_string, probe_compose, probe_engine, provider_metadata, short_lived_persistence, stable_key,
-    DockerCommand, DockerCommandRunner, SystemDockerCommandRunner,
+    path_string, probe_compose, probe_engine, provider_metadata, short_lived_persistence,
+    stable_key, DockerCommand, DockerCommandRunner, SystemDockerCommandRunner,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -325,11 +321,8 @@ impl DockerProjectRuntimeProvider {
 
     pub fn restart_runtime(&self, allocation: &ProviderAllocation) -> Result<()> {
         let record = self.record(allocation)?;
-        self.runner.run(&self.command(
-            &record.mode,
-            &record.project_name,
-            ["restart"],
-        ))?;
+        self.runner
+            .run(&self.command(&record.mode, &record.project_name, ["restart"]))?;
         Ok(())
     }
 }
@@ -395,11 +388,8 @@ impl ProjectRuntimeProvider for DockerProjectRuntimeProvider {
 
         let key = stable_key(&[request.demand_ref.as_str(), &request.mode]);
         let project_name = format!("epilogos-wc-{}", &key[..12]);
-        self.runner.run(&self.command(
-            &mode,
-            &project_name,
-            ["up", "-d", "--remove-orphans"],
-        ))?;
+        self.runner
+            .run(&self.command(&mode, &project_name, ["up", "-d", "--remove-orphans"]))?;
 
         let material_ref = format!("runtime:docker-compose:{project_name}");
         let record = RuntimeRecord {
@@ -426,7 +416,10 @@ impl ProjectRuntimeProvider for DockerProjectRuntimeProvider {
             );
         }
         if let Some(persistence) = &request.persistence {
-            properties.insert("persistence_scope".into(), persistence_name(persistence).into());
+            properties.insert(
+                "persistence_scope".into(),
+                persistence_name(persistence).into(),
+            );
         }
         let mut provenance = provider_metadata(&engine_version, Some(&compose_version));
         provenance.insert("compose_project".into(), project_name);
@@ -523,11 +516,8 @@ impl ProjectRuntimeProvider for DockerProjectRuntimeProvider {
                 })
             }
             RetentionExpectation::SuspendIfSupported => {
-                self.runner.run(&self.command(
-                    &record.mode,
-                    &record.project_name,
-                    ["stop"],
-                ))?;
+                self.runner
+                    .run(&self.command(&record.mode, &record.project_name, ["stop"]))?;
                 Ok(ProviderReleaseResult {
                     provider_ref: self.provider_ref.clone(),
                     material_ref: allocation.material_ref.clone(),

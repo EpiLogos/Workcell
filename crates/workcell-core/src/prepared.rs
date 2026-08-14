@@ -1,16 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    plan, ArtifactStorageProvider, Binding, BindingPresence, CollectionBundle, CollectedOutput,
+    plan, ArtifactStorageProvider, Binding, BindingPresence, CollectedOutput, CollectionBundle,
     Degradation, DesiredMaterialState, Discovery, ExecutionDemand, ExecutionProvider, Exposure,
     ExposureBundle, ExposureRequirement, HealthState, MaterialExposureProvider,
     MaterialObservation, MaterialisationPlan, MaterialisedExecutionWorld, ObservationBundle,
     OperationalOffer, PersistenceScope, PlanOmission, ProjectRuntimeProvider, ProviderAllocation,
-    ProviderCollectedMaterial, ProviderExposedSurface, ProviderExposureRequest, ProviderObservation,
-    ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult, ReconciliationDelta,
-    ReconciliationResult, ReleaseDisposition, ReleaseResult, RequirementNecessity, Result,
-    RetentionExpectation, ServiceProvider, WorkcellControlPlane, WorkcellError, WorkcellRef,
-    WorkspaceProvider, WorldRef,
+    ProviderCollectedMaterial, ProviderExposedSurface, ProviderExposureRequest,
+    ProviderObservation, ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult,
+    ReconciliationDelta, ReconciliationResult, ReleaseDisposition, ReleaseResult,
+    RequirementNecessity, Result, RetentionExpectation, ServiceProvider, WorkcellControlPlane,
+    WorkcellError, WorkcellRef, WorkspaceProvider, WorldRef,
 };
 
 pub trait RuntimeExposureProvider: ProjectRuntimeProvider + MaterialExposureProvider {}
@@ -482,7 +482,11 @@ impl PreparedWorldControlPlane {
 
         let offer_state = self.provider_offers(&snapshot);
         let observation = match offer_state {
-            Ok(offers) if offers.iter().any(|offer| offer.offer_ref == snapshot.offer_ref) => {
+            Ok(offers)
+                if offers
+                    .iter()
+                    .any(|offer| offer.offer_ref == snapshot.offer_ref) =>
+            {
                 self.observe_binding(&snapshot)
             }
             Ok(_) => Err(WorkcellError::Unavailable(format!(
@@ -820,7 +824,8 @@ impl WorkcellControlPlane for PreparedWorldControlPlane {
                 }
             };
 
-            let Some((world_key, binding_index)) = self.binding_location(&target.logical_ref)? else {
+            let Some((world_key, binding_index)) = self.binding_location(&target.logical_ref)?
+            else {
                 deltas.push(ReconciliationDelta {
                     logical_ref: target.logical_ref.clone(),
                     observed: None,
@@ -852,7 +857,9 @@ impl WorkcellControlPlane for PreparedWorldControlPlane {
                 }
             } else if presence_satisfies(
                 &presence,
-                desired_retention.as_ref().expect("non-present state has retention"),
+                desired_retention
+                    .as_ref()
+                    .expect("non-present state has retention"),
             ) {
                 None
             } else if presence == BindingPresence::Missing {
@@ -896,13 +903,15 @@ impl WorkcellControlPlane for PreparedWorldControlPlane {
                     ReleaseDisposition::Preserved => current.health.clone(),
                 };
                 world.state = world_health(&world.binding_graph.bindings);
-                Some(match released.disposition {
-                    ReleaseDisposition::Released => "released",
-                    ReleaseDisposition::Suspended => "suspended",
-                    ReleaseDisposition::Snapshotted => "snapshotted",
-                    ReleaseDisposition::Preserved => "preserved",
-                }
-                .into())
+                Some(
+                    match released.disposition {
+                        ReleaseDisposition::Released => "released",
+                        ReleaseDisposition::Suspended => "suspended",
+                        ReleaseDisposition::Snapshotted => "snapshotted",
+                        ReleaseDisposition::Preserved => "preserved",
+                    }
+                    .into(),
+                )
             };
 
             deltas.push(ReconciliationDelta {
@@ -946,10 +955,7 @@ fn allocation_from_binding(binding: &Binding) -> ProviderAllocation {
     }
 }
 
-fn presence_satisfies(
-    presence: &BindingPresence,
-    retention: &RetentionExpectation,
-) -> bool {
+fn presence_satisfies(presence: &BindingPresence, retention: &RetentionExpectation) -> bool {
     matches!(
         (presence, retention),
         (BindingPresence::Released, RetentionExpectation::Release)
@@ -1021,9 +1027,10 @@ fn world_health(bindings: &[Binding]) -> HealthState {
     {
         return HealthState::Unavailable;
     }
-    if active.iter().any(|binding| {
-        matches!(binding.health, HealthState::Degraded | HealthState::Unknown)
-    }) {
+    if active
+        .iter()
+        .any(|binding| matches!(binding.health, HealthState::Degraded | HealthState::Unknown))
+    {
         HealthState::Degraded
     } else {
         HealthState::Healthy

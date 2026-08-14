@@ -7,9 +7,9 @@ use std::{
 use epilogos_workcell_core::{
     validate_allocation, validate_provider_port, DemandRef, ExecutionMaterialRequest,
     ExecutionProvider, ExposureRequirement, LogicalConnectionRequirement, MaterialExposureProvider,
-    PersistenceScope, ProjectRuntimeMaterialRequest, ProjectRuntimeProvider, ProviderExposureRequest,
-    ProviderOperation, ProviderPort, ProviderRef, RequirementNecessity, RetentionExpectation,
-    WorkcellError,
+    PersistenceScope, ProjectRuntimeMaterialRequest, ProjectRuntimeProvider,
+    ProviderExposureRequest, ProviderOperation, ProviderPort, ProviderRef, RequirementNecessity,
+    RetentionExpectation, WorkcellError,
 };
 use epilogos_workcell_docker::{
     DockerCommand, DockerCommandOutput, DockerCommandRunner, DockerExecutionConfig,
@@ -38,10 +38,7 @@ impl ScriptedRunner {
 }
 
 impl DockerCommandRunner for ScriptedRunner {
-    fn run(
-        &self,
-        command: &DockerCommand,
-    ) -> epilogos_workcell_core::Result<DockerCommandOutput> {
+    fn run(&self, command: &DockerCommand) -> epilogos_workcell_core::Result<DockerCommandOutput> {
         self.commands.lock().unwrap().push(command.clone());
         self.responses
             .lock()
@@ -97,7 +94,10 @@ fn execution_provider_satisfies_shared_conformance_and_materialises_logical_netw
     let allocation = provider.prepare_execution(&request).unwrap();
     validate_allocation(&provider, &allocation).unwrap();
     assert_eq!(
-        allocation.provenance.get("container_id").map(String::as_str),
+        allocation
+            .provenance
+            .get("container_id")
+            .map(String::as_str),
         Some("container-abc")
     );
 
@@ -110,10 +110,16 @@ fn execution_provider_satisfies_shared_conformance_and_materialises_logical_netw
             },
         )
         .unwrap();
-    assert_eq!(operation.output.get("stdout").map(String::as_str), Some("hello\n"));
+    assert_eq!(
+        operation.output.get("stdout").map(String::as_str),
+        Some("hello\n")
+    );
 
     let observation = provider.observe_execution(&allocation).unwrap();
-    assert_eq!(observation.detail.get("status").map(String::as_str), Some("running"));
+    assert_eq!(
+        observation.detail.get("status").map(String::as_str),
+        Some("running")
+    );
     provider.restart_execution(&allocation).unwrap();
     provider
         .release_execution(&allocation, &RetentionExpectation::Release)
@@ -122,8 +128,10 @@ fn execution_provider_satisfies_shared_conformance_and_materialises_logical_netw
     let commands = runner.commands();
     let create = commands
         .iter()
-        .find(|command| command.args.get(0).map(String::as_str) == Some("container")
-            && command.args.get(1).map(String::as_str) == Some("create"))
+        .find(|command| {
+            command.args.get(0).map(String::as_str) == Some("container")
+                && command.args.get(1).map(String::as_str) == Some("create")
+        })
         .unwrap();
     assert!(create.args.iter().any(|arg| arg == "physical-graph-net"));
     assert!(!request
@@ -223,7 +231,10 @@ fn compose_runtime_prepares_observes_exposes_restarts_and_releases_candidate_sta
 
     let observation = provider.observe_runtime(&allocation).unwrap();
     assert_eq!(
-        observation.detail.get("services_running").map(String::as_str),
+        observation
+            .detail
+            .get("services_running")
+            .map(String::as_str),
         Some("2")
     );
     provider.restart_runtime(&allocation).unwrap();
@@ -238,9 +249,10 @@ fn compose_runtime_prepares_observes_exposes_restarts_and_releases_candidate_sta
         .unwrap();
     assert!(down.args.iter().any(|arg| arg == "--volumes"));
     assert!(commands.iter().any(|command| {
-        command.args.windows(3).any(|window| {
-            window == ["port".to_string(), "web".to_string(), "8080".to_string()]
-        })
+        command
+            .args
+            .windows(3)
+            .any(|window| window == ["port".to_string(), "web".to_string(), "8080".to_string()])
     }));
 }
 

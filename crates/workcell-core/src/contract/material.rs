@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    BindingRef, DemandRef, ExternalRef, HealthState, OfferRef, PersistenceScope,
-    PlannedConstraint, PlannedExposure, ProviderPortKind, ProviderRef, RequirementNecessity,
-    RetentionExpectation, WorkcellRef, WorldRef,
+    BindingRef, DemandRef, ExternalRef, HealthState, OfferRef, PersistenceScope, PlannedConstraint,
+    PlannedExposure, ProviderPortKind, ProviderRef, RequirementNecessity, RetentionExpectation,
+    WorkcellRef, WorldRef,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]

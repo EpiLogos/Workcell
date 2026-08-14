@@ -1,9 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    io,
-    path::PathBuf,
-    process::Command,
-};
+use std::{collections::BTreeMap, io, path::PathBuf, process::Command};
 
 use epilogos_workcell_core::{Result, WorkcellError};
 
@@ -66,12 +61,10 @@ impl DockerCommandRunner for SystemDockerCommandRunner {
         process.envs(&command.env);
 
         let output = process.output().map_err(|error| match error.kind() {
-            io::ErrorKind::NotFound => WorkcellError::Unavailable(
-                "Docker CLI executable `docker` is not available".into(),
-            ),
-            _ => WorkcellError::OperationFailed(format!(
-                "failed to launch Docker CLI: {error}"
-            )),
+            io::ErrorKind::NotFound => {
+                WorkcellError::Unavailable("Docker CLI executable `docker` is not available".into())
+            }
+            _ => WorkcellError::OperationFailed(format!("failed to launch Docker CLI: {error}")),
         })?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();

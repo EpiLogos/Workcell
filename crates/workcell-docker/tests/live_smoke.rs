@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, fs, process, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    collections::BTreeMap,
+    fs, process,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use epilogos_workcell_core::{
     DemandRef, ExecutionMaterialRequest, ExecutionProvider, PersistenceScope,
@@ -108,7 +112,10 @@ fn live_docker_compose_runtime_prepare_observe_restart_release() {
     let allocation = provider.prepare_runtime(&request).unwrap();
     let observation = provider.observe_runtime(&allocation).unwrap();
     assert_eq!(
-        observation.detail.get("services_running").map(String::as_str),
+        observation
+            .detail
+            .get("services_running")
+            .map(String::as_str),
         Some("1")
     );
     provider.restart_runtime(&allocation).unwrap();

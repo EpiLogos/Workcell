@@ -31,11 +31,7 @@ pub(crate) fn probe_engine(runner: &dyn DockerCommandRunner) -> Result<String> {
 }
 
 pub(crate) fn probe_compose(runner: &dyn DockerCommandRunner) -> Result<String> {
-    let output = runner.run(&DockerCommand::new([
-        "compose",
-        "version",
-        "--short",
-    ]))?;
+    let output = runner.run(&DockerCommand::new(["compose", "version", "--short"]))?;
     nonempty_output("Docker Compose version", output.stdout)
 }
 
@@ -56,7 +52,10 @@ pub(crate) fn provider_metadata(
     let mut metadata = BTreeMap::new();
     metadata.insert("implementation".into(), DOCKER_INTEGRATION_SEAM.into());
     metadata.insert("docker_engine".into(), engine_version.into());
-    metadata.insert("docker_engine_source_pin".into(), DOCKER_ENGINE_SOURCE_PIN.into());
+    metadata.insert(
+        "docker_engine_source_pin".into(),
+        DOCKER_ENGINE_SOURCE_PIN.into(),
+    );
     if let Some(compose_version) = compose_version {
         metadata.insert("docker_compose".into(), compose_version.into());
         metadata.insert(
@@ -80,10 +79,7 @@ pub(crate) fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-pub(crate) fn docker_memory_bytes(
-    amount: u64,
-    unit: Option<&str>,
-) -> Result<String> {
+pub(crate) fn docker_memory_bytes(amount: u64, unit: Option<&str>) -> Result<String> {
     let multiplier = match unit.map(str::to_ascii_lowercase).as_deref() {
         None | Some("b") | Some("bytes") => 1_u64,
         Some("kib") | Some("ki") => 1024,

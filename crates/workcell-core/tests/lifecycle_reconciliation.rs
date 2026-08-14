@@ -28,11 +28,7 @@ struct LifecycleExecutionProvider {
 }
 
 impl LifecycleExecutionProvider {
-    fn new(
-        provider_ref: &str,
-        offer_ref: &str,
-        state: Arc<Mutex<ProviderState>>,
-    ) -> Self {
+    fn new(provider_ref: &str, offer_ref: &str, state: Arc<Mutex<ProviderState>>) -> Self {
         Self {
             provider_ref: ProviderRef::new(provider_ref).unwrap(),
             offer_ref: OfferRef::new(offer_ref).unwrap(),
@@ -112,10 +108,7 @@ impl ExecutionProvider for LifecycleExecutionProvider {
             .get(&allocation.material_ref)
             .cloned()
             .ok_or_else(|| {
-                WorkcellError::NotFound(format!(
-                    "material `{}` is absent",
-                    allocation.material_ref
-                ))
+                WorkcellError::NotFound(format!("material `{}` is absent", allocation.material_ref))
             })?;
         Ok(ProviderObservation {
             provider_ref: self.provider_ref.clone(),
@@ -153,9 +146,7 @@ impl ExecutionProvider for LifecycleExecutionProvider {
                     .insert(allocation.material_ref.clone(), HealthState::Degraded);
                 (ReleaseDisposition::Suspended, true)
             }
-            RetentionExpectation::SnapshotIfSupported => {
-                (ReleaseDisposition::Snapshotted, true)
-            }
+            RetentionExpectation::SnapshotIfSupported => (ReleaseDisposition::Snapshotted, true),
         };
         Ok(ProviderReleaseResult {
             provider_ref: self.provider_ref.clone(),
@@ -288,7 +279,10 @@ fn persisted_world_can_be_recovered_after_control_plane_restart_without_new_iden
             desired: "present".into(),
         }])
         .unwrap();
-    assert_eq!(result.deltas[0].observed.as_deref(), Some("present:healthy"));
+    assert_eq!(
+        result.deltas[0].observed.as_deref(),
+        Some("present:healthy")
+    );
     assert_eq!(result.deltas[0].action, None);
     let recovered = restarted
         .world(&WorldRef::new("world:restart").unwrap())
@@ -303,8 +297,7 @@ fn persisted_world_can_be_recovered_after_control_plane_restart_without_new_iden
 #[test]
 fn missing_ephemeral_material_is_reported_lost_not_recreated() {
     let state = Arc::new(Mutex::new(ProviderState::default()));
-    let mut plane =
-        PreparedWorldControlPlane::new(WorkcellRef::new("workcell:lifecycle").unwrap());
+    let mut plane = PreparedWorldControlPlane::new(WorkcellRef::new("workcell:lifecycle").unwrap());
     plane
         .register_world(world(
             "world:ephemeral",
@@ -352,8 +345,7 @@ fn withdrawn_offer_marks_binding_stale_and_requests_recovery() {
         .unwrap()
         .material
         .insert("material:orphan".into(), HealthState::Healthy);
-    let mut plane =
-        PreparedWorldControlPlane::new(WorkcellRef::new("workcell:lifecycle").unwrap());
+    let mut plane = PreparedWorldControlPlane::new(WorkcellRef::new("workcell:lifecycle").unwrap());
     plane
         .register_world(world(
             "world:orphan",
@@ -364,12 +356,8 @@ fn withdrawn_offer_marks_binding_stale_and_requests_recovery() {
         .unwrap();
     plane
         .register_execution_provider(
-            LifecycleExecutionProvider::new(
-                "provider:lifecycle",
-                "offer:lifecycle",
-                state,
-            )
-            .without_offer(),
+            LifecycleExecutionProvider::new("provider:lifecycle", "offer:lifecycle", state)
+                .without_offer(),
         )
         .unwrap();
 
@@ -404,8 +392,7 @@ fn repeated_release_is_idempotent_at_the_control_plane_boundary() {
         .unwrap()
         .material
         .insert("material:release".into(), HealthState::Healthy);
-    let mut plane =
-        PreparedWorldControlPlane::new(WorkcellRef::new("workcell:lifecycle").unwrap());
+    let mut plane = PreparedWorldControlPlane::new(WorkcellRef::new("workcell:lifecycle").unwrap());
     plane
         .register_world(world(
             "world:release",
@@ -453,8 +440,7 @@ fn partial_cleanup_failure_preserves_successful_release_state() {
             .material
             .insert("material:second".into(), HealthState::Healthy);
     }
-    let mut plane =
-        PreparedWorldControlPlane::new(WorkcellRef::new("workcell:lifecycle").unwrap());
+    let mut plane = PreparedWorldControlPlane::new(WorkcellRef::new("workcell:lifecycle").unwrap());
     plane
         .register_world(world(
             "world:partial",
@@ -468,12 +454,8 @@ fn partial_cleanup_failure_preserves_successful_release_state() {
         .unwrap();
     plane
         .register_execution_provider(
-            LifecycleExecutionProvider::new(
-                "provider:lifecycle",
-                "offer:lifecycle",
-                state,
-            )
-            .failing_release("material:second"),
+            LifecycleExecutionProvider::new("provider:lifecycle", "offer:lifecycle", state)
+                .failing_release("material:second"),
         )
         .unwrap();
 
@@ -484,8 +466,14 @@ fn partial_cleanup_failure_preserves_successful_release_state() {
     let world = plane
         .world(&WorldRef::new("world:partial").unwrap())
         .unwrap();
-    assert_eq!(world.binding_graph.bindings[0].presence, BindingPresence::Released);
-    assert_eq!(world.binding_graph.bindings[1].presence, BindingPresence::Present);
+    assert_eq!(
+        world.binding_graph.bindings[0].presence,
+        BindingPresence::Released
+    );
+    assert_eq!(
+        world.binding_graph.bindings[1].presence,
+        BindingPresence::Present
+    );
 }
 
 #[test]
@@ -496,8 +484,7 @@ fn reconcile_can_apply_lifecycle_action_and_report_unbound_target() {
         .unwrap()
         .material
         .insert("material:suspend".into(), HealthState::Healthy);
-    let mut plane =
-        PreparedWorldControlPlane::new(WorkcellRef::new("workcell:lifecycle").unwrap());
+    let mut plane = PreparedWorldControlPlane::new(WorkcellRef::new("workcell:lifecycle").unwrap());
     plane
         .register_world(world(
             "world:reconcile",

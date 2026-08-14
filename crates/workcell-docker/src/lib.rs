@@ -13,9 +13,7 @@ mod support;
 pub use command::*;
 pub use execution::*;
 pub use runtime::*;
-pub use support::{
-    DOCKER_COMPOSE_SOURCE_PIN, DOCKER_ENGINE_SOURCE_PIN, DOCKER_INTEGRATION_SEAM,
-};
+pub use support::{DOCKER_COMPOSE_SOURCE_PIN, DOCKER_ENGINE_SOURCE_PIN, DOCKER_INTEGRATION_SEAM};
 
 pub(crate) use support::{
     docker_memory_bytes, path_string, probe_compose, probe_engine, provider_metadata,

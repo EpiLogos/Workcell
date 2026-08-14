@@ -36,10 +36,7 @@ fn runtime(provider_ref: &str, expose_browser: bool) -> ReferenceProjectRuntimeP
     ReferenceProjectRuntimeProvider::new(ProviderRef::new(provider_ref).unwrap(), [mode]).unwrap()
 }
 
-fn artifact(
-    provider_ref: &str,
-    root: PathBuf,
-) -> DirectoryArtifactStorageProvider {
+fn artifact(provider_ref: &str, root: PathBuf) -> DirectoryArtifactStorageProvider {
     DirectoryArtifactStorageProvider::new(
         ProviderRef::new(provider_ref).unwrap(),
         root,
@@ -106,12 +103,7 @@ fn plan_for(
 
 fn prepared(
     retention: RetentionExpectation,
-) -> (
-    PreparedWorldControlPlane,
-    WorldRef,
-    PathBuf,
-    ExternalRef,
-) {
+) -> (PreparedWorldControlPlane, WorldRef, PathBuf, ExternalRef) {
     let demand = demand(retention);
     let candidate = demand.subjects.get("candidate").unwrap().clone();
     let mut runtime = runtime("provider:runtime-surface", true);
@@ -182,7 +174,8 @@ fn prepared(
     assert_eq!(world.subjects.get("candidate"), Some(&candidate));
     let world_ref = world.world_ref.clone();
 
-    let mut control = PreparedWorldControlPlane::new(WorkcellRef::new("workcell:surface-test").unwrap());
+    let mut control =
+        PreparedWorldControlPlane::new(WorkcellRef::new("workcell:surface-test").unwrap());
     control.register_world(world).unwrap();
     control.register_runtime_provider(runtime).unwrap();
     control.register_artifact_provider(artifact).unwrap();
@@ -209,9 +202,7 @@ fn public_collect(control: &dyn WorkcellControlPlane, world_ref: &WorldRef) {
     let bundle = control.collect(world_ref).unwrap();
     assert_eq!(bundle.outputs.len(), 1);
     assert_eq!(bundle.outputs[0].logical_ref, "logs:run/agent.log");
-    assert!(bundle.outputs[0]
-        .material_locator
-        .ends_with("agent.log"));
+    assert!(bundle.outputs[0].material_locator.ends_with("agent.log"));
     assert_eq!(
         bundle.outputs[0].provenance.get("relative_path").unwrap(),
         "agent.log"
@@ -337,7 +328,10 @@ fn collected_logical_output_survives_provider_and_locator_replacement() {
     fs::write(second_path.join("agent.log"), "two\n").unwrap();
 
     let first_output = first.collect_material(&first_allocation).unwrap().remove(0);
-    let second_output = second.collect_material(&second_allocation).unwrap().remove(0);
+    let second_output = second
+        .collect_material(&second_allocation)
+        .unwrap()
+        .remove(0);
     assert_eq!(first_output.logical_output, "logs:run/agent.log");
     assert_eq!(first_output.logical_output, second_output.logical_output);
     assert_ne!(first_output.provider_ref, second_output.provider_ref);
@@ -363,7 +357,11 @@ fn preserve_keeps_surfaces_and_outputs_live_while_release_keeps_only_provenance(
     public_expose(&preserved, &preserved_ref);
     public_collect(&preserved, &preserved_ref);
     assert_eq!(
-        preserved.world(&preserved_ref).unwrap().subjects.get("candidate"),
+        preserved
+            .world(&preserved_ref)
+            .unwrap()
+            .subjects
+            .get("candidate"),
         Some(&candidate)
     );
 
@@ -400,7 +398,8 @@ fn post_prepare_provider_loss_uses_requirement_necessity() {
     let (control, world_ref, root, _) = prepared(RetentionExpectation::Release);
     let world = control.world(&world_ref).unwrap().clone();
 
-    let mut required = PreparedWorldControlPlane::new(WorkcellRef::new("workcell:surface-test").unwrap());
+    let mut required =
+        PreparedWorldControlPlane::new(WorkcellRef::new("workcell:surface-test").unwrap());
     required.register_world(world.clone()).unwrap();
     assert!(required.expose(&world_ref).is_err());
     assert!(required.collect(&world_ref).is_err());

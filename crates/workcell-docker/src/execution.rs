@@ -83,11 +83,7 @@ impl DockerExecutionConfig {
                 "Docker isolation/trust offer must not be empty".into(),
             ));
         }
-        if !self
-            .isolation_trust
-            .iter()
-            .any(|item| item == &requirement)
-        {
+        if !self.isolation_trust.iter().any(|item| item == &requirement) {
             self.isolation_trust.push(requirement);
         }
         Ok(self)
@@ -192,7 +188,12 @@ impl DockerExecutionProvider {
 
     fn validate_request(&self, request: &ExecutionMaterialRequest) -> Result<Vec<String>> {
         for affordance in &request.affordances {
-            if !self.config.affordances.iter().any(|item| item == affordance) {
+            if !self
+                .config
+                .affordances
+                .iter()
+                .any(|item| item == affordance)
+            {
                 return Err(WorkcellError::UnsatisfiedDemand(format!(
                     "Docker execution provider does not offer affordance `{affordance}`"
                 )));
@@ -248,9 +249,7 @@ impl DockerExecutionProvider {
                 }
                 "cpu" | "cpus" => {
                     let minimum = resource.minimum.ok_or_else(|| {
-                        WorkcellError::InvalidDemand(
-                            "CPU resource requires a minimum value".into(),
-                        )
+                        WorkcellError::InvalidDemand("CPU resource requires a minimum value".into())
                     })?;
                     args.push("--cpus".into());
                     args.push(minimum.to_string());
