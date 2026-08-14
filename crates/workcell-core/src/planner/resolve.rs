@@ -45,14 +45,12 @@ pub(crate) fn resolve<'a>(
         candidates.push((offer, assessment.preference));
     }
 
-    candidates.sort_by(
-        |(left, left_preference), (right, right_preference)| {
-            right_preference
-                .cmp(left_preference)
-                .then_with(|| operational_rank(right).cmp(&operational_rank(left)))
-                .then_with(|| left.offer_ref.as_str().cmp(right.offer_ref.as_str()))
-        },
-    );
+    candidates.sort_by(|(left, left_preference), (right, right_preference)| {
+        right_preference
+            .cmp(left_preference)
+            .then_with(|| operational_rank(right).cmp(&operational_rank(left)))
+            .then_with(|| left.offer_ref.as_str().cmp(right.offer_ref.as_str()))
+    });
 
     if let Some((offer, _)) = candidates.first() {
         return Resolution {
