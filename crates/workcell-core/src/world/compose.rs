@@ -97,10 +97,12 @@ pub fn compose_world(
             binding_ref,
             logical_ref: item.logical_ref,
             provider_ref: item.allocation.provider_ref,
+            offer_ref: item.offer_ref,
             port: item.allocation.port,
             material_ref: item.allocation.material_ref,
             health: item.allocation.health,
             presence: BindingPresence::Present,
+            properties: item.allocation.properties,
             provenance: item.allocation.provenance,
         });
     }
