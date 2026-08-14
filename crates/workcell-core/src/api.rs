@@ -21,6 +21,8 @@ pub trait WorkcellControlPlane {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use crate::{WorkcellError, WorkcellRef};
 
@@ -31,6 +33,7 @@ mod tests {
             Ok(Discovery {
                 workcell_ref: WorkcellRef::new("workcell:fixture").unwrap(),
                 health: crate::HealthState::Healthy,
+                capacity: BTreeMap::new(),
                 offers: vec![],
             })
         }
