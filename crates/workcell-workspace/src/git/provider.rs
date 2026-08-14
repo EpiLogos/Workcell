@@ -8,7 +8,7 @@ use epilogos_workcell_core::{
 };
 
 use super::{command, state::GitRecord, state::GitWorktreeWorkspaceProvider};
-use crate::support::{set_files_readonly, stable_key};
+use crate::support::{make_directories_writable, set_tree_readonly, stable_key};
 
 impl ProviderPort for GitWorktreeWorkspaceProvider {
     fn provider_ref(&self) -> &epilogos_workcell_core::ProviderRef {
@@ -138,7 +138,7 @@ impl WorkspaceProvider for GitWorktreeWorkspaceProvider {
             "create git worktree",
         )?;
         if request.access == WorkspaceAccess::ReadOnly {
-            set_files_readonly(&target)?;
+            set_tree_readonly(&target)?;
         }
 
         let record = GitRecord {
@@ -216,6 +216,9 @@ impl WorkspaceProvider for GitWorktreeWorkspaceProvider {
                 }
                 let record = self.record(allocation)?.clone();
                 let changed = if record.path.exists() {
+                    if record.access == WorkspaceAccess::ReadOnly {
+                        make_directories_writable(&record.path)?;
+                    }
                     command::run(
                         &record.repository,
                         &["worktree", "remove", command::path_arg(&record.path)?],
