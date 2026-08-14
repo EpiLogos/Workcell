@@ -23,7 +23,10 @@ pub(crate) fn stable_key(parts: &[&str]) -> String {
 pub(crate) fn source_metadata() -> BTreeMap<String, String> {
     BTreeMap::from([
         ("implementation".into(), ARRAKIS_INTEGRATION_SEAM.into()),
-        ("arrakis_source_revision".into(), ARRAKIS_SOURCE_REVISION.into()),
+        (
+            "arrakis_source_revision".into(),
+            ARRAKIS_SOURCE_REVISION.into(),
+        ),
         ("arrakis_api_version".into(), ARRAKIS_API_VERSION.into()),
         ("arrakis_license".into(), ARRAKIS_LICENSE.into()),
     ])

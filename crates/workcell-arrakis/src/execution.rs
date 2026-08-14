@@ -185,7 +185,12 @@ impl ArrakisExecutionProvider {
 
     fn validate_request(&self, request: &ExecutionMaterialRequest) -> Result<()> {
         for affordance in &request.affordances {
-            if !self.config.affordances.iter().any(|item| item == affordance) {
+            if !self
+                .config
+                .affordances
+                .iter()
+                .any(|item| item == affordance)
+            {
                 return Err(WorkcellError::UnsatisfiedDemand(format!(
                     "Arrakis execution provider does not offer affordance `{affordance}`"
                 )));
@@ -514,11 +519,9 @@ impl ExecutionProvider for ArrakisExecutionProvider {
 
     fn observe_execution(&self, allocation: &ProviderAllocation) -> Result<ProviderObservation> {
         let vm_name = self.vm_name(allocation)?;
-        let output = self.runner.run(&self.command([
-            "list",
-            "--name",
-            vm_name.as_str(),
-        ]))?;
+        let output = self
+            .runner
+            .run(&self.command(["list", "--name", vm_name.as_str()]))?;
         let health = status_health(&format!("{}\n{}", output.stdout, output.stderr))?;
         let mut detail = BTreeMap::new();
         detail.insert("vm_name".into(), vm_name);
@@ -546,11 +549,8 @@ impl ExecutionProvider for ArrakisExecutionProvider {
                 changed: false,
             }),
             RetentionExpectation::Release => {
-                self.runner.run(&self.command([
-                    "destroy",
-                    "--name",
-                    vm_name.as_str(),
-                ]))?;
+                self.runner
+                    .run(&self.command(["destroy", "--name", vm_name.as_str()]))?;
                 Ok(ProviderReleaseResult {
                     provider_ref: self.provider_ref.clone(),
                     material_ref: allocation.material_ref.clone(),
@@ -559,11 +559,8 @@ impl ExecutionProvider for ArrakisExecutionProvider {
                 })
             }
             RetentionExpectation::SuspendIfSupported => {
-                self.runner.run(&self.command([
-                    "pause",
-                    "--name",
-                    vm_name.as_str(),
-                ]))?;
+                self.runner
+                    .run(&self.command(["pause", "--name", vm_name.as_str()]))?;
                 Ok(ProviderReleaseResult {
                     provider_ref: self.provider_ref.clone(),
                     material_ref: allocation.material_ref.clone(),
@@ -574,11 +571,8 @@ impl ExecutionProvider for ArrakisExecutionProvider {
             RetentionExpectation::SnapshotIfSupported => {
                 let snapshot_id = self.snapshot_id(allocation, "retention");
                 self.snapshot_execution(allocation, Some(&snapshot_id))?;
-                self.runner.run(&self.command([
-                    "destroy",
-                    "--name",
-                    vm_name.as_str(),
-                ]))?;
+                self.runner
+                    .run(&self.command(["destroy", "--name", vm_name.as_str()]))?;
                 Ok(ProviderReleaseResult {
                     provider_ref: self.provider_ref.clone(),
                     material_ref: allocation.material_ref.clone(),
