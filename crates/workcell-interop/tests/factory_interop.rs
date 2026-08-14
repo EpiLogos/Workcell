@@ -1,4 +1,4 @@
-use epilogos_workcell_core::{PersistenceScope, WorkspaceAccess, WorkcellError};
+use epilogos_workcell_core::{PersistenceScope, WorkcellError, WorkspaceAccess};
 use epilogos_workcell_interop::{
     validate_factory_identity, FactoryIdentityRole, WorkcellInteropFixture,
     FACTORY_INTEROP_FIXTURE_VERSION, FACTORY_INTEROP_PROTOCOL_VERSION,
@@ -93,7 +93,8 @@ fn provider_material_changes_do_not_mutate_semantic_execution_demand() {
         .to_workcell_execution_demand()
         .unwrap();
     let mut changed: Value = serde_json::from_str(FIXTURE).unwrap();
-    changed["contract"]["binding"]["providerRef"] = Value::String("workcell-provider:arrakis".into());
+    changed["contract"]["binding"]["providerRef"] =
+        Value::String("workcell-provider:arrakis".into());
     changed["contract"]["binding"]["concreteRef"] = Value::String("resource:vm:microvm-22".into());
     let substituted = WorkcellInteropFixture::parse(&changed.to_string())
         .unwrap()
@@ -123,13 +124,23 @@ fn provider_and_material_ids_cannot_masquerade_as_factory_semantic_refs() {
         }
     }
 
-    assert!(validate_factory_identity(FactoryIdentityRole::Project, "factory:project:factory").is_ok());
+    assert!(
+        validate_factory_identity(FactoryIdentityRole::Project, "factory:project:factory").is_ok()
+    );
     assert!(validate_factory_identity(FactoryIdentityRole::Run, "factory:run:r-1").is_ok());
-    assert!(validate_factory_identity(FactoryIdentityRole::Candidate, "factory:candidate:c-1").is_ok());
+    assert!(
+        validate_factory_identity(FactoryIdentityRole::Candidate, "factory:candidate:c-1").is_ok()
+    );
     assert!(validate_factory_identity(FactoryIdentityRole::Agent, "factory:agent:builder").is_ok());
-    assert!(validate_factory_identity(FactoryIdentityRole::Project, "provider:github:EpiLogos/agent-system-design").is_err());
+    assert!(validate_factory_identity(
+        FactoryIdentityRole::Project,
+        "provider:github:EpiLogos/agent-system-design"
+    )
+    .is_err());
     assert!(validate_factory_identity(FactoryIdentityRole::Agent, "model:gpt-5.6-sol").is_err());
-    assert!(validate_factory_identity(FactoryIdentityRole::Agent, "factory:agent-session:s-1").is_err());
+    assert!(
+        validate_factory_identity(FactoryIdentityRole::Agent, "factory:agent-session:s-1").is_err()
+    );
 }
 
 #[test]
