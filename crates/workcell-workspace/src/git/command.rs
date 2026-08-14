@@ -1,4 +1,7 @@
-use std::{path::Path, process::{Command, Output}};
+use std::{
+    path::Path,
+    process::{Command, Output},
+};
 
 use epilogos_workcell_core::{Result, WorkcellError};
 
