@@ -3,16 +3,14 @@ use std::collections::BTreeMap;
 use epilogos_workcell_core::{
     AffordanceRequirement, DemandRef, ExecutionDemand, ExposureRequirement, ExternalRef,
     LogicalConnectionRequirement, PersistenceScope, ResourceRequirement, Result,
-    RetentionExpectation, WorkspaceAccess, WorkspaceRequirement, WorkcellError, WorkcellRef,
+    RetentionExpectation, WorkcellError, WorkcellRef, WorkspaceAccess, WorkspaceRequirement,
 };
 use serde_json::{Map, Value};
 
 pub const FACTORY_INTEROP_FIXTURE_VERSION: &str = "factory.interop-fixtures/v1";
 pub const FACTORY_INTEROP_PROTOCOL_VERSION: &str = "factory.interop/v1";
-pub const FACTORY_INTEROP_SOURCE_REVISION: &str =
-    "474a4c2c13854a5ea253d77f5aff4aa491ced2c5";
-pub const FACTORY_INTEROP_SOURCE_FIXTURE: &str =
-    "contracts/factory/fixtures/interop-v1.json";
+pub const FACTORY_INTEROP_SOURCE_REVISION: &str = "474a4c2c13854a5ea253d77f5aff4aa491ced2c5";
+pub const FACTORY_INTEROP_SOURCE_FIXTURE: &str = "contracts/factory/fixtures/interop-v1.json";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FactoryIdentityRole {
@@ -138,10 +136,14 @@ impl WorkcellInteropFixture {
             )));
         }
 
-        let execution_demand = parse_execution_demand(required_object(contract, "executionDemand")?)?;
+        let execution_demand =
+            parse_execution_demand(required_object(contract, "executionDemand")?)?;
         validate_factory_identity(FactoryIdentityRole::Project, &execution_demand.project_ref)?;
         validate_factory_identity(FactoryIdentityRole::Run, &execution_demand.run_ref)?;
-        validate_factory_identity(FactoryIdentityRole::Candidate, &execution_demand.candidate_ref)?;
+        validate_factory_identity(
+            FactoryIdentityRole::Candidate,
+            &execution_demand.candidate_ref,
+        )?;
 
         let workcell_offer = parse_workcell_offer(required_object(contract, "workcellOffer")?)?;
         WorkcellRef::new(workcell_offer.workcell_ref.clone())?;
@@ -333,7 +335,10 @@ impl WorkcellInteropFixture {
             semantic_subjects: BTreeMap::from([
                 ("project".into(), self.execution_demand.project_ref.clone()),
                 ("run".into(), self.execution_demand.run_ref.clone()),
-                ("candidate".into(), self.execution_demand.candidate_ref.clone()),
+                (
+                    "candidate".into(),
+                    self.execution_demand.candidate_ref.clone(),
+                ),
             ]),
         }
     }
