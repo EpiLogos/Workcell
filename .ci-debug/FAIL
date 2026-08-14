@@ -1,0 +1,31 @@
+clean-tree verify: FAIL (exit=101)
+
+[1m[92m    Updating[0m crates.io index
+[1m[92m Downloading[0m crates ...
+[1m[92m  Downloaded[0m itoa v1.0.18
+[1m[92m  Downloaded[0m zmij v1.0.23
+[1m[92m  Downloaded[0m memchr v2.8.3
+[1m[92m  Downloaded[0m serde_core v1.0.229
+[1m[92m  Downloaded[0m serde_json v1.0.151
+[1m[92m    Checking[0m epilogos-workcell-core v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-core)
+[1m[92m   Compiling[0m zmij v1.0.23
+[1m[92m   Compiling[0m serde_core v1.0.229
+[1m[92m   Compiling[0m serde_json v1.0.151
+[1m[92m    Checking[0m epilogos-workcell-artifact v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-artifact)
+[1m[92m    Checking[0m epilogos-workcell-runtime v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-runtime)
+[1m[92m    Checking[0m memchr v2.8.3
+[1m[92m    Checking[0m itoa v1.0.18
+[1m[92m    Checking[0m epilogos-workcell-docker v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-docker)
+[1m[92m    Checking[0m epilogos-workcell-workspace v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-workspace)
+[1m[92m    Checking[0m epilogos-workcell-arrakis v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-arrakis)
+[1m[92m    Checking[0m epilogos-workcell-candidate v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-candidate)
+[1m[92m    Checking[0m epilogos-workcell-placement v0.1.0 (/home/runner/work/Workcell/Workcell/crates/workcell-placement)
+[1m[91merror[E0063][0m[1m: missing fields `plan_degradations` and `plan_omissions` in initializer of `epilogos_workcell_core::MaterialisedExecutionWorld`[0m
+   [1m[94m--> [0mcrates/workcell-core/tests/lifecycle_reconciliation.rs:182:5
+    [1m[94m|[0m
+[1m[94m182[0m [1m[94m|[0m     MaterialisedExecutionWorld {
+    [1m[94m|[0m     [1m[91m^^^^^^^^^^^^^^^^^^^^^^^^^^[0m [1m[91mmissing `plan_degradations` and `plan_omissions`[0m
+
+[1mFor more information about this error, try `rustc --explain E0063`.[0m
+[1m[91merror[0m: could not compile `epilogos-workcell-core` (test "lifecycle_reconciliation") due to 1 previous error
+[1m[33mwarning[0m: build failed, waiting for other jobs to finish...
