@@ -85,6 +85,21 @@ pub(crate) fn atoms(demand: &ExecutionDemand) -> Vec<RequirementAtom> {
         RequirementNecessity::Optional,
         MatchRule::Exposure,
     );
+    add_outputs(
+        &mut out,
+        demand.outputs.required.iter().map(|v| v.as_str()),
+        RequirementNecessity::Required,
+    );
+    add_outputs(
+        &mut out,
+        demand.outputs.preferred.iter().map(|v| v.as_str()),
+        RequirementNecessity::Preferred,
+    );
+    add_outputs(
+        &mut out,
+        demand.outputs.optional.iter().map(|v| v.as_str()),
+        RequirementNecessity::Optional,
+    );
 
     if let Some(workspace) = &demand.workspace {
         let key = match workspace.access {
@@ -156,6 +171,21 @@ fn add_strings<'a>(
 ) {
     for value in values {
         out.push(atom(kind, value, necessity, rule(value.into())));
+    }
+}
+
+fn add_outputs<'a>(
+    out: &mut Vec<RequirementAtom>,
+    values: impl Iterator<Item = &'a str>,
+    necessity: RequirementNecessity,
+) {
+    for value in values {
+        out.push(RequirementAtom {
+            kind: "output",
+            key: value.into(),
+            necessity,
+            rule: MatchRule::Affordance(format!("artifact-channel:{value}")),
+        });
     }
 }
 
