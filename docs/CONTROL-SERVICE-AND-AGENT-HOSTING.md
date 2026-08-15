@@ -34,7 +34,7 @@ A remote or server Workcell may expose the same control contract through a persi
 
 ```text
 workcell client / SDK
-          ↓ authenticated transport
+          ↓ authenticated transport/fabric binding
 Workcell Control Service
           ↓
  application / Workcell core
@@ -48,7 +48,27 @@ The canonical semantic operations remain:
 
 `discover · plan · prepare · observe · expose · collect · release · reconcile`
 
-Transport, authentication and service-process identity remain below that contract.
+Transport, authentication, fabric provider and service-process identity remain below that contract.
+
+## Control protocol is not connectivity fabric
+
+Remote control has two independent questions:
+
+```text
+What Workcell operation/protocol is being invoked?
+        !=
+How does this client physically reach the Control Service?
+```
+
+The first belongs to #21 and must remain versioned and transport-neutral.
+
+The second belongs to material connectivity/fabric resolution. Tailscale is the first rich reference under #26, but an ordinary private TCP route, SSH tunnel/forward, cloud private network or future fabric may carry the same Control Service protocol.
+
+A Tailscale node ID/IP/MagicDNS name, SSH destination, URL, port or tunnel is therefore a binding/provenance detail. None is a `WorkcellRef` or remote-control semantic identity.
+
+The same distinction applies inside a materialised world: a Control-Service path and a hosted-service path are separate `NetworkRelationship`s even when the same private fabric happens to realise both.
+
+See [`CONNECTIVITY-FABRIC.md`](CONNECTIVITY-FABRIC.md).
 
 ## Persistent executable services
 
@@ -109,6 +129,8 @@ Those descriptors communicate material reachability. Workcell must not infer tha
 
 Application protocols remain opaque unless a provider port genuinely owns a material property of that protocol.
 
+A real private fabric also sharpens exposure semantics. Private tailnet/service reachability and public internet exposure are different material properties. A provider such as Tailscale may support both private Serve/Services and explicitly public Funnel, but Workcell must never widen the effective exposure silently.
+
 ## Gateway-management interoperability
 
 Hermes, OpenClaw and later systems are useful conformance targets because they make persistent agent-hosting requirements concrete. They must be integrated from their actual current management surfaces rather than from a remembered or invented common gateway API.
@@ -132,6 +154,22 @@ It must not:
 - own the user's complete target configuration merely because it can supervise the process;
 - turn the Workcell Control Service itself into an agent gateway.
 
+## Remote-host bootstrap is separate again
+
+A remote host may already exist, or it may be acquired through a separate deployment/bootstrap facility. Current exe.dev is a useful comparison because its programmatic API is SSH and creates persistent VMs with target-owned SSH/HTTPS reachability.
+
+That yields a third separation:
+
+```text
+exe.dev SSH API / other host acquisition
+        ↓ bootstrap machine
+Workcell Control Service
+        ↓ carried over some network/fabric
+Workcell operations
+```
+
+SSH used to create/manage the host does not become the Workcell Control protocol. The existence of one convenient VM API does not by itself justify a universal Workcell `HostProvider`; #27 is the evidence-gathering portability proof.
+
 ## Cross-product responsibility
 
 The intended boundary is:
@@ -152,7 +190,7 @@ Workcell
 
 This is not a mandatory runtime pipeline. It is an ownership distinction for cases where all three concerns are present.
 
-Changing a communication adapter must not by itself change Agent identity. Moving a material host from local process to remote server must not by itself change Project/Run/Agent identity. Restarting the Workcell Control Service must not by itself change a material world whose recoverable bindings still identify the same world.
+Changing a communication adapter must not by itself change Agent identity. Moving a material host from local process to remote server must not by itself change Project/Run/Agent identity. Restarting the Workcell Control Service must not by itself change a material world whose recoverable bindings still identify the same world. Changing direct/relay network path or a concrete endpoint must not by itself change logical service identity.
 
 ## Next Wayfinder
 
@@ -164,6 +202,8 @@ The implementation programme is tracked by:
 - #22 — service bindings and persistent agent-hosting conformance;
 - #23 — client SDK, provider SDK and conformance kit;
 - #24 — reference Ubuntu remote Workcell and local/server parity;
-- #25 — gateway-management interoperability with Hermes and OpenClaw.
+- #25 — gateway-management interoperability with Hermes and OpenClaw;
+- #26 — Workcell Fabric and Tailscale reference conformance;
+- #27 — remote Workcell bootstrap portability with exe.dev.
 
-Physical Docker and Arrakis acceptance remain separately owned by #10 and #13. Their absence does not block deterministic implementation that does not claim live provider evidence.
+Physical Docker and Arrakis acceptance remain separately owned by #10 and #13. Their absence does not block deterministic implementation that does not claim live provider evidence. Physical Tailscale/home-server claims under #26/#24 likewise require actual workstation/server output rather than hosted fixtures.
