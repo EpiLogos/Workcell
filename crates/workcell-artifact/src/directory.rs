@@ -5,10 +5,10 @@ use std::{
 };
 
 use epilogos_workcell_core::{
-    validate_allocation, ArtifactChannelRequest, ArtifactStorageProvider, Availability, HealthState,
-    OfferRef, OperationalOffer, ProviderAllocation, ProviderCollectedMaterial, ProviderObservation,
-    ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult, ReleaseDisposition, Result,
-    RetentionExpectation, WorkcellError,
+    validate_allocation, ArtifactChannelRequest, ArtifactStorageProvider, Availability,
+    HealthState, OfferRef, OperationalOffer, ProviderAllocation, ProviderCollectedMaterial,
+    ProviderObservation, ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult,
+    ReleaseDisposition, Result, RetentionExpectation, WorkcellError,
 };
 
 use crate::support::stable_key;
@@ -318,23 +318,17 @@ mod tests {
             persistence: None,
             retention: RetentionExpectation::Release,
         };
-        let mut first = DirectoryArtifactStorageProvider::new(
-            provider_ref.clone(),
-            &root,
-            ["logs:run".into()],
-        )
-        .unwrap();
+        let mut first =
+            DirectoryArtifactStorageProvider::new(provider_ref.clone(), &root, ["logs:run".into()])
+                .unwrap();
         let allocation = first.prepare_artifact_channel(&request).unwrap();
         let path = PathBuf::from(allocation.properties.get("path").unwrap());
         fs::write(path.join("restart.log"), "persisted\n").unwrap();
         drop(first);
 
-        let mut restarted = DirectoryArtifactStorageProvider::new(
-            provider_ref,
-            &root,
-            ["logs:run".into()],
-        )
-        .unwrap();
+        let mut restarted =
+            DirectoryArtifactStorageProvider::new(provider_ref, &root, ["logs:run".into()])
+                .unwrap();
         let collected = restarted.collect_material(&allocation).unwrap();
         assert_eq!(collected.len(), 1);
         assert!(collected[0].locator.ends_with("restart.log"));
