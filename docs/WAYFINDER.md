@@ -37,6 +37,8 @@ The next tranche makes the established Workcell semantics directly usable across
 20. #23 — client SDK, provider SDK and conformance kit
 21. #24 — reference Ubuntu remote Workcell and local/server parity
 22. #25 — gateway-management interoperability with Hermes and OpenClaw
+23. #26 — Workcell Fabric and Tailscale reference conformance
+24. #27 — remote Workcell bootstrap portability with exe.dev
 
 The governing relations are:
 
@@ -45,15 +47,21 @@ ordinary machine
   native CLI -> Workcell core -> host/filesystem providers
 
 remote/server machine
-  client/SDK -> Workcell Control Service -> Workcell core -> providers
+  client/SDK -> material connectivity -> Workcell Control Service -> Workcell core -> providers
 
 persistent agent host / gateway-shaped workload
   higher-layer Agent/Harness/Surface semantics
               ↓ provider-neutral material demand
-  Workcell processes + services + bindings + storage + network + lifecycle
+  Workcell processes + services + bindings + storage + fabric + lifecycle
 ```
 
-The Workcell Control Service is optional locally and normal for a remotely controlled server. It is not an agent gateway.
+The Workcell Control Service is optional locally and normal for a remotely controlled server. It is not an agent gateway and it is not the physical connectivity fabric.
+
+The canonical Fabric plane is now an explicit implementation frontier. `ExecutionDemand.connectivity` already preserves provider-neutral intent; #26 must make cross-placement relationship feasibility and the resulting material fabric binding inspectable rather than treating connectivity as provider-local token matching.
+
+Tailscale is the first rich reference fabric because its current service/addressability/policy/path model strongly exercises Workcell's logical-service-versus-host and relationship-versus-route distinctions. It does not become Workcell vocabulary.
+
+exe.dev is a separate remote-host/bootstrap comparison. Its SSH management API is useful evidence that host acquisition, Workcell remote-control protocol and runtime fabric are three separable concerns. It does not make SSH the Workcell Control protocol or force a universal host-provider abstraction.
 
 A gateway-shaped workload is a conformance pattern over ordinary Workcell requirements. `Gateway`, `Agent`, `Harness`, `AgentSession`, messaging application and conversation are not Workcell semantic primitives.
 
@@ -61,8 +69,20 @@ Hermes/OpenClaw integrations must be source-pinned against their actual current 
 
 ## Execution order
 
-#19 and #20 may start from the existing foundation independently of physical Docker/Arrakis evidence.
+#19 and #20 may start from the existing foundation independently of physical Docker/Arrakis/Tailscale evidence.
 
-#21 follows the native application/CLI seam. #22 composes the zero-setup/local and Control-Service work into persistent-service/agent-hosting conformance. #23 packages stable client/provider extension seams. #24 proves the same demands on the real reference server. #25 then uses real ecosystem gateways as interoperability evidence while coordinating Agent/Harness/Surface semantics with AIKit rather than importing them.
+#21 follows the native application/CLI seam and defines the transport-neutral remote Workcell control contract.
+
+#26's deterministic relationship/planning work may begin from the current `ExecutionDemand.connectivity`, BindingGraph, ServiceProvider and placement seams. Its live Control-Service-over-Tailscale leg waits only for a stable #21 service boundary and actual physical machines.
+
+#22 composes zero-setup/local, Control-Service and logical connectivity into persistent-service/agent-hosting conformance. #23 packages stable client/provider extension seams and conformance machinery.
+
+#24 proves the same demands on the real reference Ubuntu home server and consumes #26's physical fabric receipt for the private workstation↔server case.
+
+#27 then provides a deliberately different remote-host/bootstrap proof through the source-pinned exe.dev SSH API; it should decide from evidence whether host acquisition deserves a public Workcell port or remains deployment tooling.
+
+#25 uses real ecosystem gateways as interoperability evidence while coordinating Agent/Harness/Surface semantics with AIKit rather than importing them.
 
 Source-inspection and physical-host gates block only the integrations that genuinely require them. They do not block ordinary deterministic Workcell development.
+
+See `docs/CONNECTIVITY-FABRIC.md` for the fabric relationship and reference-test laws.
