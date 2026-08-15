@@ -140,7 +140,11 @@ fn parse_global(args: Vec<String>) -> Result<GlobalArgs, WorkcellError> {
 }
 
 fn command_status(global: &GlobalArgs) -> Result<(), WorkcellError> {
-    let workcell = new_local(global, parse_workcell_ref(&global.workcell_ref)?, BTreeSet::new())?;
+    let workcell = new_local(
+        global,
+        parse_workcell_ref(&global.workcell_ref)?,
+        BTreeSet::new(),
+    )?;
     let discovery = workcell.discover()?;
     let receipts = receipt_count(&global.state_root)?;
     if global.json {
@@ -165,7 +169,11 @@ fn command_status(global: &GlobalArgs) -> Result<(), WorkcellError> {
 }
 
 fn command_discover(global: &GlobalArgs) -> Result<(), WorkcellError> {
-    let workcell = new_local(global, parse_workcell_ref(&global.workcell_ref)?, BTreeSet::new())?;
+    let workcell = new_local(
+        global,
+        parse_workcell_ref(&global.workcell_ref)?,
+        BTreeSet::new(),
+    )?;
     let discovery = workcell.discover()?;
     if global.json {
         emit_json(discovery_json(&discovery));
@@ -188,7 +196,11 @@ fn command_discover(global: &GlobalArgs) -> Result<(), WorkcellError> {
 }
 
 fn command_providers(global: &GlobalArgs) -> Result<(), WorkcellError> {
-    let workcell = new_local(global, parse_workcell_ref(&global.workcell_ref)?, BTreeSet::new())?;
+    let workcell = new_local(
+        global,
+        parse_workcell_ref(&global.workcell_ref)?,
+        BTreeSet::new(),
+    )?;
     let discovery = workcell.discover()?;
     let mut providers: BTreeMap<String, Vec<&epilogos_workcell_core::OperationalOffer>> =
         BTreeMap::new();
@@ -234,13 +246,18 @@ fn command_doctor(global: &GlobalArgs) -> Result<(), WorkcellError> {
     let probe = global
         .state_root
         .join(format!(".doctor-{}", std::process::id()));
-    fs::write(&probe, b"workcell-doctor\n")
-        .map_err(|error| WorkcellError::Unavailable(format!("state root is not writable: {error}")))?;
+    fs::write(&probe, b"workcell-doctor\n").map_err(|error| {
+        WorkcellError::Unavailable(format!("state root is not writable: {error}"))
+    })?;
     fs::remove_file(&probe).map_err(|error| {
         WorkcellError::OperationFailed(format!("remove doctor write probe: {error}"))
     })?;
 
-    let workcell = new_local(global, parse_workcell_ref(&global.workcell_ref)?, BTreeSet::new())?;
+    let workcell = new_local(
+        global,
+        parse_workcell_ref(&global.workcell_ref)?,
+        BTreeSet::new(),
+    )?;
     let discovery = workcell.discover()?;
     let shell = discovery
         .offers
@@ -341,7 +358,11 @@ fn command_observe(global: &GlobalArgs) -> Result<(), WorkcellError> {
     } else {
         println!("{}", result.world_ref);
         for observation in result.observations {
-            println!("{} — {}", observation.logical_ref, health(&observation.state));
+            println!(
+                "{} — {}",
+                observation.logical_ref,
+                health(&observation.state)
+            );
             for (key, value) in observation.detail {
                 println!("  {key}: {value}");
             }
@@ -460,9 +481,15 @@ fn parse_demand(args: &[String]) -> Result<ExecutionDemand, WorkcellError> {
         let value = || require_value(args, index, flag);
         match flag {
             "--demand-ref" => demand_ref = value()?.to_owned(),
-            "--require" => affordances.required.push(AffordanceRequirement::new(value()?)?),
-            "--prefer" => affordances.preferred.push(AffordanceRequirement::new(value()?)?),
-            "--optional" => affordances.optional.push(AffordanceRequirement::new(value()?)?),
+            "--require" => affordances
+                .required
+                .push(AffordanceRequirement::new(value()?)?),
+            "--prefer" => affordances
+                .preferred
+                .push(AffordanceRequirement::new(value()?)?),
+            "--optional" => affordances
+                .optional
+                .push(AffordanceRequirement::new(value()?)?),
             "--connect" => connectivity
                 .required
                 .push(LogicalConnectionRequirement::new(value()?)?),
@@ -510,9 +537,7 @@ fn parse_demand(args: &[String]) -> Result<ExecutionDemand, WorkcellError> {
         index += 2;
     }
 
-    let mut demand = ExecutionDemand::new(
-        DemandRef::new(demand_ref).map_err(WorkcellError::from)?,
-    );
+    let mut demand = ExecutionDemand::new(DemandRef::new(demand_ref).map_err(WorkcellError::from)?);
     demand.affordances = affordances;
     demand.connectivity = connectivity;
     demand.exposure = exposure;
@@ -578,7 +603,10 @@ fn resume(
         )
     })?;
     let encoded = fs::read_to_string(&receipt).map_err(|error| {
-        WorkcellError::NotFound(format!("read material-world receipt `{}`: {error}", receipt.display()))
+        WorkcellError::NotFound(format!(
+            "read material-world receipt `{}`: {error}",
+            receipt.display()
+        ))
     })?;
     let world = decode_world(&encoded)?;
     let channels = world_artifact_channels(&world);
@@ -698,9 +726,9 @@ fn parse_retention(value: &str) -> Result<RetentionExpectation, WorkcellError> {
 }
 
 fn parse_pair<'a>(value: &'a str, label: &str) -> Result<(&'a str, &'a str), WorkcellError> {
-    let (key, pair_value) = value.split_once('=').ok_or_else(|| {
-        WorkcellError::InvalidDemand(format!("{label} must use `key=value`"))
-    })?;
+    let (key, pair_value) = value
+        .split_once('=')
+        .ok_or_else(|| WorkcellError::InvalidDemand(format!("{label} must use `key=value`")))?;
     if key.trim().is_empty() || pair_value.trim().is_empty() {
         return Err(WorkcellError::InvalidDemand(format!(
             "{label} key and value must not be empty"
@@ -718,9 +746,9 @@ fn require_value<'a>(
     index: usize,
     flag: &str,
 ) -> Result<&'a str, WorkcellError> {
-    args.get(index + 1).map(String::as_str).ok_or_else(|| {
-        WorkcellError::InvalidDemand(format!("`{flag}` requires a value"))
-    })
+    args.get(index + 1)
+        .map(String::as_str)
+        .ok_or_else(|| WorkcellError::InvalidDemand(format!("`{flag}` requires a value")))
 }
 
 fn default_state_root() -> PathBuf {
@@ -774,9 +802,8 @@ fn receipt_count(state_root: &Path) -> Result<usize, WorkcellError> {
     if !worlds.exists() {
         return Ok(0);
     }
-    let entries = fs::read_dir(&worlds).map_err(|error| {
-        WorkcellError::OperationFailed(format!("read world receipts: {error}"))
-    })?;
+    let entries = fs::read_dir(&worlds)
+        .map_err(|error| WorkcellError::OperationFailed(format!("read world receipts: {error}")))?;
     Ok(entries
         .filter_map(Result::ok)
         .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("json"))
