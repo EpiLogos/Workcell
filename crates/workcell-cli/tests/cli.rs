@@ -44,7 +44,11 @@ fn json_stdout(output: &Output) -> Value {
 fn status_and_discovery_are_agent_operable_json() {
     let state = temp_path("status");
     let status = run(&["--state-root", path_arg(&state), "--json", "status"]);
-    assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stderr));
+    assert!(
+        status.status.success(),
+        "{}",
+        String::from_utf8_lossy(&status.stderr)
+    );
     let status_json = json_stdout(&status);
     assert_eq!(status_json["ok"], true);
     assert_eq!(status_json["workcell_ref"], "workcell:local");
