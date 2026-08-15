@@ -64,14 +64,18 @@ pub fn decode_demand(value: &Value) -> Result<ExecutionDemand, WorkcellError> {
         .map(|(key, value)| {
             Ok((
                 key.clone(),
-                ExternalRef::new(string(value, "subject reference")?).map_err(WorkcellError::from)?,
+                ExternalRef::new(string(value, "subject reference")?)
+                    .map_err(WorkcellError::from)?,
             ))
         })
         .collect::<Result<BTreeMap<_, _>, WorkcellError>>()?;
     demand.affordances = decode_tiered(object_field(object, "affordances")?, |value| {
         AffordanceRequirement::new(value)
     })?;
-    demand.workspace = match object.get("workspace").ok_or_else(|| missing("workspace"))? {
+    demand.workspace = match object
+        .get("workspace")
+        .ok_or_else(|| missing("workspace"))?
+    {
         Value::Null => None,
         value => {
             let workspace = object(value, "workspace")?;
@@ -304,7 +308,10 @@ fn tiered_strings<'a>(
     })
 }
 
-fn decode_tiered<T, F>(object: &Map<String, Value>, mut parse: F) -> Result<Tiered<T>, WorkcellError>
+fn decode_tiered<T, F>(
+    object: &Map<String, Value>,
+    mut parse: F,
+) -> Result<Tiered<T>, WorkcellError>
 where
     F: FnMut(&str) -> Result<T, WorkcellError>,
 {
@@ -438,22 +445,34 @@ fn object<'a>(value: &'a Value, label: &str) -> Result<&'a Map<String, Value>, W
         .ok_or_else(|| invalid(format!("{label} must be an object")))
 }
 
-fn object_field<'a>(map: &'a Map<String, Value>, key: &str) -> Result<&'a Map<String, Value>, WorkcellError> {
+fn object_field<'a>(
+    map: &'a Map<String, Value>,
+    key: &str,
+) -> Result<&'a Map<String, Value>, WorkcellError> {
     object(map.get(key).ok_or_else(|| missing(key))?, key)
 }
 
-fn map_field<'a>(map: &'a Map<String, Value>, key: &str) -> Result<&'a Map<String, Value>, WorkcellError> {
+fn map_field<'a>(
+    map: &'a Map<String, Value>,
+    key: &str,
+) -> Result<&'a Map<String, Value>, WorkcellError> {
     object_field(map, key)
 }
 
-fn array_field<'a>(map: &'a Map<String, Value>, key: &str) -> Result<&'a Vec<Value>, WorkcellError> {
+fn array_field<'a>(
+    map: &'a Map<String, Value>,
+    key: &str,
+) -> Result<&'a Vec<Value>, WorkcellError> {
     map.get(key)
         .ok_or_else(|| missing(key))?
         .as_array()
         .ok_or_else(|| invalid(format!("field `{key}` must be an array")))
 }
 
-fn string_array_field<'a>(map: &'a Map<String, Value>, key: &str) -> Result<Vec<&'a str>, WorkcellError> {
+fn string_array_field<'a>(
+    map: &'a Map<String, Value>,
+    key: &str,
+) -> Result<Vec<&'a str>, WorkcellError> {
     array_field(map, key)?
         .iter()
         .map(|value| string(value, key))
