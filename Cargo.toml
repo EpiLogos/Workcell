@@ -3,6 +3,7 @@ members = [
   "crates/workcell-arrakis",
   "crates/workcell-artifact",
   "crates/workcell-candidate",
+  "crates/workcell-cli",
   "crates/workcell-core",
   "crates/workcell-docker",
   "crates/workcell-interop",
