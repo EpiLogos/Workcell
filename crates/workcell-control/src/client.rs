@@ -271,7 +271,9 @@ where
             "unsatisfied-demand" => Err(ControlClientError::Remote(
                 WorkcellError::UnsatisfiedDemand(message),
             )),
-            "unavailable" => Err(ControlClientError::Remote(WorkcellError::Unavailable(message))),
+            "unavailable" => Err(ControlClientError::Remote(WorkcellError::Unavailable(
+                message,
+            ))),
             "degraded" => Err(ControlClientError::Remote(WorkcellError::Degraded(message))),
             "operation-failed" => Err(ControlClientError::Remote(WorkcellError::OperationFailed(
                 message,
