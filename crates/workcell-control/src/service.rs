@@ -114,14 +114,19 @@ where
 
     fn dispatch(&mut self, operation: &str, payload: &Value) -> Result<Value, WorkcellError> {
         match operation {
-            "status" => self.control.discover().map(|value| codec::status_value(&value)),
+            "status" => self
+                .control
+                .discover()
+                .map(|value| codec::status_value(&value)),
             "discover" => self
                 .control
                 .discover()
                 .map(|value| codec::discovery_value(&value)),
             "plan" => {
                 let demand = codec::decode_demand(payload)?;
-                self.control.plan(&demand).map(|value| codec::plan_value(&value))
+                self.control
+                    .plan(&demand)
+                    .map(|value| codec::plan_value(&value))
             }
             "prepare" => {
                 let demand = codec::decode_demand(payload)?;
@@ -191,7 +196,9 @@ fn workcell_error_parts(error: &WorkcellError) -> (&'static str, String) {
         WorkcellError::Degraded(message) => ("degraded", message.clone()),
         WorkcellError::OperationFailed(message) => ("operation-failed", message.clone()),
         WorkcellError::CleanupFailed(message) => ("cleanup-failed", message.clone()),
-        WorkcellError::ReconciliationFailed(message) => ("reconciliation-failed", message.clone()),
+        WorkcellError::ReconciliationFailed(message) => {
+            ("reconciliation-failed", message.clone())
+        }
         WorkcellError::NotFound(message) => ("not-found", message.clone()),
         WorkcellError::Unsupported(message) => ("unsupported", message.clone()),
     }
