@@ -15,7 +15,7 @@ Workcell core
         |
         v
 provider ports
-  workspace · execution · project-runtime · service · artifact/storage
+  workspace · execution · project-runtime · service · artifact/storage · fabric as proven
         |
         v
 BindingGraph + MaterialisedExecutionWorld
@@ -50,7 +50,34 @@ workcell client/SDK -> authenticated transport -> Workcell Control Service -> ap
 
 The Control Service is a transport host for the Workcell control plane. It is not a second planner, an agent gateway, a Harness, a session host or a universal application-data proxy. Service-process identity and transport choice do not become material-world or caller semantic identity.
 
+The protocol and the path that carries it are distinct. A Control Service may later be reached across Tailscale, ordinary private TCP, SSH forwarding, a cloud private network or another fabric without changing the Workcell operation semantics.
+
 See [`CONTROL-SERVICE-AND-AGENT-HOSTING.md`](CONTROL-SERVICE-AND-AGENT-HOSTING.md).
+
+## Connectivity / Fabric plane
+
+The canonical Workcell design already owns networking as **logical relationships resolved into material connectivity**. The Rust foundation currently expresses the portable side through `ExecutionDemand.connectivity` and provider-offer matching. The next fabric tranche makes the resolved relationship itself inspectable in planning, bindings and observation.
+
+Keep three things separate:
+
+```text
+host acquisition/bootstrap
+    how a machine is created or initially managed
+
+Workcell control connectivity
+    how a client reaches the Workcell Control Service
+
+material-world fabric
+    how Workcell-placed executions/services reach each other
+```
+
+One technology may participate in several layers, but it does not collapse them.
+
+Tailscale is the first rich reference fabric because it provides a serious private-network shape with stable device/service addressability, policy, service/host separation and multiple physical path modes. It remains a provider/reference implementation, not Workcell identity or semantic demand vocabulary.
+
+Current exe.dev is a useful contrasting remote-host/bootstrap specimen because its management API is SSH and the resulting VM has target-managed SSH/HTTPS reachability. It is not the fabric ontology and does not make SSH the Workcell Control protocol.
+
+See [`CONNECTIVITY-FABRIC.md`](CONNECTIVITY-FABRIC.md) and #26/#27.
 
 ## Persistent services and communication bindings
 
@@ -59,6 +86,8 @@ Workcell may materialise long-lived executable services with durable state, supe
 Those are material affordances. The meaning of a CLI, TUI, GUI, messaging channel, API, webhook or other agent-facing Surface belongs to the owning application/Harness and to higher-level operational resolution such as AIKit. Workcell supplies and observes the processes, bindings, storage and network relations beneath such Surfaces.
 
 Application protocols remain opaque unless a Workcell provider port genuinely owns a material property of that protocol. A WebSocket/HTTP/stdio/socket binding may be exposed without Workcell interpreting prompts, conversations, tool calls or Agent identity.
+
+Private reachability and public exposure remain distinct material properties. A provider may offer both, but a public path must not silently satisfy private-only intent and a private binding must not be reported as public.
 
 ## Full destination
 
@@ -77,6 +106,8 @@ The implementation must cover all canonical Workcell territories without collaps
 - F.11 reconciliation / lifecycle / recovery
 - F.12 deployment profiles
 
-The next product tranche makes those territories directly inhabitable through the native CLI, a zero-setup local profile, an optional Control Service, persistent service/agent-host conformance, public SDK/conformance tooling, the reference Ubuntu remote topology and source-pinned gateway-management integrations.
+The Fabric/networking work in #26 completes an already-canonical part of those responsibilities. It is **not** a new F.13.
 
-The reference Ubuntu worker is a specimen, not the ontology. Hermes/OpenClaw gateway integrations are conformance targets, not a gateway ontology. Later distribution is a placement/provider extension, not a reason to make a cluster framework or harness protocol part of semantic demand.
+The next product tranche makes those territories directly inhabitable through the native CLI, a zero-setup local profile, an optional Control Service, persistent service/agent-host conformance, public SDK/conformance tooling, the reference Ubuntu remote topology, real connectivity-fabric conformance, source-pinned remote bootstrap and gateway-management integrations.
+
+The reference Ubuntu worker is a specimen, not the ontology. Tailscale is a reference fabric, not the ontology. exe.dev is a reference remote-bootstrap shape, not the ontology. Hermes/OpenClaw gateway integrations are conformance targets, not a gateway ontology. Later distribution is a placement/provider extension, not a reason to make a cluster framework, VPN brand or harness protocol part of semantic demand.
