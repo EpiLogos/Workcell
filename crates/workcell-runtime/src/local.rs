@@ -207,6 +207,13 @@ impl CollapsedLocalWorkcell {
         self.control.world(world_ref)
     }
 
+    /// Re-enter a previously prepared material world from durable allocation
+    /// provenance. The world's semantic and material identities are preserved;
+    /// providers reconstruct their process-local records from the bindings.
+    pub fn register_world(&mut self, world: MaterialisedExecutionWorld) -> Result<()> {
+        self.control.register_world(world)
+    }
+
     fn workspace_request(
         &self,
         demand: &ExecutionDemand,
