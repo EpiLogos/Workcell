@@ -40,26 +40,6 @@ pub fn world_value(world: &MaterialisedExecutionWorld) -> Result<Value> {
             })
         })
         .collect::<Vec<_>>();
-    let exposures = world
-        .planned_exposures
-        .iter()
-        .map(planned_exposure_value)
-        .collect::<Vec<_>>();
-    let constraints = world
-        .planned_constraints
-        .iter()
-        .map(planned_constraint_value)
-        .collect::<Vec<_>>();
-    let degradations = world
-        .plan_degradations
-        .iter()
-        .map(degradation_value)
-        .collect::<Vec<_>>();
-    let omissions = world
-        .plan_omissions
-        .iter()
-        .map(omission_value)
-        .collect::<Vec<_>>();
 
     Ok(json!({
         "version": MATERIAL_WORLD_WIRE_VERSION,
@@ -67,14 +47,11 @@ pub fn world_value(world: &MaterialisedExecutionWorld) -> Result<Value> {
         "workcell_ref": world.workcell_ref.as_str(),
         "demand_ref": world.demand_ref.as_str(),
         "subjects": world.subjects.iter().map(|(key, value)| (key.clone(), Value::String(value.to_string()))).collect::<Map<_, _>>(),
-        "binding_graph": {
-            "bindings": bindings,
-            "relations": relations,
-        },
-        "planned_exposures": exposures,
-        "planned_constraints": constraints,
-        "plan_degradations": degradations,
-        "plan_omissions": omissions,
+        "binding_graph": {"bindings": bindings, "relations": relations},
+        "planned_exposures": world.planned_exposures.iter().map(exposure_value).collect::<Vec<_>>(),
+        "planned_constraints": world.planned_constraints.iter().map(constraint_value).collect::<Vec<_>>(),
+        "plan_degradations": world.plan_degradations.iter().map(degradation_value).collect::<Vec<_>>(),
+        "plan_omissions": world.plan_omissions.iter().map(omission_value).collect::<Vec<_>>(),
         "persistence": world.persistence.as_ref().map(persistence_str),
         "retention": retention_str(&world.retention),
         "state": health_str(&world.state),
@@ -83,26 +60,24 @@ pub fn world_value(world: &MaterialisedExecutionWorld) -> Result<Value> {
 }
 
 fn decode_world_value(value: &Value) -> Result<MaterialisedExecutionWorld> {
-    let object = object(value, "material world")?;
-    let version = string_field(object, "version")?;
+    let world = object(value, "material world")?;
+    let version = string_field(world, "version")?;
     if version != MATERIAL_WORLD_WIRE_VERSION {
         return Err(WorkcellError::Unsupported(format!(
             "material world wire version `{version}` is not supported"
         )));
     }
 
-    let subjects = map_field(object, "subjects")?
+    let subjects = map_field(world, "subjects")?
         .iter()
         .map(|(key, value)| {
             Ok((
                 key.clone(),
-                ExternalRef::new(string(value, "subject ref")?)
-                    .map_err(WorkcellError::from)?,
+                ExternalRef::new(string(value, "subject ref")?).map_err(WorkcellError::from)?,
             ))
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
-
-    let graph = object_field(object, "binding_graph")?;
+    let graph = object_field(world, "binding_graph")?;
     let bindings = array_field(graph, "bindings")?
         .iter()
         .map(decode_binding)
@@ -114,51 +89,46 @@ fn decode_world_value(value: &Value) -> Result<MaterialisedExecutionWorld> {
             Ok(BindingRelation {
                 from: BindingRef::new(string_field(relation, "from")?)
                     .map_err(WorkcellError::from)?,
-                to: BindingRef::new(string_field(relation, "to")?)
-                    .map_err(WorkcellError::from)?,
+                to: BindingRef::new(string_field(relation, "to")?).map_err(WorkcellError::from)?,
                 relation: string_field(relation, "relation")?.to_owned(),
             })
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let planned_exposures = array_field(object, "planned_exposures")?
-        .iter()
-        .map(decode_planned_exposure)
-        .collect::<Result<Vec<_>>>()?;
-    let planned_constraints = array_field(object, "planned_constraints")?
-        .iter()
-        .map(decode_planned_constraint)
-        .collect::<Result<Vec<_>>>()?;
-    let plan_degradations = array_field(object, "plan_degradations")?
-        .iter()
-        .map(decode_degradation)
-        .collect::<Result<Vec<_>>>()?;
-    let plan_omissions = array_field(object, "plan_omissions")?
-        .iter()
-        .map(decode_omission)
-        .collect::<Result<Vec<_>>>()?;
-
     Ok(MaterialisedExecutionWorld {
-        world_ref: WorldRef::new(string_field(object, "world_ref")?).map_err(WorkcellError::from)?,
-        workcell_ref: WorkcellRef::new(string_field(object, "workcell_ref")?)
+        world_ref: WorldRef::new(string_field(world, "world_ref")?)
             .map_err(WorkcellError::from)?,
-        demand_ref: DemandRef::new(string_field(object, "demand_ref")?)
+        workcell_ref: WorkcellRef::new(string_field(world, "workcell_ref")?)
+            .map_err(WorkcellError::from)?,
+        demand_ref: DemandRef::new(string_field(world, "demand_ref")?)
             .map_err(WorkcellError::from)?,
         subjects,
         binding_graph: BindingGraph {
             bindings,
             relations,
         },
-        planned_exposures,
-        planned_constraints,
-        plan_degradations,
-        plan_omissions,
-        persistence: optional_string_field(object, "persistence")?
+        planned_exposures: array_field(world, "planned_exposures")?
+            .iter()
+            .map(decode_exposure)
+            .collect::<Result<Vec<_>>>()?,
+        planned_constraints: array_field(world, "planned_constraints")?
+            .iter()
+            .map(decode_constraint)
+            .collect::<Result<Vec<_>>>()?,
+        plan_degradations: array_field(world, "plan_degradations")?
+            .iter()
+            .map(decode_degradation)
+            .collect::<Result<Vec<_>>>()?,
+        plan_omissions: array_field(world, "plan_omissions")?
+            .iter()
+            .map(decode_omission)
+            .collect::<Result<Vec<_>>>()?,
+        persistence: optional_string_field(world, "persistence")?
             .map(parse_persistence)
             .transpose()?,
-        retention: parse_retention(string_field(object, "retention")?)?,
-        state: parse_health(string_field(object, "state")?)?,
-        provenance: string_map_field(object, "provenance")?,
+        retention: parse_retention(string_field(world, "retention")?)?,
+        state: parse_health(string_field(world, "state")?)?,
+        provenance: string_map_field(world, "provenance")?,
     })
 }
 
@@ -198,7 +168,7 @@ fn decode_binding(value: &Value) -> Result<Binding> {
     })
 }
 
-fn planned_exposure_value(value: &PlannedExposure) -> Value {
+fn exposure_value(value: &PlannedExposure) -> Value {
     json!({
         "logical_ref": value.logical_ref,
         "requirement": value.requirement,
@@ -208,7 +178,7 @@ fn planned_exposure_value(value: &PlannedExposure) -> Value {
     })
 }
 
-fn decode_planned_exposure(value: &Value) -> Result<PlannedExposure> {
+fn decode_exposure(value: &Value) -> Result<PlannedExposure> {
     let value = object(value, "planned exposure")?;
     Ok(PlannedExposure {
         logical_ref: string_field(value, "logical_ref")?.to_owned(),
@@ -221,7 +191,7 @@ fn decode_planned_exposure(value: &Value) -> Result<PlannedExposure> {
     })
 }
 
-fn planned_constraint_value(value: &PlannedConstraint) -> Value {
+fn constraint_value(value: &PlannedConstraint) -> Value {
     json!({
         "logical_ref": value.logical_ref,
         "requirement": value.requirement,
@@ -231,7 +201,7 @@ fn planned_constraint_value(value: &PlannedConstraint) -> Value {
     })
 }
 
-fn decode_planned_constraint(value: &Value) -> Result<PlannedConstraint> {
+fn decode_constraint(value: &Value) -> Result<PlannedConstraint> {
     let value = object(value, "planned constraint")?;
     Ok(PlannedConstraint {
         logical_ref: string_field(value, "logical_ref")?.to_owned(),
@@ -291,9 +261,7 @@ fn parse_necessity(value: &str) -> Result<RequirementNecessity> {
         "required" => Ok(RequirementNecessity::Required),
         "preferred" => Ok(RequirementNecessity::Preferred),
         "optional" => Ok(RequirementNecessity::Optional),
-        other => Err(WorkcellError::InvalidDemand(format!(
-            "unknown requirement necessity `{other}`"
-        ))),
+        other => Err(invalid(format!("unknown requirement necessity `{other}`"))),
     }
 }
 
@@ -312,9 +280,7 @@ fn parse_health(value: &str) -> Result<HealthState> {
         "degraded" => Ok(HealthState::Degraded),
         "unavailable" => Ok(HealthState::Unavailable),
         "unknown" => Ok(HealthState::Unknown),
-        other => Err(WorkcellError::InvalidDemand(format!(
-            "unknown health state `{other}`"
-        ))),
+        other => Err(invalid(format!("unknown health state `{other}`"))),
     }
 }
 
@@ -337,9 +303,7 @@ fn parse_presence(value: &str) -> Result<BindingPresence> {
         "suspended" => Ok(BindingPresence::Suspended),
         "snapshotted" => Ok(BindingPresence::Snapshotted),
         "stale" => Ok(BindingPresence::Stale),
-        other => Err(WorkcellError::InvalidDemand(format!(
-            "unknown binding presence `{other}`"
-        ))),
+        other => Err(invalid(format!("unknown binding presence `{other}`"))),
     }
 }
 
@@ -390,9 +354,7 @@ fn parse_persistence(value: &str) -> Result<PersistenceScope> {
         "workcell" => Ok(PersistenceScope::Workcell),
         "factory" => Ok(PersistenceScope::Factory),
         "external" => Ok(PersistenceScope::External),
-        other => Err(WorkcellError::InvalidDemand(format!(
-            "unknown persistence scope `{other}`"
-        ))),
+        other => Err(invalid(format!("unknown persistence scope `{other}`"))),
     }
 }
 
@@ -411,16 +373,14 @@ fn parse_retention(value: &str) -> Result<RetentionExpectation> {
         "preserve" => Ok(RetentionExpectation::Preserve),
         "suspend-if-supported" => Ok(RetentionExpectation::SuspendIfSupported),
         "snapshot-if-supported" => Ok(RetentionExpectation::SnapshotIfSupported),
-        other => Err(WorkcellError::InvalidDemand(format!(
-            "unknown retention expectation `{other}`"
-        ))),
+        other => Err(invalid(format!("unknown retention expectation `{other}`"))),
     }
 }
 
 fn object<'a>(value: &'a Value, label: &str) -> Result<&'a Map<String, Value>> {
-    value.as_object().ok_or_else(|| {
-        WorkcellError::InvalidDemand(format!("{label} must be a JSON object"))
-    })
+    value
+        .as_object()
+        .ok_or_else(|| invalid(format!("{label} must be a JSON object")))
 }
 
 fn object_field<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a Map<String, Value>> {
@@ -436,7 +396,7 @@ fn array_field<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a Vec<
         .get(key)
         .ok_or_else(|| missing(key))?
         .as_array()
-        .ok_or_else(|| WorkcellError::InvalidDemand(format!("field `{key}` must be an array")))
+        .ok_or_else(|| invalid(format!("field `{key}` must be an array")))
 }
 
 fn string_field<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a str> {
@@ -451,9 +411,9 @@ fn optional_string_field<'a>(object: &'a Map<String, Value>, key: &str) -> Resul
 }
 
 fn string<'a>(value: &'a Value, label: &str) -> Result<&'a str> {
-    value.as_str().ok_or_else(|| {
-        WorkcellError::InvalidDemand(format!("{label} must be a JSON string"))
-    })
+    value
+        .as_str()
+        .ok_or_else(|| invalid(format!("{label} must be a JSON string")))
 }
 
 fn string_map_field(object: &Map<String, Value>, key: &str) -> Result<BTreeMap<String, String>> {
@@ -464,13 +424,16 @@ fn string_map_field(object: &Map<String, Value>, key: &str) -> Result<BTreeMap<S
 }
 
 fn missing(key: &str) -> WorkcellError {
-    WorkcellError::InvalidDemand(format!("material-world field `{key}` is missing"))
+    invalid(format!("material-world field `{key}` is missing"))
+}
+
+fn invalid(message: String) -> WorkcellError {
+    WorkcellError::InvalidDemand(message)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use epilogos_workcell_core::{BindingGraph, DemandRef, RetentionExpectation};
 
     #[test]
     fn empty_material_world_round_trips_without_semantic_translation() {
