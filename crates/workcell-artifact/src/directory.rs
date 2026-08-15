@@ -5,8 +5,8 @@ use std::{
 };
 
 use epilogos_workcell_core::{
-    ArtifactChannelRequest, ArtifactStorageProvider, Availability, HealthState, OfferRef,
-    OperationalOffer, ProviderAllocation, ProviderCollectedMaterial, ProviderObservation,
+    validate_allocation, ArtifactChannelRequest, ArtifactStorageProvider, Availability, HealthState,
+    OfferRef, OperationalOffer, ProviderAllocation, ProviderCollectedMaterial, ProviderObservation,
     ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult, ReleaseDisposition, Result,
     RetentionExpectation, WorkcellError,
 };
@@ -53,12 +53,29 @@ impl DirectoryArtifactStorageProvider {
         })
     }
 
-    fn record(&self, allocation: &ProviderAllocation) -> Result<&ChannelRecord> {
-        self.records.get(&allocation.material_ref).ok_or_else(|| {
-            WorkcellError::NotFound(format!(
-                "artifact channel `{}` is not known by this provider",
+    fn record(&self, allocation: &ProviderAllocation) -> Result<ChannelRecord> {
+        validate_allocation(self, allocation)?;
+        if let Some(record) = self.records.get(&allocation.material_ref) {
+            return Ok(record.clone());
+        }
+        let path = allocation.properties.get("path").ok_or_else(|| {
+            WorkcellError::OperationFailed(format!(
+                "persisted artifact channel `{}` has no path property",
                 allocation.material_ref
             ))
+        })?;
+        let logical_channel = allocation
+            .properties
+            .get("logical_channel")
+            .ok_or_else(|| {
+                WorkcellError::OperationFailed(format!(
+                    "persisted artifact channel `{}` has no logical_channel property",
+                    allocation.material_ref
+                ))
+            })?;
+        Ok(ChannelRecord {
+            path: PathBuf::from(path),
+            logical_channel: logical_channel.clone(),
         })
     }
 }
@@ -207,7 +224,7 @@ impl ArtifactStorageProvider for DirectoryArtifactStorageProvider {
         allocation: &ProviderAllocation,
         retention: &RetentionExpectation,
     ) -> Result<ProviderReleaseResult> {
-        let record = self.record(allocation)?.clone();
+        let record = self.record(allocation)?;
         match retention {
             RetentionExpectation::Preserve => Ok(ProviderReleaseResult {
                 provider_ref: self.provider_ref.clone(),
@@ -272,4 +289,59 @@ fn collect_files(root: &Path, current: &Path, output: &mut Vec<PathBuf>) -> Resu
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use epilogos_workcell_core::DemandRef;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_path(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "epilogos-workcell-{label}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn persisted_allocation_can_be_collected_and_released_after_provider_restart() {
+        let root = temp_path("artifact-restart");
+        let provider_ref = ProviderRef::new("provider:artifact-restart").unwrap();
+        let request = ArtifactChannelRequest {
+            demand_ref: DemandRef::new("demand:artifact-restart").unwrap(),
+            logical_channel: "logs:run".into(),
+            persistence: None,
+            retention: RetentionExpectation::Release,
+        };
+        let mut first = DirectoryArtifactStorageProvider::new(
+            provider_ref.clone(),
+            &root,
+            ["logs:run".into()],
+        )
+        .unwrap();
+        let allocation = first.prepare_artifact_channel(&request).unwrap();
+        let path = PathBuf::from(allocation.properties.get("path").unwrap());
+        fs::write(path.join("restart.log"), "persisted\n").unwrap();
+        drop(first);
+
+        let mut restarted = DirectoryArtifactStorageProvider::new(
+            provider_ref,
+            &root,
+            ["logs:run".into()],
+        )
+        .unwrap();
+        let collected = restarted.collect_material(&allocation).unwrap();
+        assert_eq!(collected.len(), 1);
+        assert!(collected[0].locator.ends_with("restart.log"));
+        restarted
+            .release_artifact_channel(&allocation, &RetentionExpectation::Release)
+            .unwrap();
+        assert!(!path.exists());
+        let _ = fs::remove_dir_all(root);
+    }
 }

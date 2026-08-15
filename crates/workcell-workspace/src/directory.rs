@@ -1,10 +1,10 @@
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use epilogos_workcell_core::{
-    Availability, HealthState, OfferRef, OperationalOffer, ProviderAllocation, ProviderObservation,
-    ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult, ReleaseDisposition, Result,
-    RetentionExpectation, WorkcellError, WorkspaceAccess, WorkspaceMaterialRequest,
-    WorkspaceProvider,
+    validate_allocation, Availability, HealthState, OfferRef, OperationalOffer, ProviderAllocation,
+    ProviderObservation, ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult,
+    ReleaseDisposition, Result, RetentionExpectation, WorkcellError, WorkspaceAccess,
+    WorkspaceMaterialRequest, WorkspaceProvider,
 };
 
 use crate::support::{
@@ -15,7 +15,7 @@ use crate::support::{
 #[derive(Clone, Debug)]
 struct DirectoryRecord {
     path: PathBuf,
-    baseline: u64,
+    baseline: Option<u64>,
     access: WorkspaceAccess,
     source_ref: Option<String>,
     source_locator: Option<String>,
@@ -52,6 +52,9 @@ impl DirectoryWorkspaceProvider {
         let mut provenance = BTreeMap::new();
         provenance.insert("provider_kind".into(), "directory".into());
         provenance.insert("source_dirty".into(), "unknown".into());
+        if let Some(value) = record.baseline {
+            provenance.insert("baseline_fingerprint".into(), value.to_string());
+        }
         if let Some(value) = &record.source_ref {
             provenance.insert("source_ref".into(), value.clone());
         }
@@ -72,12 +75,48 @@ impl DirectoryWorkspaceProvider {
         }
     }
 
-    fn record(&self, allocation: &ProviderAllocation) -> Result<&DirectoryRecord> {
-        self.records.get(&allocation.material_ref).ok_or_else(|| {
-            WorkcellError::NotFound(format!(
-                "directory workspace `{}` is not known by this provider",
+    fn record(&self, allocation: &ProviderAllocation) -> Result<DirectoryRecord> {
+        validate_allocation(self, allocation)?;
+        if let Some(record) = self.records.get(&allocation.material_ref) {
+            return Ok(record.clone());
+        }
+
+        let path = allocation.properties.get("path").ok_or_else(|| {
+            WorkcellError::OperationFailed(format!(
+                "persisted directory workspace `{}` has no path property",
                 allocation.material_ref
             ))
+        })?;
+        let access = match allocation.properties.get("access").map(String::as_str) {
+            Some("read-only") => WorkspaceAccess::ReadOnly,
+            Some("writable") => WorkspaceAccess::Writable,
+            other => {
+                return Err(WorkcellError::OperationFailed(format!(
+                    "persisted directory workspace `{}` has invalid access property {other:?}",
+                    allocation.material_ref
+                )))
+            }
+        };
+        let baseline = allocation
+            .provenance
+            .get("baseline_fingerprint")
+            .map(|value| {
+                value.parse::<u64>().map_err(|error| {
+                    WorkcellError::OperationFailed(format!(
+                        "persisted directory workspace `{}` has invalid baseline fingerprint: {error}",
+                        allocation.material_ref
+                    ))
+                })
+            })
+            .transpose()?;
+
+        Ok(DirectoryRecord {
+            path: PathBuf::from(path),
+            baseline,
+            access,
+            source_ref: allocation.provenance.get("source_ref").cloned(),
+            source_locator: allocation.provenance.get("source_locator").cloned(),
+            revision: allocation.provenance.get("source_revision").cloned(),
         })
     }
 }
@@ -176,7 +215,7 @@ impl WorkspaceProvider for DirectoryWorkspaceProvider {
 
         let record = DirectoryRecord {
             path: target,
-            baseline,
+            baseline: Some(baseline),
             access: request.access.clone(),
             source_ref: request.source.as_ref().map(ToString::to_string),
             source_locator: request
@@ -205,9 +244,13 @@ impl WorkspaceProvider for DirectoryWorkspaceProvider {
             });
         }
 
-        let dirty = fingerprint_tree(&record.path)? != record.baseline;
+        let dirty = record
+            .baseline
+            .map(|baseline| fingerprint_tree(&record.path).map(|current| current != baseline))
+            .transpose()?
+            .map_or_else(|| "unknown".into(), |value| value.to_string());
         detail.insert("exists".into(), "true".into());
-        detail.insert("dirty".into(), dirty.to_string());
+        detail.insert("dirty".into(), dirty);
         Ok(ProviderObservation {
             provider_ref: self.provider_ref.clone(),
             material_ref: allocation.material_ref.clone(),
@@ -222,10 +265,7 @@ impl WorkspaceProvider for DirectoryWorkspaceProvider {
         retention: &RetentionExpectation,
     ) -> Result<ProviderReleaseResult> {
         let observation = self.observe_workspace(allocation)?;
-        let dirty = observation
-            .detail
-            .get("dirty")
-            .is_some_and(|value| value == "true");
+        let dirty = observation.detail.get("dirty").map(String::as_str);
         match retention {
             RetentionExpectation::Preserve => Ok(ProviderReleaseResult {
                 provider_ref: self.provider_ref.clone(),
@@ -238,12 +278,20 @@ impl WorkspaceProvider for DirectoryWorkspaceProvider {
                 "directory workspace provider does not support suspend/snapshot".into(),
             )),
             RetentionExpectation::Release => {
-                if dirty {
+                if dirty == Some("true") {
                     return Err(WorkcellError::CleanupFailed(
                         "directory workspace is dirty; refusing silent discard".into(),
                     ));
                 }
-                let record = self.record(allocation)?.clone();
+                if observation.detail.get("exists").map(String::as_str) == Some("true")
+                    && dirty == Some("unknown")
+                {
+                    return Err(WorkcellError::CleanupFailed(
+                        "directory workspace baseline is unavailable; refusing unverifiable discard"
+                            .into(),
+                    ));
+                }
+                let record = self.record(allocation)?;
                 let changed = if record.path.exists() {
                     if record.access == WorkspaceAccess::ReadOnly {
                         make_directories_writable(&record.path)?;
