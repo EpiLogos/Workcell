@@ -96,8 +96,7 @@ fn decode_world_value(value: &Value) -> Result<MaterialisedExecutionWorld> {
         .collect::<Result<Vec<_>>>()?;
 
     Ok(MaterialisedExecutionWorld {
-        world_ref: WorldRef::new(string_field(world, "world_ref")?)
-            .map_err(WorkcellError::from)?,
+        world_ref: WorldRef::new(string_field(world, "world_ref")?).map_err(WorkcellError::from)?,
         workcell_ref: WorkcellRef::new(string_field(world, "workcell_ref")?)
             .map_err(WorkcellError::from)?,
         demand_ref: DemandRef::new(string_field(world, "demand_ref")?)
@@ -186,8 +185,7 @@ fn decode_exposure(value: &Value) -> Result<PlannedExposure> {
         necessity: parse_necessity(string_field(value, "necessity")?)?,
         provider_ref: ProviderRef::new(string_field(value, "provider_ref")?)
             .map_err(WorkcellError::from)?,
-        offer_ref: OfferRef::new(string_field(value, "offer_ref")?)
-            .map_err(WorkcellError::from)?,
+        offer_ref: OfferRef::new(string_field(value, "offer_ref")?).map_err(WorkcellError::from)?,
     })
 }
 
@@ -209,8 +207,7 @@ fn decode_constraint(value: &Value) -> Result<PlannedConstraint> {
         necessity: parse_necessity(string_field(value, "necessity")?)?,
         provider_ref: ProviderRef::new(string_field(value, "provider_ref")?)
             .map_err(WorkcellError::from)?,
-        offer_ref: OfferRef::new(string_field(value, "offer_ref")?)
-            .map_err(WorkcellError::from)?,
+        offer_ref: OfferRef::new(string_field(value, "offer_ref")?).map_err(WorkcellError::from)?,
     })
 }
 
