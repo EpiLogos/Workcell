@@ -1,8 +1,6 @@
 use std::{error::Error, fmt};
 
-use epilogos_workcell_core::{
-    DesiredMaterialState, ExecutionDemand, WorkcellError, WorldRef,
-};
+use epilogos_workcell_core::{DesiredMaterialState, ExecutionDemand, WorkcellError, WorldRef};
 use serde_json::{json, Value};
 
 use crate::{codec, ControlService, CONTROL_PROTOCOL_VERSION};
@@ -97,11 +95,19 @@ pub enum ControlClientError {
 impl fmt::Display for ControlClientError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::TransportUnavailable(message) => write!(formatter, "transport unavailable: {message}"),
-            Self::ProtocolIncompatible(message) => write!(formatter, "protocol incompatible: {message}"),
-            Self::AuthenticationFailed(message) => write!(formatter, "authentication failed: {message}"),
+            Self::TransportUnavailable(message) => {
+                write!(formatter, "transport unavailable: {message}")
+            }
+            Self::ProtocolIncompatible(message) => {
+                write!(formatter, "protocol incompatible: {message}")
+            }
+            Self::AuthenticationFailed(message) => {
+                write!(formatter, "authentication failed: {message}")
+            }
             Self::Remote(error) => write!(formatter, "remote Workcell error: {error}"),
-            Self::InvalidResponse(message) => write!(formatter, "invalid control response: {message}"),
+            Self::InvalidResponse(message) => {
+                write!(formatter, "invalid control response: {message}")
+            }
         }
     }
 }
@@ -181,11 +187,7 @@ where
         self.invoke("reconcile", codec::desired_value(desired))
     }
 
-    pub fn invoke(
-        &mut self,
-        operation: &str,
-        payload: Value,
-    ) -> Result<Value, ControlClientError> {
+    pub fn invoke(&mut self, operation: &str, payload: Value) -> Result<Value, ControlClientError> {
         let request_id = format!("request:{}", self.next_request_id);
         self.next_request_id += 1;
         let request = json!({
@@ -216,9 +218,12 @@ where
         let object = value.as_object().ok_or_else(|| {
             ControlClientError::InvalidResponse("response must be a JSON object".into())
         })?;
-        let version = object.get("version").and_then(Value::as_str).ok_or_else(|| {
-            ControlClientError::InvalidResponse("response version is missing".into())
-        })?;
+        let version = object
+            .get("version")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ControlClientError::InvalidResponse("response version is missing".into())
+            })?;
         if version != CONTROL_PROTOCOL_VERSION {
             return Err(ControlClientError::ProtocolIncompatible(format!(
                 "response protocol `{version}` is incompatible with `{CONTROL_PROTOCOL_VERSION}`"
@@ -248,28 +253,39 @@ where
             .get("error")
             .and_then(Value::as_object)
             .ok_or_else(|| ControlClientError::InvalidResponse("error body is missing".into()))?;
-        let kind = error.get("kind").and_then(Value::as_str).ok_or_else(|| {
-            ControlClientError::InvalidResponse("error kind is missing".into())
-        })?;
+        let kind = error
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ControlClientError::InvalidResponse("error kind is missing".into()))?;
         let message = error
             .get("message")
             .and_then(Value::as_str)
-            .ok_or_else(|| {
-                ControlClientError::InvalidResponse("error message is missing".into())
-            })?
+            .ok_or_else(|| ControlClientError::InvalidResponse("error message is missing".into()))?
             .to_owned();
         match kind {
             "protocol-incompatible" => Err(ControlClientError::ProtocolIncompatible(message)),
             "authentication-failed" => Err(ControlClientError::AuthenticationFailed(message)),
-            "invalid-demand" => Err(ControlClientError::Remote(WorkcellError::InvalidDemand(message))),
-            "unsatisfied-demand" => Err(ControlClientError::Remote(WorkcellError::UnsatisfiedDemand(message))),
+            "invalid-demand" => Err(ControlClientError::Remote(WorkcellError::InvalidDemand(
+                message,
+            ))),
+            "unsatisfied-demand" => Err(ControlClientError::Remote(
+                WorkcellError::UnsatisfiedDemand(message),
+            )),
             "unavailable" => Err(ControlClientError::Remote(WorkcellError::Unavailable(message))),
             "degraded" => Err(ControlClientError::Remote(WorkcellError::Degraded(message))),
-            "operation-failed" => Err(ControlClientError::Remote(WorkcellError::OperationFailed(message))),
-            "cleanup-failed" => Err(ControlClientError::Remote(WorkcellError::CleanupFailed(message))),
-            "reconciliation-failed" => Err(ControlClientError::Remote(WorkcellError::ReconciliationFailed(message))),
+            "operation-failed" => Err(ControlClientError::Remote(WorkcellError::OperationFailed(
+                message,
+            ))),
+            "cleanup-failed" => Err(ControlClientError::Remote(WorkcellError::CleanupFailed(
+                message,
+            ))),
+            "reconciliation-failed" => Err(ControlClientError::Remote(
+                WorkcellError::ReconciliationFailed(message),
+            )),
             "not-found" => Err(ControlClientError::Remote(WorkcellError::NotFound(message))),
-            "unsupported" => Err(ControlClientError::Remote(WorkcellError::Unsupported(message))),
+            "unsupported" => Err(ControlClientError::Remote(WorkcellError::Unsupported(
+                message,
+            ))),
             other => Err(ControlClientError::InvalidResponse(format!(
                 "unknown control error kind `{other}`: {message}"
             ))),
