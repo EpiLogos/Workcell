@@ -59,6 +59,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "epilogos-workcell-wire"
+version = "0.1.0"
+dependencies = [
+ "epilogos-workcell-core",
+ "serde_json",
+]
+
+[[package]]
 name = "epilogos-workcell-workspace"
 version = "0.1.0"
 dependencies = [

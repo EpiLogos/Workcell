@@ -8,6 +8,7 @@ members = [
   "crates/workcell-interop",
   "crates/workcell-placement",
   "crates/workcell-runtime",
+  "crates/workcell-wire",
   "crates/workcell-workspace",
 ]
 resolver = "2"
