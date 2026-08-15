@@ -380,28 +380,27 @@ fn object<'a>(value: &'a Value, label: &str) -> Result<&'a Map<String, Value>> {
         .ok_or_else(|| invalid(format!("{label} must be a JSON object")))
 }
 
-fn object_field<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a Map<String, Value>> {
-    object(object.get(key).ok_or_else(|| missing(key))?, key)
+fn object_field<'a>(map: &'a Map<String, Value>, key: &str) -> Result<&'a Map<String, Value>> {
+    object(map.get(key).ok_or_else(|| missing(key))?, key)
 }
 
-fn map_field<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a Map<String, Value>> {
-    object_field(object, key)
+fn map_field<'a>(map: &'a Map<String, Value>, key: &str) -> Result<&'a Map<String, Value>> {
+    object_field(map, key)
 }
 
-fn array_field<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a Vec<Value>> {
-    object
-        .get(key)
+fn array_field<'a>(map: &'a Map<String, Value>, key: &str) -> Result<&'a Vec<Value>> {
+    map.get(key)
         .ok_or_else(|| missing(key))?
         .as_array()
         .ok_or_else(|| invalid(format!("field `{key}` must be an array")))
 }
 
-fn string_field<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a str> {
-    string(object.get(key).ok_or_else(|| missing(key))?, key)
+fn string_field<'a>(map: &'a Map<String, Value>, key: &str) -> Result<&'a str> {
+    string(map.get(key).ok_or_else(|| missing(key))?, key)
 }
 
-fn optional_string_field<'a>(object: &'a Map<String, Value>, key: &str) -> Result<Option<&'a str>> {
-    match object.get(key).ok_or_else(|| missing(key))? {
+fn optional_string_field<'a>(map: &'a Map<String, Value>, key: &str) -> Result<Option<&'a str>> {
+    match map.get(key).ok_or_else(|| missing(key))? {
         Value::Null => Ok(None),
         value => string(value, key).map(Some),
     }
@@ -413,8 +412,8 @@ fn string<'a>(value: &'a Value, label: &str) -> Result<&'a str> {
         .ok_or_else(|| invalid(format!("{label} must be a JSON string")))
 }
 
-fn string_map_field(object: &Map<String, Value>, key: &str) -> Result<BTreeMap<String, String>> {
-    map_field(object, key)?
+fn string_map_field(map: &Map<String, Value>, key: &str) -> Result<BTreeMap<String, String>> {
+    map_field(map, key)?
         .iter()
         .map(|(name, value)| Ok((name.clone(), string(value, key)?.to_owned())))
         .collect()
