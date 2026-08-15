@@ -58,10 +58,10 @@ fn collapsed_local_materialises_shell_and_writable_workspace_without_daemon() {
     let demand = shell_workspace_demand();
 
     let discovery = workcell.discover().unwrap();
-    assert!(discovery.offers.iter().any(|offer| offer
-        .affordances
+    assert!(discovery
+        .offers
         .iter()
-        .any(|value| value == "shell")));
+        .any(|offer| offer.affordances.iter().any(|value| value == "shell")));
     assert!(discovery.offers.iter().any(|offer| offer
         .affordances
         .iter()

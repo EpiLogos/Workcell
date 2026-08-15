@@ -1,10 +1,4 @@
-use std::{
-    cell::RefCell,
-    collections::BTreeMap,
-    fs,
-    path::PathBuf,
-    rc::Rc,
-};
+use std::{cell::RefCell, collections::BTreeMap, fs, path::PathBuf, rc::Rc};
 
 use epilogos_workcell_artifact::DirectoryArtifactStorageProvider;
 use epilogos_workcell_core::{

@@ -158,10 +158,7 @@ impl ExecutionProvider for HostProcessExecutionProvider {
                 .code()
                 .map_or_else(|| "signal".into(), |code| code.to_string()),
         );
-        output.insert(
-            "success".into(),
-            result.status.success().to_string(),
-        );
+        output.insert("success".into(), result.status.success().to_string());
         output.insert(
             "stdout".into(),
             String::from_utf8_lossy(&result.stdout).into_owned(),
@@ -255,7 +252,13 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(result.output.get("success").map(String::as_str), Some("true"));
-        assert_eq!(result.output.get("stdout").map(String::as_str), Some("workcell"));
+        assert_eq!(
+            result.output.get("success").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            result.output.get("stdout").map(String::as_str),
+            Some("workcell")
+        );
     }
 }
