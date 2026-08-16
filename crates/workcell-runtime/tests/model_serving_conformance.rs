@@ -3,8 +3,9 @@ use std::{collections::BTreeMap, env};
 use epilogos_workcell_core::{
     plan, Availability, Capacity, DemandRef, Discovery, ExecutionDemand, ExecutionMaterialRequest,
     ExecutionProvider, ExternalRef, HealthState, LogicalConnectionRequirement, OfferRef,
-    OperationalOffer, PlanStatus, ProviderOperation, ProviderPort, ProviderPortKind, ProviderRef,
-    ResourceRequirement, RetentionExpectation, ServiceMaterialRequest, ServiceProvider, WorkcellRef,
+    OperationalOffer, PlanStatus, ProviderOperation, ProviderPortKind, ProviderRef,
+    ResourceRequirement, RetentionExpectation, ServiceMaterialRequest, ServiceProvider,
+    WorkcellRef,
 };
 use epilogos_workcell_runtime::{
     HostProcessExecutionProvider, ManagedHostService, ManagedHostServiceProvider, TcpEndpointProbe,
@@ -118,6 +119,25 @@ fn vllm_material_demand(placement: &str) -> ExecutionDemand {
     demand
 }
 
+fn inference_service_offer(provider_ref: &ProviderRef) -> OperationalOffer {
+    OperationalOffer {
+        offer_ref: OfferRef::new(format!("offer:{provider_ref}:inference")).unwrap(),
+        provider_ref: provider_ref.clone(),
+        port: ProviderPortKind::Service.as_str().into(),
+        affordances: vec!["service:managed-host-process".into()],
+        connections: vec![LOGICAL_INFERENCE_SERVICE.into()],
+        exposures: vec![],
+        isolation_trust: vec!["host-process".into()],
+        availability: Availability::Available,
+        health: HealthState::Healthy,
+        capacity: BTreeMap::new(),
+        metadata: BTreeMap::from([
+            ("engine".into(), "vllm".into()),
+            ("upstream_revision".into(), VLLM_REVISION.into()),
+        ]),
+    }
+}
+
 fn gpu_offer(provider_ref: &ProviderRef, amount: u64) -> OperationalOffer {
     OperationalOffer {
         offer_ref: OfferRef::new(format!("offer:{provider_ref}:gpu")).unwrap(),
@@ -163,12 +183,8 @@ fn provider_specific_recipes_remain_material_facts_on_one_service_contract() {
 #[test]
 fn vllm_accelerator_requirement_fails_without_capacity_and_plans_with_remote_capacity() {
     let demand = vllm_material_demand("remote");
-    let service_provider = ManagedHostServiceProvider::new(
-        ProviderRef::new("provider:vllm-service-shape").unwrap(),
-        [vllm_service("vllm", "provider-native-model-id", 18000)],
-    )
-    .unwrap();
-    let mut offers = service_provider.offers().unwrap();
+    let service_ref = ProviderRef::new("provider:vllm-service").unwrap();
+    let mut offers = vec![inference_service_offer(&service_ref)];
     let no_gpu = plan(
         &demand,
         &Discovery {
@@ -202,7 +218,14 @@ fn vllm_accelerator_requirement_fails_without_capacity_and_plans_with_remote_cap
         .planned_bindings
         .iter()
         .any(|binding| binding.provider_ref == remote_gpu));
-    assert_eq!(demand.subjects["model"].as_str(), "model:caller-owned/opaque");
+    assert!(with_gpu
+        .planned_bindings
+        .iter()
+        .any(|binding| binding.provider_ref == service_ref));
+    assert_eq!(
+        demand.subjects["model"].as_str(),
+        "model:caller-owned/opaque"
+    );
 }
 
 #[test]
@@ -241,7 +264,10 @@ fn live_ollama_service_lifecycle_when_explicitly_enabled() {
     let allocation = provider
         .resolve_service(&service_request("demand:ollama-live"))
         .unwrap();
-    assert_eq!(provider.observe_service(&allocation).unwrap().health, HealthState::Healthy);
+    assert_eq!(
+        provider.observe_service(&allocation).unwrap().health,
+        HealthState::Healthy
+    );
     provider
         .release_service(&allocation, &RetentionExpectation::Release)
         .unwrap();
@@ -290,7 +316,10 @@ fn live_llama_cpp_direct_and_server_forms_when_explicitly_enabled() {
             },
         )
         .unwrap();
-    assert_eq!(direct.output.get("success").map(String::as_str), Some("true"));
+    assert_eq!(
+        direct.output.get("success").map(String::as_str),
+        Some("true")
+    );
 
     let mut services = ManagedHostServiceProvider::new(
         ProviderRef::new("provider:llama-cpp-server-live").unwrap(),
@@ -300,7 +329,10 @@ fn live_llama_cpp_direct_and_server_forms_when_explicitly_enabled() {
     let service = services
         .resolve_service(&service_request("demand:llama-cpp-server-live"))
         .unwrap();
-    assert_eq!(services.observe_service(&service).unwrap().health, HealthState::Healthy);
+    assert_eq!(
+        services.observe_service(&service).unwrap().health,
+        HealthState::Healthy
+    );
     services
         .release_service(&service, &RetentionExpectation::Release)
         .unwrap();
@@ -325,7 +357,10 @@ fn live_vllm_service_when_gpu_environment_is_explicitly_enabled() {
     let allocation = provider
         .resolve_service(&service_request("demand:vllm-live"))
         .unwrap();
-    assert_eq!(provider.observe_service(&allocation).unwrap().health, HealthState::Healthy);
+    assert_eq!(
+        provider.observe_service(&allocation).unwrap().health,
+        HealthState::Healthy
+    );
     provider
         .release_service(&allocation, &RetentionExpectation::Release)
         .unwrap();
