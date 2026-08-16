@@ -76,7 +76,10 @@ fn direct_and_length_prefixed_paths_carry_equivalent_calls() {
 
     let direct_discovery = direct_client.discover().unwrap();
     let framed_discovery = framed_client.discover().unwrap();
-    assert_eq!(direct_discovery["workcell_ref"], framed_discovery["workcell_ref"]);
+    assert_eq!(
+        direct_discovery["workcell_ref"],
+        framed_discovery["workcell_ref"]
+    );
     assert_eq!(direct_discovery["health"], framed_discovery["health"]);
     assert_eq!(
         direct_discovery["offers"].as_array().unwrap().len(),
