@@ -25,7 +25,7 @@ pub fn demand_value(demand: &ExecutionDemand) -> Value {
             "revision": workspace.revision,
             "access": workspace_access(&workspace.access),
         })),
-        "project_runtime": demand.project_runtime.as_ref().map(|runtime| runtime.mode.as_str()),
+        "project_runtime": demand.project_runtime.as_ref().map(|runtime| runtime.as_str()),
         "resources": demand.resources.iter().map(|resource| json!({
             "key": resource.key,
             "minimum": resource.minimum,
@@ -54,12 +54,12 @@ pub fn demand_value(demand: &ExecutionDemand) -> Value {
 }
 
 pub fn decode_demand(value: &Value) -> Result<ExecutionDemand, WorkcellError> {
-    let object = object(value, "ExecutionDemand")?;
+    let payload = object(value, "ExecutionDemand")?;
     let mut demand = ExecutionDemand::new(
-        epilogos_workcell_core::DemandRef::new(string_field(object, "demand_ref")?)
+        epilogos_workcell_core::DemandRef::new(string_field(payload, "demand_ref")?)
             .map_err(WorkcellError::from)?,
     );
-    demand.subjects = map_field(object, "subjects")?
+    demand.subjects = map_field(payload, "subjects")?
         .iter()
         .map(|(key, value)| {
             Ok((
@@ -69,10 +69,10 @@ pub fn decode_demand(value: &Value) -> Result<ExecutionDemand, WorkcellError> {
             ))
         })
         .collect::<Result<BTreeMap<_, _>, WorkcellError>>()?;
-    demand.affordances = decode_tiered(object_field(object, "affordances")?, |value| {
+    demand.affordances = decode_tiered(object_field(payload, "affordances")?, |value| {
         AffordanceRequirement::new(value)
     })?;
-    demand.workspace = match object
+    demand.workspace = match payload
         .get("workspace")
         .ok_or_else(|| missing("workspace"))?
     {
@@ -88,10 +88,10 @@ pub fn decode_demand(value: &Value) -> Result<ExecutionDemand, WorkcellError> {
             })
         }
     };
-    demand.project_runtime = optional_string_field(object, "project_runtime")?
+    demand.project_runtime = optional_string_field(payload, "project_runtime")?
         .map(ProjectRuntimeRequirement::new)
         .transpose()?;
-    demand.resources = array_field(object, "resources")?
+    demand.resources = array_field(payload, "resources")?
         .iter()
         .map(|value| {
             let resource = object(value, "resource")?;
@@ -102,23 +102,23 @@ pub fn decode_demand(value: &Value) -> Result<ExecutionDemand, WorkcellError> {
             })
         })
         .collect::<Result<Vec<_>, WorkcellError>>()?;
-    demand.connectivity = decode_tiered(object_field(object, "connectivity")?, |value| {
+    demand.connectivity = decode_tiered(object_field(payload, "connectivity")?, |value| {
         LogicalConnectionRequirement::new(value)
     })?;
-    demand.exposure = decode_tiered(object_field(object, "exposure")?, |value| {
+    demand.exposure = decode_tiered(object_field(payload, "exposure")?, |value| {
         ExposureRequirement::new(value)
     })?;
-    demand.outputs = decode_tiered(object_field(object, "outputs")?, |value| {
+    demand.outputs = decode_tiered(object_field(payload, "outputs")?, |value| {
         OutputRequirement::new(value)
     })?;
-    demand.persistence = optional_string_field(object, "persistence")?
+    demand.persistence = optional_string_field(payload, "persistence")?
         .map(parse_persistence)
         .transpose()?;
-    demand.isolation_trust = optional_string_field(object, "isolation_trust")?
+    demand.isolation_trust = optional_string_field(payload, "isolation_trust")?
         .map(IsolationTrustRequirement::new)
         .transpose()?;
-    demand.retention = parse_retention(string_field(object, "retention")?)?;
-    demand.extensions = string_map_field(object, "extensions")?;
+    demand.retention = parse_retention(string_field(payload, "retention")?)?;
+    demand.extensions = string_map_field(payload, "extensions")?;
     demand.validate()?;
     Ok(demand)
 }
@@ -262,8 +262,8 @@ pub fn desired_value(desired: &[DesiredMaterialState]) -> Value {
 }
 
 pub fn decode_desired(value: &Value) -> Result<Vec<DesiredMaterialState>, WorkcellError> {
-    let object = object(value, "reconcile payload")?;
-    array_field(object, "desired")?
+    let payload = object(value, "reconcile payload")?;
+    array_field(payload, "desired")?
         .iter()
         .map(|value| {
             let item = object(value, "desired material state")?;
