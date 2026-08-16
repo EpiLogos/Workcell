@@ -77,19 +77,24 @@ fn client_sdk_preserves_transport_unavailability_as_a_distinct_failure() {
 }
 
 fn model_serving_demand(engine: &str, placement: &str) -> ExecutionDemand {
-    let mut demand = ExecutionDemand::new(DemandRef::new(format!("demand:model:{engine}")).unwrap())
-        .with_subject(
-            "model",
-            ExternalRef::new("model:qwen2.5-coder-32b").unwrap(),
-        )
-        .with_subject("variant", ExternalRef::new("variant:q4-k-m").unwrap());
+    let mut demand =
+        ExecutionDemand::new(DemandRef::new(format!("demand:model:{engine}")).unwrap())
+            .with_subject(
+                "model",
+                ExternalRef::new("model:qwen2.5-coder-32b").unwrap(),
+            )
+            .with_subject("variant", ExternalRef::new("variant:q4-k-m").unwrap());
     demand.resources.push(ResourceRequirement {
         key: "accelerator".into(),
         minimum: Some(1),
         unit: Some("device".into()),
     });
-    demand.extensions.insert("inference-engine".into(), engine.into());
-    demand.extensions.insert("placement".into(), placement.into());
+    demand
+        .extensions
+        .insert("inference-engine".into(), engine.into());
+    demand
+        .extensions
+        .insert("placement".into(), placement.into());
     demand
 }
 
@@ -101,10 +106,7 @@ fn model_serving_conformance_uses_ordinary_opaque_material_demands() {
 
     for demand in [&ollama, &llama_cpp, &vllm] {
         demand.validate().unwrap();
-        assert_eq!(
-            demand.subjects["model"].as_str(),
-            "model:qwen2.5-coder-32b"
-        );
+        assert_eq!(demand.subjects["model"].as_str(), "model:qwen2.5-coder-32b");
         assert_eq!(demand.resources[0].key, "accelerator");
     }
 
