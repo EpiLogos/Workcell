@@ -72,11 +72,16 @@ fn direct_and_length_prefixed_paths_carry_equivalent_calls() {
 
     let (framed_workcell, framed_root) = local("framed-path");
     let mut framed_service = ControlService::new(framed_workcell);
-    let mut framed_client =
-        ControlClient::new(LengthPrefixedTransport::new(&mut framed_service));
+    let mut framed_client = ControlClient::new(LengthPrefixedTransport::new(&mut framed_service));
 
-    assert_eq!(direct_client.discover().unwrap(), framed_client.discover().unwrap());
-    assert_eq!(direct_client.plan(&demand).unwrap(), framed_client.plan(&demand).unwrap());
+    assert_eq!(
+        direct_client.discover().unwrap(),
+        framed_client.discover().unwrap()
+    );
+    assert_eq!(
+        direct_client.plan(&demand).unwrap(),
+        framed_client.plan(&demand).unwrap()
+    );
 
     let _ = fs::remove_dir_all(direct_root);
     let _ = fs::remove_dir_all(framed_root);
@@ -92,8 +97,8 @@ fn authentication_protocol_transport_and_remote_failures_remain_distinct() {
         Err(ControlClientError::AuthenticationFailed(_))
     ));
     drop(unauthenticated);
-    let mut authenticated = ControlClient::new(DirectTransport::new(&mut auth_service))
-        .with_authorization("secret");
+    let mut authenticated =
+        ControlClient::new(DirectTransport::new(&mut auth_service)).with_authorization("secret");
     assert!(authenticated.discover().is_ok());
 
     let (version_workcell, version_root) = local("version");
@@ -113,8 +118,7 @@ fn authentication_protocol_transport_and_remote_failures_remain_distinct() {
 
     let (remote_failure_workcell, remote_failure_root) = local("remote-failure");
     let mut remote_failure_service = ControlService::new(remote_failure_workcell);
-    let mut remote_failure =
-        ControlClient::new(DirectTransport::new(&mut remote_failure_service));
+    let mut remote_failure = ControlClient::new(DirectTransport::new(&mut remote_failure_service));
     let missing_world = WorldRef::new("world:missing").unwrap();
     assert!(matches!(
         remote_failure.observe(&missing_world),
@@ -134,7 +138,13 @@ fn service_hosts_the_same_complete_operation_surface() {
     let mut client = ControlClient::new(DirectTransport::new(&mut service));
 
     assert_eq!(client.status().unwrap()["health"], "healthy");
-    assert!(client.discover().unwrap()["offers"].as_array().unwrap().len() >= 3);
+    assert!(
+        client.discover().unwrap()["offers"]
+            .as_array()
+            .unwrap()
+            .len()
+            >= 3
+    );
     assert_eq!(client.plan(&demand).unwrap()["status"], "satisfiable");
 
     let prepared = client.prepare(&demand).unwrap();
