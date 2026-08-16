@@ -620,11 +620,14 @@ impl ServiceProvider for ManagedHostServiceProvider {
                     .remove(&allocation.material_ref)
                     .expect("managed service record checked before removal");
                 let mut child = record.child.into_inner();
-                if child.try_wait().map_err(|error| {
-                    WorkcellError::OperationFailed(format!(
-                        "observe managed service during release: {error}"
-                    ))
-                })?.is_none()
+                if child
+                    .try_wait()
+                    .map_err(|error| {
+                        WorkcellError::OperationFailed(format!(
+                            "observe managed service during release: {error}"
+                        ))
+                    })?
+                    .is_none()
                 {
                     child.kill().map_err(|error| {
                         WorkcellError::OperationFailed(format!(
