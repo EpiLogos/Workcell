@@ -215,9 +215,9 @@ fn vllm_accelerator_requirement_fails_without_capacity_and_plans_with_remote_cap
     .unwrap();
     assert_eq!(with_gpu.status, PlanStatus::Satisfiable);
     assert!(with_gpu
-        .planned_bindings
+        .planned_constraints
         .iter()
-        .any(|binding| binding.provider_ref == remote_gpu));
+        .any(|constraint| constraint.provider_ref == remote_gpu));
     assert!(with_gpu
         .planned_bindings
         .iter()
