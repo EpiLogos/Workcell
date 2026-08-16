@@ -1,0 +1,9 @@
+[package]
+name = "epilogos-workcell-sdk"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+epilogos-workcell-control = { path = "../workcell-control" }
+epilogos-workcell-core = { path = "../workcell-core" }

@@ -10,6 +10,7 @@ members = [
   "crates/workcell-interop",
   "crates/workcell-placement",
   "crates/workcell-runtime",
+  "crates/workcell-sdk",
   "crates/workcell-wire",
   "crates/workcell-workspace",
 ]
