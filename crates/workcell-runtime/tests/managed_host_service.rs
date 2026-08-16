@@ -11,9 +11,7 @@ use epilogos_workcell_core::{
     Availability, DemandRef, HealthState, LogicalConnectionRequirement, ProviderPort, ProviderRef,
     RetentionExpectation, ServiceMaterialRequest, ServiceProvider,
 };
-use epilogos_workcell_runtime::{
-    ManagedHostService, ManagedHostServiceProvider, TcpEndpointProbe,
-};
+use epilogos_workcell_runtime::{ManagedHostService, ManagedHostServiceProvider, TcpEndpointProbe};
 
 const CHILD_ENV: &str = "WORKCELL_MANAGED_SERVICE_CHILD";
 const CHILD_ADDR_ENV: &str = "WORKCELL_MANAGED_SERVICE_CHILD_ADDR";
@@ -103,13 +101,14 @@ fn managed_host_service_starts_becomes_reachable_and_releases() {
     assert_eq!(offer.connections, vec![logical_ref]);
 
     let allocation = provider.resolve_service(&request(logical_ref)).unwrap();
+    let expected_endpoint = format!("http://127.0.0.1:{port}");
     assert_eq!(
         allocation.properties.get("logical_ref").map(String::as_str),
         Some(logical_ref)
     );
     assert_eq!(
         allocation.properties.get("endpoint").map(String::as_str),
-        Some(format!("http://127.0.0.1:{port}").as_str())
+        Some(expected_endpoint.as_str())
     );
     assert!(allocation.properties.contains_key("pid"));
     assert_eq!(
@@ -122,7 +121,10 @@ fn managed_host_service_starts_becomes_reachable_and_releases() {
 
     let observation = provider.observe_service(&allocation).unwrap();
     assert_eq!(observation.health, HealthState::Healthy);
-    assert_eq!(observation.detail.get("running").map(String::as_str), Some("true"));
+    assert_eq!(
+        observation.detail.get("running").map(String::as_str),
+        Some("true")
+    );
     assert_eq!(
         observation.detail.get("reachable").map(String::as_str),
         Some("true")
@@ -149,7 +151,10 @@ fn process_disappearance_degrades_observation_and_rematerialises_without_identit
     thread::sleep(Duration::from_millis(160));
     let missing = provider.observe_service(&first).unwrap();
     assert_eq!(missing.health, HealthState::Unavailable);
-    assert_eq!(missing.detail.get("running").map(String::as_str), Some("false"));
+    assert_eq!(
+        missing.detail.get("running").map(String::as_str),
+        Some("false")
+    );
 
     provider
         .release_service(&first, &RetentionExpectation::Release)
