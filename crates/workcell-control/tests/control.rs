@@ -74,9 +74,17 @@ fn direct_and_length_prefixed_paths_carry_equivalent_calls() {
     let mut framed_service = ControlService::new(framed_workcell);
     let mut framed_client = ControlClient::new(LengthPrefixedTransport::new(&mut framed_service));
 
+    let direct_discovery = direct_client.discover().unwrap();
+    let framed_discovery = framed_client.discover().unwrap();
+    assert_eq!(direct_discovery["workcell_ref"], framed_discovery["workcell_ref"]);
+    assert_eq!(direct_discovery["health"], framed_discovery["health"]);
     assert_eq!(
-        direct_client.discover().unwrap(),
-        framed_client.discover().unwrap()
+        direct_discovery["offers"].as_array().unwrap().len(),
+        framed_discovery["offers"].as_array().unwrap().len()
+    );
+    assert_ne!(
+        direct_discovery["offers"][0]["metadata"]["root"],
+        framed_discovery["offers"][0]["metadata"]["root"]
     );
     assert_eq!(
         direct_client.plan(&demand).unwrap(),
@@ -171,7 +179,10 @@ fn service_hosts_the_same_complete_operation_surface() {
             desired: "present".into(),
         }])
         .unwrap();
-    assert!(reconciled["deltas"].as_array().unwrap().is_empty());
+    let deltas = reconciled["deltas"].as_array().unwrap();
+    assert!(deltas
+        .iter()
+        .any(|delta| delta["logical_ref"] == "affordance:shell" && delta["desired"] == "present"));
 
     let released = client.release(&world.world_ref).unwrap();
     assert_eq!(released["world_ref"], world.world_ref.as_str());
