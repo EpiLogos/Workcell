@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "repository": "https://github.com/EpiLogos/Workcell",
   "source_checkout": "Workcell",
+  "lockfile": "Cargo.lock",
   "artifact": {
     "kind": "cli",
     "entry": "workcell",
