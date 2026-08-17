@@ -40,7 +40,11 @@ fn resolve_active<P: SecretProvider>(
     Ok(material)
 }
 
-fn child_command(program: &str, args: &[String], environment: &BTreeMap<String, String>) -> Command {
+fn child_command(
+    program: &str,
+    args: &[String],
+    environment: &BTreeMap<String, String>,
+) -> Command {
     let mut command = Command::new(program);
     command.args(args).env_clear().envs(environment);
     command
@@ -92,9 +96,9 @@ pub fn run_with_secret_env<P: SecretProvider>(
     let secret = material.value.expose_for_materialisation();
     let mut command = child_command(program, args, environment);
     command.env(&request.destination, secret);
-    let output = command
-        .output()
-        .map_err(|error| WorkcellError::OperationFailed(format!("child process failed: {error}")))?;
+    let output = command.output().map_err(|error| {
+        WorkcellError::OperationFailed(format!("child process failed: {error}"))
+    })?;
     let output = redact_output(output, secret);
     let refresh = match request.class {
         SecretMaterialisationClass::ProcessEnv => SecretRefreshRequirement::RestartRequired,
@@ -123,16 +127,20 @@ pub fn run_with_secret_pipe<P: SecretProvider>(
     let material = resolve_active(provider, request)?;
     let secret = material.value.expose_for_materialisation();
     let mut command = child_command(program, args, environment);
-    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|error| WorkcellError::OperationFailed(format!("child process failed: {error}")))?;
-    let mut stdin = child.stdin.take().ok_or_else(|| {
-        WorkcellError::OperationFailed("child stdin pipe was not created".into())
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().map_err(|error| {
+        WorkcellError::OperationFailed(format!("child process failed: {error}"))
     })?;
-    stdin
-        .write_all(secret.as_bytes())
-        .map_err(|error| WorkcellError::OperationFailed(format!("secret pipe write failed: {error}")))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| WorkcellError::OperationFailed("child stdin pipe was not created".into()))?;
+    stdin.write_all(secret.as_bytes()).map_err(|error| {
+        WorkcellError::OperationFailed(format!("secret pipe write failed: {error}"))
+    })?;
     drop(stdin);
     let output = child
         .wait_with_output()
@@ -140,11 +148,7 @@ pub fn run_with_secret_pipe<P: SecretProvider>(
     let output = redact_output(output, secret);
     Ok(MaterialisedChild {
         output,
-        receipt: receipt_for(
-            request,
-            &material,
-            SecretRefreshRequirement::NoneAfterExit,
-        ),
+        receipt: receipt_for(request, &material, SecretRefreshRequirement::NoneAfterExit),
     })
 }
 
@@ -179,19 +183,16 @@ pub fn run_with_secret_file<P: SecretProvider>(
 
     let output_result = child_command(program, args, environment).output();
     let cleanup_result = fs::remove_file(path);
-    let output = output_result
-        .map_err(|error| WorkcellError::OperationFailed(format!("child process failed: {error}")))?;
+    let output = output_result.map_err(|error| {
+        WorkcellError::OperationFailed(format!("child process failed: {error}"))
+    })?;
     cleanup_result.map_err(|error| {
         WorkcellError::CleanupFailed(format!("secret file cleanup failed: {error}"))
     })?;
 
     Ok(MaterialisedChild {
         output: redact_output(output, secret),
-        receipt: receipt_for(
-            request,
-            &material,
-            SecretRefreshRequirement::NoneAfterExit,
-        ),
+        receipt: receipt_for(request, &material, SecretRefreshRequirement::NoneAfterExit),
     })
 }
 
@@ -227,7 +228,10 @@ mod tests {
         }
     }
 
-    fn request(class: SecretMaterialisationClass, destination: String) -> SecretMaterialisationRequest {
+    fn request(
+        class: SecretMaterialisationClass,
+        destination: String,
+    ) -> SecretMaterialisationRequest {
         SecretMaterialisationRequest {
             credential_ref: ExternalRef::new("credential:fixture/service").unwrap(),
             provider_ref: ProviderRef::new("secret-provider:fixture").unwrap(),
@@ -264,9 +268,15 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(String::from_utf8(child.output.stdout).unwrap(), "[REDACTED]|unset");
+        assert_eq!(
+            String::from_utf8(child.output.stdout).unwrap(),
+            "[REDACTED]|unset"
+        );
         assert!(env::var_os(secret_var).is_none());
-        assert_eq!(child.receipt.refresh_requirement, SecretRefreshRequirement::RestartRequired);
+        assert_eq!(
+            child.receipt.refresh_requirement,
+            SecretRefreshRequirement::RestartRequired
+        );
         assert!(!format!("{:?}", child.receipt).contains("RAW_CHILD_SECRET"));
     }
 
@@ -290,7 +300,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(String::from_utf8(child.output.stdout).unwrap(), "[REDACTED]|unset");
+        assert_eq!(
+            String::from_utf8(child.output.stdout).unwrap(),
+            "[REDACTED]|unset"
+        );
     }
 
     #[test]
@@ -318,7 +331,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(String::from_utf8(child.output.stdout).unwrap(), "[REDACTED]|unset");
+        assert_eq!(
+            String::from_utf8(child.output.stdout).unwrap(),
+            "[REDACTED]|unset"
+        );
         assert!(!path.exists());
     }
 
@@ -338,7 +354,10 @@ mod tests {
             SecretMaterialisationClass::OneShotChildProcess,
             "WORKCELL_ROTATING_SECRET".into(),
         );
-        let args = vec!["-c".into(), "printf '%s' \"$WORKCELL_ROTATING_SECRET\"".into()];
+        let args = vec![
+            "-c".into(),
+            "printf '%s' \"$WORKCELL_ROTATING_SECRET\"".into(),
+        ];
         let first = run_with_secret_env(&v1, &req, "sh", &args, &BTreeMap::new()).unwrap();
         let second = run_with_secret_env(&v2, &req, "sh", &args, &BTreeMap::new()).unwrap();
 
