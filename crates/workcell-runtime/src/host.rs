@@ -309,9 +309,7 @@ impl ExecutionProvider for HostProcessExecutionProvider {
         // Consume before the side effect. A spawn/exec failure does not restore
         // authority and therefore cannot be turned into an amplification loop.
         stored.uses += 1;
-        stored
-            .operations
-            .insert(operation_id.clone(), fingerprint);
+        stored.operations.insert(operation_id.clone(), fingerprint);
         let external_authority_ref = stored.grant.authority_ref.clone();
 
         let mut command = Command::new(program);
@@ -452,7 +450,10 @@ mod tests {
             .unwrap();
 
         let denied = provider
-            .execute_operation(&allocation, &process_operation(None, "operation/no-authority"))
+            .execute_operation(
+                &allocation,
+                &process_operation(None, "operation/no-authority"),
+            )
             .unwrap_err();
         assert!(denied.to_string().contains("explicit material authority"));
 
