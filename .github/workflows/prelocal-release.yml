@@ -89,9 +89,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag='workcell-v0.1.0-prelocal.1'
+          tag='workcell-v0.1.0-prelocal.2'
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "release $tag already exists; refusing to mutate an accepted release" >&2
             exit 1
           fi
-          gh release create "$tag" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title 'Workcell 0.1.0 pre-local.1' --notes 'First O:I suite pre-local artifact. Physical workstation/provider acceptance is not claimed.'
+          gh release create "$tag" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title 'Workcell 0.1.0 pre-local.2' --notes 'Accepted O:I suite pre-local.2 artifact. Physical workstation/provider acceptance is not claimed.'
