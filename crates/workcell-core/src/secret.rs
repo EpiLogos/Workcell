@@ -227,7 +227,8 @@ pub fn authorise_broker_boundary<P: SecretProvider>(
             "broker boundary requires CredentialBroker materialisation class".into(),
         ));
     }
-    if handle.credential_ref != request.credential_ref || handle.binding_ref != request.binding_ref {
+    if handle.credential_ref != request.credential_ref || handle.binding_ref != request.binding_ref
+    {
         return Err(WorkcellError::UnsatisfiedDemand(
             "broker handle does not match requested credential/binding".into(),
         ));
@@ -346,10 +347,9 @@ mod tests {
             purpose: request.purpose.clone(),
             scope: request.scope.clone(),
         };
-        assert!(authorise_broker_boundary(
-            &provider, &policy, &handle, &request, &attacker
-        )
-        .is_err());
+        assert!(
+            authorise_broker_boundary(&provider, &policy, &handle, &request, &attacker).is_err()
+        );
 
         let widened = BrokerRoute {
             destination_host: "api.github.com".into(),
@@ -357,9 +357,8 @@ mod tests {
             purpose: request.purpose.clone(),
             scope: "repo:write".into(),
         };
-        assert!(authorise_broker_boundary(
-            &provider, &policy, &handle, &request, &widened
-        )
-        .is_err());
+        assert!(
+            authorise_broker_boundary(&provider, &policy, &handle, &request, &widened).is_err()
+        );
     }
 }
