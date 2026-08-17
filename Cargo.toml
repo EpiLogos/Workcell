@@ -1,0 +1,19 @@
+[workspace]
+members = [
+  "crates/workcell-arrakis",
+  "crates/workcell-artifact",
+  "crates/workcell-candidate",
+  "crates/workcell-cli",
+  "crates/workcell-control",
+  "crates/workcell-core",
+  "crates/workcell-docker",
+  "crates/workcell-interop",
+  "crates/workcell-placement",
+  "crates/workcell-runtime",
+  "crates/workcell-wire",
+  "crates/workcell-workspace",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"

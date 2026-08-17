@@ -1,0 +1,12 @@
+[package]
+name = "epilogos-workcell-control"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+epilogos-workcell-core = { path = "../workcell-core" }
+epilogos-workcell-wire = { path = "../workcell-wire" }
+serde_json = "1"
+
+[dev-dependencies]
+epilogos-workcell-runtime = { path = "../workcell-runtime" }

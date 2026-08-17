@@ -1,0 +1,238 @@
+{
+  "fixtureVersion": "factory.interop-fixtures/v1",
+  "contract": {
+    "contractVersion": "factory.interop/v1",
+    "identityEnvelope": {
+      "ref": "factory:candidate:c-1",
+      "revision": 2,
+      "provenance": {
+        "sourceRef": "source:git:EpiLogos/agent-system-design",
+        "sourceRevision": "git:d81fe4c",
+        "producerExecutionRef": "factory:execution:e-1",
+        "generationRef": "factory:generation:g-1"
+      },
+      "subjectState": {
+        "subjectRef": "factory:candidate:c-1",
+        "stateRef": "candidate-state:c-1.rev-2",
+        "revision": 2
+      }
+    },
+    "actionDescriptor": {
+      "actionRef": "factory:action:update",
+      "ownerProjectRef": "factory:project:factory",
+      "catalogRef": "action-catalog:factory",
+      "definitionRevision": 3,
+      "name": "update",
+      "description": "Update the project through its canonical domain operation.",
+      "inputContractRef": "schema:action:update.input/v1",
+      "outputContractRef": "schema:action:update.output/v1",
+      "provenance": {
+        "sourceRef": "source:project:factory",
+        "sourceRevision": "rev:3",
+        "producerExecutionRef": "factory:execution:e-1",
+        "generationRef": "factory:generation:g-1"
+      }
+    },
+    "capabilityDescriptor": {
+      "capabilityRef": "factory:capability:browser",
+      "ownerRef": "capability-source:browser",
+      "kind": "tool",
+      "definitionRevision": 5,
+      "name": "browser",
+      "providerRef": "provider:browser",
+      "provenance": {
+        "sourceRef": "source:capability:browser",
+        "sourceRevision": "rev:5",
+        "producerExecutionRef": "factory:execution:e-1",
+        "generationRef": "factory:generation:g-1"
+      }
+    },
+    "projectBinding": {
+      "projectBindingRef": "factory:project-binding:factory-source",
+      "projectRef": "factory:project:factory",
+      "sourceRef": "source:git:EpiLogos/agent-system-design",
+      "sourceRevision": "git:d81fe4c",
+      "relationship": "primary",
+      "resolvedBy": "resolver:aikit",
+      "provenance": {
+        "sourceRef": "source:git:EpiLogos/agent-system-design",
+        "sourceRevision": "git:d81fe4c",
+        "producerExecutionRef": "factory:execution:e-1",
+        "generationRef": "factory:generation:g-1"
+      }
+    },
+    "runEnvelope": {
+      "runRef": "factory:run:r-1",
+      "projectRef": "factory:project:factory",
+      "runMapRef": "factory:run-map:r-1",
+      "runRevision": 2,
+      "runMapRevision": 4
+    },
+    "executionEnvelope": {
+      "executionRef": "factory:execution:e-1",
+      "runRef": "factory:run:r-1",
+      "agentRef": "factory:agent:generic-builder",
+      "agencyRef": "factory:agency:generic-build",
+      "agentSessionRef": "factory:agent-session:s-1",
+      "modelRef": "model:gpt-5.6-sol",
+      "harnessRef": "harness:pi",
+      "providerRef": "provider:openai",
+      "generationRef": "factory:generation:g-1"
+    },
+    "evidenceEnvelope": {
+      "evidenceRef": "factory:evidence:e-1",
+      "claimRef": "factory:claim:c-1",
+      "subjectState": {
+        "subjectRef": "factory:candidate:c-1",
+        "stateRef": "candidate-state:c-1.rev-2",
+        "revision": 2
+      },
+      "purpose": "verification",
+      "sourceRef": "check:factory:verification",
+      "producerExecutionRef": "factory:execution:e-1",
+      "producedAt": "2026-08-14T00:00:00Z"
+    },
+    "assessmentEnvelope": {
+      "assessmentRef": "factory:assessment:a-1",
+      "claimRef": "factory:claim:c-1",
+      "subjectState": {
+        "subjectRef": "factory:candidate:c-1",
+        "stateRef": "candidate-state:c-1.rev-2",
+        "revision": 2
+      },
+      "evidenceRefs": ["factory:evidence:e-1"],
+      "producerExecutionRef": "factory:execution:e-2",
+      "independentFromExecutionRefs": ["factory:execution:e-1"]
+    },
+    "closureEnvelope": {
+      "closureRef": "factory:closure:c-1",
+      "subjectState": {
+        "subjectRef": "factory:candidate:c-1",
+        "stateRef": "candidate-state:c-1.rev-2",
+        "revision": 2
+      },
+      "evidenceRefs": ["factory:evidence:e-1"],
+      "assessmentRefs": ["factory:assessment:a-1"],
+      "reviewRefs": []
+    },
+    "gateDecisionEnvelope": {
+      "gateDecisionRef": "factory:gate-decision:g-1",
+      "subjectState": {
+        "subjectRef": "factory:candidate:c-1",
+        "stateRef": "candidate-state:c-1.rev-2",
+        "revision": 2
+      },
+      "transition": "promote",
+      "allowed": true,
+      "closureRef": "factory:closure:c-1"
+    },
+    "executionDemand": {
+      "demandRef": "factory:execution-demand:d-1",
+      "projectRef": "factory:project:factory",
+      "runRef": "factory:run:r-1",
+      "candidateRef": "factory:candidate:c-1",
+      "requiredAffordances": ["shell", "git", "writable-workspace", "internet"],
+      "preferredAffordances": ["snapshot", "browser", "isolated-execution"],
+      "optionalAffordances": ["gpu"],
+      "resourceRequirements": ["cpu>=2", "memory>=4GiB"],
+      "connectivity": ["internet", "project:self", "state:graph"],
+      "workspaceSemantics": "writable-project-checkout",
+      "persistenceSemantics": ["run", "candidate"],
+      "exposureRequirements": ["browser"],
+      "isolationRequirement": "strong-preferred",
+      "retentionPolicy": "candidate"
+    },
+    "workcellOffer": {
+      "workcellRef": "workcell:ubuntu-worker-1",
+      "offerRevision": 7,
+      "affordances": ["shell", "git", "writable-workspace", "internet", "snapshot", "browser", "isolated-execution"],
+      "resourceClasses": ["cpu", "memory", "disk"],
+      "connectivity": ["internet", "project:self", "state:graph"],
+      "persistenceScopes": ["ephemeral", "run", "candidate", "project", "workcell"],
+      "exposureModes": ["browser"],
+      "isolationModes": ["container", "microvm"]
+    },
+    "binding": {
+      "bindingId": "binding:graph-1",
+      "workcellRef": "workcell:ubuntu-worker-1",
+      "logicalRef": "state:graph",
+      "concreteRef": "resource:neo4j:state-neo4j-1",
+      "materializedWorldRef": "materialized-world:r-1.c-1",
+      "executionRef": "factory:execution:e-1",
+      "providerRef": "workcell-provider:docker",
+      "createdAt": "2026-08-14T00:00:00Z",
+      "expiresAt": null
+    },
+    "generationProvenance": {
+      "generationRef": "factory:generation:g-1",
+      "contextResolutionRef": "factory:context-resolution:cr-1",
+      "projectRef": "factory:project:factory",
+      "profileRefs": ["factory:agency-profile:code"],
+      "capabilityRefs": ["factory:capability:browser"],
+      "actionRefs": ["factory:action:update"],
+      "resolverRef": "resolver:aikit",
+      "createdAt": "2026-08-14T00:00:00Z"
+    },
+    "projectionProvenance": [
+      {
+        "projectionRef": "factory:projection:p-1",
+        "canonicalRef": "factory:project:factory",
+        "projectedRevision": 4,
+        "providerRef": "provider:github",
+        "externalId": "EpiLogos/agent-system-design",
+        "generationRef": "factory:generation:g-1",
+        "reversible": true,
+        "createdAt": "2026-08-14T00:00:00Z"
+      },
+      {
+        "projectionRef": "factory:projection:p-2",
+        "canonicalRef": "factory:project:factory",
+        "projectedRevision": 4,
+        "providerRef": "provider:local-filesystem",
+        "externalId": "/work/factory",
+        "generationRef": "factory:generation:g-1",
+        "reversible": true,
+        "createdAt": "2026-08-14T00:01:00Z"
+      }
+    ],
+    "qlComposition": {
+      "lensRef": "mef:lens:L3@1",
+      "targetRef": "factory:claim:c-1"
+    }
+  },
+  "antiFixtures": [
+    {
+      "id": "action-as-capability-identity-collapse",
+      "value": {"actionRef": "factory:action:update", "capabilityRef": "factory:action:update"},
+      "mustReject": true
+    },
+    {
+      "id": "binding-as-ref",
+      "value": {"bindingId": "factory:binding:graph-1", "logicalRef": "state:graph"},
+      "mustReject": true
+    },
+    {
+      "id": "model-as-agent",
+      "value": {"agentRef": "model:gpt-5.6-sol"},
+      "mustReject": true
+    },
+    {
+      "id": "session-as-agent",
+      "value": {"agentRef": "factory:agent-session:s-1"},
+      "mustReject": true
+    },
+    {
+      "id": "provider-as-project",
+      "value": {"projectRef": "provider:github:EpiLogos/agent-system-design"},
+      "mustReject": true
+    },
+    {
+      "id": "stale-subject-state-evidence",
+      "value": {
+        "currentSubjectState": {"subjectRef": "factory:candidate:c-1", "stateRef": "candidate-state:c-1.rev-2", "revision": 2},
+        "evidenceSubjectState": {"subjectRef": "factory:candidate:c-1", "stateRef": "candidate-state:c-1.rev-1", "revision": 1}
+      },
+      "mustReject": true
+    }
+  ]
+}
