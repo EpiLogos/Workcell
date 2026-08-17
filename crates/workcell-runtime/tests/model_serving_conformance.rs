@@ -11,9 +11,9 @@ use epilogos_workcell_runtime::{
     HostProcessExecutionProvider, ManagedHostService, ManagedHostServiceProvider, TcpEndpointProbe,
 };
 
-const OLLAMA_REVISION: &str = "d67ad83426633195089509347ffd4fe795120198";
-const LLAMA_CPP_REVISION: &str = "4df29be4f4c3673f428170fda944a5b19f743bb8";
-const VLLM_REVISION: &str = "6b0b850a8b1764a66d7ffbb023c0b0e0bbdb900b";
+const OLLAMA_REVISION: &str = "48cb7b94e446bb3f32555d8e21a5552ebe463711";
+const LLAMA_CPP_REVISION: &str = "ce8d842306b6e206f2833e04d472cff79c3c9be1";
+const VLLM_REVISION: &str = "a0a3c32dd705fd447488262c757ffa18ab9e39d3";
 const LOGICAL_INFERENCE_SERVICE: &str = "inference:caller-owned-service";
 
 fn service_request(demand_ref: &str) -> ServiceMaterialRequest {
