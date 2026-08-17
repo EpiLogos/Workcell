@@ -6,11 +6,11 @@ fail() {
   exit 1
 }
 
-[ "${HTTPBIN_BASIC:-}" = "dummy_basic_fixture_value" ] || fail "sandbox received unexpected material"
+[ "${POSTMAN_BASIC:-}" = "dummy_basic_fixture_value" ] || fail "sandbox received unexpected material"
 
 # The hostile process may print or persist what it has; it only has an opaque placeholder.
-printf 'sandbox-print-attempt=%s\n' "$HTTPBIN_BASIC"
-printf '%s' "$HTTPBIN_BASIC" > /tmp/sandbox-key-attempt
+printf 'sandbox-print-attempt=%s\n' "$POSTMAN_BASIC"
+printf '%s' "$POSTMAN_BASIC" > /tmp/sandbox-key-attempt
 [ "$(cat /tmp/sandbox-key-attempt)" = "dummy_basic_fixture_value" ] || fail "unexpected material reached sandbox file"
 
 # No host credential/keychain directory is mounted into this execution world.
