@@ -1,0 +1,26 @@
+name: O:I lifecycle lock
+
+on:
+  push:
+    branches: [converge/oi-017-lifecycle]
+
+permissions:
+  contents: write
+
+jobs:
+  lock:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: converge/oi-017-lifecycle
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo generate-lockfile
+      - name: Save reconciled lock
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add Cargo.lock
+          git diff --cached --quiet || git commit -m 'build: reconcile Workcell release dependencies'
+          git diff HEAD~1 --quiet Cargo.lock || git push origin HEAD:converge/oi-017-lifecycle
