@@ -10,13 +10,13 @@ The caller continues to own model/variant identity. Workcell owns only the mater
 
 ## Source pins
 
-The fixtures in `crates/workcell-runtime/tests/model_serving_conformance.rs` are pinned to the upstream heads inspected when this implementation was made:
+The fixtures in `crates/workcell-runtime/tests/model_serving_conformance.rs` are pinned to the upstream heads re-inspected on 2026-08-17:
 
 | Provider | Upstream revision | Material behaviour used |
 |---|---|---|
-| Ollama | `d67ad83426633195089509347ffd4fe795120198` | `ollama serve` as the managed service process; `OLLAMA_HOST` as its bind address; CLI/API model acquisition/control remains separate from inference reachability. |
-| llama.cpp | `4df29be4f4c3673f428170fda944a5b19f743bb8` | `llama-cli` as a direct one-shot process and `llama-server` as a long-running HTTP service. |
-| vLLM | `6b0b850a8b1764a66d7ffbb023c0b0e0bbdb900b` | `vllm serve <provider-model-id>` as a long-running service; accelerator capacity remains an ordinary Workcell resource requirement. |
+| Ollama | `48cb7b94e446bb3f32555d8e21a5552ebe463711` | `ollama serve` as the managed service process; `OLLAMA_HOST` as its bind address; CLI/API model acquisition/control remains separate from inference reachability. |
+| llama.cpp | `ce8d842306b6e206f2833e04d472cff79c3c9be1` | `llama-cli` as a direct one-shot process and `llama-server` as a long-running HTTP service. |
+| vLLM | `a0a3c32dd705fd447488262c757ffa18ab9e39d3` | `vllm serve <provider-model-id>` as a long-running service; accelerator capacity remains an ordinary Workcell resource requirement. |
 
 Provider-native model identifiers, filesystem paths, arguments, bind addresses, process ids and revisions are recorded as provider/material properties or provenance. They never replace caller-owned semantic refs.
 
