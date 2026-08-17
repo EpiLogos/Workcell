@@ -5,7 +5,7 @@ mod runtime;
 mod service;
 mod support;
 
-pub use host::HostProcessExecutionProvider;
+pub use host::{HostProcessExecutionProvider, HostProcessOperationGrant};
 pub use local::{CollapsedLocalConfig, CollapsedLocalWorkcell};
 pub use profile::*;
 pub use runtime::{ReferenceProjectRuntimeProvider, RuntimeMode};
