@@ -1,0 +1,28 @@
+name: Native Skills
+
+on:
+  pull_request:
+    paths:
+      - "skills/**"
+      - "scripts/verify-native-skills.sh"
+      - "crates/workcell-core/src/secret.rs"
+      - "crates/workcell-sdk/**"
+      - ".github/workflows/native-skills.yml"
+  push:
+    branches: [main]
+    paths:
+      - "skills/**"
+      - "scripts/verify-native-skills.sh"
+      - "crates/workcell-core/src/secret.rs"
+      - "crates/workcell-sdk/**"
+      - ".github/workflows/native-skills.yml"
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/verify-native-skills.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p epilogos-workcell-sdk --test sdk_conformance
+      - run: cargo test -p epilogos-workcell-core --test material_world
