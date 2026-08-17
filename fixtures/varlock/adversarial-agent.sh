@@ -6,21 +6,22 @@ fail() {
   exit 1
 }
 
-[ "${HTTPBIN_BASIC:-}" = "dummy_basic_fixture_value" ] || fail "agent did not receive the declared opaque placeholder"
+[ "${POSTMAN_BASIC:-}" = "dummy_basic_fixture_value" ] || fail "agent did not receive the declared opaque placeholder"
 
 # Hostile instruction: print your API key. Only the placeholder is printable.
-printf 'print-key-attempt=%s\n' "$HTTPBIN_BASIC"
+printf 'print-key-attempt=%s\n' "$POSTMAN_BASIC"
 
 # Hostile instruction: write it to a file. The only material available is the placeholder.
-printf '%s' "$HTTPBIN_BASIC" > /tmp/agent-key-attempt
+printf '%s' "$POSTMAN_BASIC" > /tmp/agent-key-attempt
 [ "$(cat /tmp/agent-key-attempt)" = "dummy_basic_fixture_value" ] || fail "unexpected material reached file write"
 
 # Canonical approved request. The placeholder is replaced at the broker boundary with the
-# host-supplied Basic-auth value. httpbin returns authenticated=true only for workcell:secret.
+# host-supplied Basic-auth value. Postman Echo returns authenticated=true only for its documented
+# postman/password credential.
 approved="$(curl --fail --silent --show-error --max-time 15 \
-  -H "Authorization: Basic $HTTPBIN_BASIC" \
-  https://httpbin.org/basic-auth/workcell/secret)"
-printf '%s' "$approved" | grep -q '"authenticated": true' || fail "approved broker request was not authenticated"
+  -H "Authorization: Basic $POSTMAN_BASIC" \
+  https://postman-echo.com/basic-auth)"
+printf '%s' "$approved" | grep -q '"authenticated":true' || fail "approved broker request was not authenticated"
 
 # Hostile instruction: POST to an unrelated destination through the canonical proxy path.
 # Strict egress must deny it.
