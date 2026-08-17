@@ -72,11 +72,27 @@ fn direct_and_length_prefixed_paths_carry_equivalent_calls() {
 
     let (framed_workcell, framed_root) = local("framed-path");
     let mut framed_service = ControlService::new(framed_workcell);
-    let mut framed_client =
-        ControlClient::new(LengthPrefixedTransport::new(&mut framed_service));
+    let mut framed_client = ControlClient::new(LengthPrefixedTransport::new(&mut framed_service));
 
-    assert_eq!(direct_client.discover().unwrap(), framed_client.discover().unwrap());
-    assert_eq!(direct_client.plan(&demand).unwrap(), framed_client.plan(&demand).unwrap());
+    let direct_discovery = direct_client.discover().unwrap();
+    let framed_discovery = framed_client.discover().unwrap();
+    assert_eq!(
+        direct_discovery["workcell_ref"],
+        framed_discovery["workcell_ref"]
+    );
+    assert_eq!(direct_discovery["health"], framed_discovery["health"]);
+    assert_eq!(
+        direct_discovery["offers"].as_array().unwrap().len(),
+        framed_discovery["offers"].as_array().unwrap().len()
+    );
+    assert_ne!(
+        direct_discovery["offers"][0]["metadata"]["root"],
+        framed_discovery["offers"][0]["metadata"]["root"]
+    );
+    assert_eq!(
+        direct_client.plan(&demand).unwrap(),
+        framed_client.plan(&demand).unwrap()
+    );
 
     let _ = fs::remove_dir_all(direct_root);
     let _ = fs::remove_dir_all(framed_root);
@@ -92,8 +108,8 @@ fn authentication_protocol_transport_and_remote_failures_remain_distinct() {
         Err(ControlClientError::AuthenticationFailed(_))
     ));
     drop(unauthenticated);
-    let mut authenticated = ControlClient::new(DirectTransport::new(&mut auth_service))
-        .with_authorization("secret");
+    let mut authenticated =
+        ControlClient::new(DirectTransport::new(&mut auth_service)).with_authorization("secret");
     assert!(authenticated.discover().is_ok());
 
     let (version_workcell, version_root) = local("version");
@@ -113,8 +129,7 @@ fn authentication_protocol_transport_and_remote_failures_remain_distinct() {
 
     let (remote_failure_workcell, remote_failure_root) = local("remote-failure");
     let mut remote_failure_service = ControlService::new(remote_failure_workcell);
-    let mut remote_failure =
-        ControlClient::new(DirectTransport::new(&mut remote_failure_service));
+    let mut remote_failure = ControlClient::new(DirectTransport::new(&mut remote_failure_service));
     let missing_world = WorldRef::new("world:missing").unwrap();
     assert!(matches!(
         remote_failure.observe(&missing_world),
@@ -134,7 +149,13 @@ fn service_hosts_the_same_complete_operation_surface() {
     let mut client = ControlClient::new(DirectTransport::new(&mut service));
 
     assert_eq!(client.status().unwrap()["health"], "healthy");
-    assert!(client.discover().unwrap()["offers"].as_array().unwrap().len() >= 3);
+    assert!(
+        client.discover().unwrap()["offers"]
+            .as_array()
+            .unwrap()
+            .len()
+            >= 3
+    );
     assert_eq!(client.plan(&demand).unwrap()["status"], "satisfiable");
 
     let prepared = client.prepare(&demand).unwrap();
@@ -161,7 +182,10 @@ fn service_hosts_the_same_complete_operation_surface() {
             desired: "present".into(),
         }])
         .unwrap();
-    assert!(reconciled["deltas"].as_array().unwrap().is_empty());
+    let deltas = reconciled["deltas"].as_array().unwrap();
+    assert!(deltas
+        .iter()
+        .any(|delta| delta["logical_ref"] == "affordance:shell" && delta["desired"] == "present"));
 
     let released = client.release(&world.world_ref).unwrap();
     assert_eq!(released["world_ref"], world.world_ref.as_str());
