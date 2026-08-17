@@ -11,6 +11,7 @@ mod planner;
 mod prepared;
 mod provider;
 mod refs;
+mod secret;
 mod world;
 
 pub use api::WorkcellControlPlane;
@@ -21,4 +22,5 @@ pub use planner::*;
 pub use prepared::*;
 pub use provider::*;
 pub use refs::*;
+pub use secret::*;
 pub use world::*;
