@@ -1,0 +1,30 @@
+{
+  "schema": "oi.product-lifecycle/v1",
+  "id": "workcell",
+  "public_name": "Workcell",
+  "version": "0.1.0",
+  "repository": "https://github.com/EpiLogos/Workcell",
+  "source_checkout": "Workcell",
+  "lockfile": "Cargo.lock",
+  "artifact": {
+    "kind": "cli",
+    "entry": "workcell",
+    "platforms": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+  },
+  "build": {
+    "command": ["cargo", "build", "--workspace", "--locked", "--release"]
+  },
+  "verify": {
+    "source_command": ["cargo", "test", "--workspace", "--all-targets", "--locked"],
+    "installed_command": ["workcell", "--json", "doctor"]
+  },
+  "install": {"mode": "oi-managed-binary"},
+  "update": {"mode": "suite-manifest"},
+  "remove": {"mode": "oi-managed-only"},
+  "release": {
+    "host": "github-releases",
+    "tag_prefix": "workcell-v",
+    "checksum": "sha256",
+    "provenance": "github-artifact-attestation"
+  }
+}
