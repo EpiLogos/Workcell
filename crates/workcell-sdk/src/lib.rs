@@ -7,7 +7,8 @@
 pub mod client {
     pub use epilogos_workcell_control::{
         ControlClient, ControlClientError, ControlTransport, DirectTransport,
-        LengthPrefixedTransport, TransportFailure, UnavailableTransport, CONTROL_PROTOCOL_VERSION,
+        LengthPrefixedTransport, TcpControlServer, TcpControlTransport, TransportFailure,
+        UnavailableTransport, CONTROL_PROTOCOL_VERSION,
     };
 }
 
