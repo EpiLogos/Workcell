@@ -2,12 +2,14 @@ use std::collections::BTreeMap;
 
 use epilogos_workcell_sdk::{
     client::{ControlClient, ControlClientError, UnavailableTransport},
-    contract::{DemandRef, ExecutionDemand, ExternalRef, ResourceRequirement},
+    contract::{DemandRef, ExecutionDemand, ExternalRef, ResourceRequirement, RetentionExpectation},
     provider::{
-        Availability, HealthState, OfferRef, OperationalOffer, ProviderPort, ProviderPortKind,
-        ProviderRef,
+        Availability, ExecutionMaterialRequest, ExecutionProvider, HealthState, OfferRef,
+        OperationalOffer, ProviderOperation, ProviderPort, ProviderPortKind, ProviderRef,
     },
-    testkit::verify_provider_port,
+    testkit::{
+        diff_provider_inventory, verify_provider_port, ExecutionFault, FaultingExecutionProvider,
+    },
 };
 
 struct ExternalStyleProvider {
@@ -58,6 +60,8 @@ fn external_provider_can_conform_using_only_the_sdk_facade() {
     assert_eq!(report.provider_ref.as_str(), "provider:example/external");
     assert_eq!(report.port, ProviderPortKind::Execution);
     assert_eq!(report.offer_count, 1);
+    assert_eq!(report.available_offers, 1);
+    assert!(report.summary().contains("1 available"));
 }
 
 #[test]
@@ -65,6 +69,57 @@ fn conformance_rejects_provider_identity_drift() {
     let mut provider = ExternalStyleProvider::valid();
     provider.offered_ref = ProviderRef::new("provider:other").unwrap();
     assert!(verify_provider_port(&provider).is_err());
+}
+
+#[test]
+fn provider_removal_and_replacement_are_inventory_changes_not_identity_rewrites() {
+    let original = verify_provider_port(&ExternalStyleProvider::valid()).unwrap();
+    let replacement = FaultingExecutionProvider::new(
+        ProviderRef::new("provider:example/replacement").unwrap(),
+    );
+    let replacement = verify_provider_port(&replacement).unwrap();
+
+    let delta = diff_provider_inventory(&[original], &[replacement]);
+    assert_eq!(delta.removed[0].as_str(), "provider:example/external");
+    assert_eq!(delta.added[0].as_str(), "provider:example/replacement");
+    assert!(delta.retained.is_empty());
+}
+
+#[test]
+fn public_fault_fixture_covers_degraded_offer_and_partial_lifecycle_failure() {
+    let degraded = FaultingExecutionProvider::new(
+        ProviderRef::new("provider:fixture/degraded").unwrap(),
+    )
+    .with_availability(Availability::Degraded, HealthState::Degraded);
+    let report = verify_provider_port(&degraded).unwrap();
+    assert_eq!(report.degraded_offers, 1);
+
+    let mut partial = FaultingExecutionProvider::new(
+        ProviderRef::new("provider:fixture/partial").unwrap(),
+    )
+    .with_fault(ExecutionFault::Execute);
+    let request = ExecutionMaterialRequest {
+        demand_ref: DemandRef::new("demand:sdk-fault").unwrap(),
+        affordances: vec!["shell".into()],
+        resources: Vec::new(),
+        connectivity: Vec::new(),
+        isolation_trust: None,
+        retention: RetentionExpectation::Release,
+    };
+    let allocation = partial.prepare_execution(&request).unwrap();
+    let operation = ProviderOperation {
+        key: "fixture-operation".into(),
+        parameters: BTreeMap::new(),
+    };
+    assert!(partial.execute_operation(&allocation, &operation).is_err());
+    assert_eq!(
+        partial.observe_execution(&allocation).unwrap().health,
+        HealthState::Healthy
+    );
+    assert!(partial
+        .release_execution(&allocation, &RetentionExpectation::Release)
+        .unwrap()
+        .changed);
 }
 
 #[test]
