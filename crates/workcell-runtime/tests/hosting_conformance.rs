@@ -3,8 +3,10 @@
 use std::collections::BTreeMap;
 
 use epilogos_workcell_core::{
-    DemandRef, LogicalConnectionRequirement, PersistenceScope, ProviderRef, RequirementNecessity,
+    AffordanceRequirement, DemandRef, ExecutionDemand, ExposureRequirement,
+    LogicalConnectionRequirement, PersistenceScope, ProviderRef, RequirementNecessity,
     RetentionExpectation, ServiceMaterialRequest, ServiceProvider, WorkcellError, WorkcellRef,
+    WorkspaceAccess, WorkspaceRequirement,
 };
 use epilogos_workcell_fabric::{
     evaluate_fabric, require_fabric_plan, FabricDiagnosticKind, FabricPathOffer,
@@ -32,11 +34,57 @@ fn workcell(value: &str) -> WorkcellRef {
     WorkcellRef::new(value).unwrap()
 }
 
+fn hosting_demand() -> ExecutionDemand {
+    let mut demand = ExecutionDemand::new(DemandRef::new("demand:persistent-hosting").unwrap());
+    demand
+        .affordances
+        .required
+        .push(AffordanceRequirement::new("long-lived-execution").unwrap());
+    demand
+        .affordances
+        .required
+        .push(AffordanceRequirement::new("supervised-lifecycle").unwrap());
+    demand.workspace = Some(WorkspaceRequirement {
+        source: None,
+        revision: None,
+        access: WorkspaceAccess::Writable,
+    });
+    demand
+        .connectivity
+        .required
+        .push(LogicalConnectionRequirement::new("service:interactive-host").unwrap());
+    demand
+        .connectivity
+        .optional
+        .push(LogicalConnectionRequirement::new("ingress:event-webhook").unwrap());
+    demand
+        .exposure
+        .required
+        .push(ExposureRequirement::new("interactive-endpoint").unwrap());
+    demand
+        .exposure
+        .optional
+        .push(ExposureRequirement::new("event-webhook-ingress").unwrap());
+    demand.persistence = Some(PersistenceScope::Project);
+    demand.retention = RetentionExpectation::Preserve;
+    demand
+        .extensions
+        .insert("authentication".into(), "required".into());
+    demand
+        .extensions
+        .insert("streaming".into(), "required".into());
+    demand
+        .extensions
+        .insert("readiness".into(), "required".into());
+    demand
+}
+
 fn fabric_path(
     provider: &str,
     path_ref: &str,
     state: FabricPathState,
     endpoint: &str,
+    scope: ReachabilityScope,
 ) -> FabricPathOffer {
     FabricPathOffer {
         provider_ref: ProviderRef::new(provider).unwrap(),
@@ -44,11 +92,11 @@ fn fabric_path(
         source_workcell: workcell("workcell:caller"),
         destination_workcell: workcell("workcell:host"),
         transport: Some("opaque-stream".into()),
-        scope: ReachabilityScope::Private,
+        scope,
         security: NetworkSecurity::AuthenticatedEncrypted,
         state,
         endpoint: Some(endpoint.into()),
-        path_class: Some("fixture-private-overlay".into()),
+        path_class: Some("fixture-overlay".into()),
         provenance: BTreeMap::from([("fixture".into(), "deterministic".into())]),
     }
 }
@@ -93,6 +141,28 @@ fn managed_provider() -> ManagedHostServiceProvider {
 }
 
 #[test]
+fn hosting_demand_is_composed_from_ordinary_workcell_requirements() {
+    let demand = hosting_demand();
+    demand.validate().unwrap();
+
+    assert!(demand.subjects.is_empty());
+    assert_eq!(
+        demand.workspace.as_ref().map(|workspace| &workspace.access),
+        Some(&WorkspaceAccess::Writable)
+    );
+    assert_eq!(demand.persistence, Some(PersistenceScope::Project));
+    assert_eq!(demand.retention, RetentionExpectation::Preserve);
+    assert_eq!(demand.extensions["authentication"], "required");
+    assert_eq!(demand.extensions["streaming"], "required");
+    assert_eq!(demand.extensions["readiness"], "required");
+    assert_eq!(
+        demand.connectivity.required[0].as_str(),
+        "service:interactive-host"
+    );
+    assert_eq!(demand.exposure.required[0].as_str(), "interactive-endpoint");
+}
+
+#[test]
 fn persistent_hosting_is_service_lifecycle_plus_fabric_not_agent_gateway_ontology() {
     let request = ServiceMaterialRequest {
         demand_ref: DemandRef::new("demand:persistent-hosting").unwrap(),
@@ -107,7 +177,10 @@ fn persistent_hosting_is_service_lifecycle_plus_fabric_not_agent_gateway_ontolog
         first.properties.get("logical_ref").map(String::as_str),
         Some("service:interactive-host")
     );
-    assert!(services.observe_service(&first).unwrap().health != epilogos_workcell_core::HealthState::Unavailable);
+    assert_ne!(
+        services.observe_service(&first).unwrap().health,
+        epilogos_workcell_core::HealthState::Unavailable
+    );
 
     let overlay = FixtureFabric {
         provider_ref: ProviderRef::new("provider:private-overlay-a").unwrap(),
@@ -116,6 +189,7 @@ fn persistent_hosting_is_service_lifecycle_plus_fabric_not_agent_gateway_ontolog
             "path:overlay-a",
             FabricPathState::Reachable,
             "material://overlay-a/interactive-host",
+            ReachabilityScope::Private,
         )],
     };
     let first_fabric = require_fabric_plan(
@@ -148,6 +222,7 @@ fn persistent_hosting_is_service_lifecycle_plus_fabric_not_agent_gateway_ontolog
             "path:overlay-b",
             FabricPathState::Reachable,
             "material://overlay-b/interactive-host",
+            ReachabilityScope::Private,
         )],
     };
     let second_fabric = require_fabric_plan(
@@ -181,6 +256,7 @@ fn hosting_reachability_policy_failure_is_not_service_absence() {
             "path:denied",
             FabricPathState::Denied,
             "material://denied",
+            ReachabilityScope::Private,
         )],
     };
     let plan = evaluate_fabric(&[hosting_relationship()], &[&denied]).unwrap();
@@ -188,6 +264,29 @@ fn hosting_reachability_policy_failure_is_not_service_absence() {
         .diagnostics
         .iter()
         .any(|diagnostic| diagnostic.kind == FabricDiagnosticKind::PolicyDenied));
+    assert!(matches!(
+        require_fabric_plan(plan),
+        Err(WorkcellError::UnsatisfiedDemand(_))
+    ));
+}
+
+#[test]
+fn private_hosting_relation_cannot_be_satisfied_by_public_exposure() {
+    let public_only = FixtureFabric {
+        provider_ref: ProviderRef::new("provider:public-ingress").unwrap(),
+        paths: vec![fabric_path(
+            "provider:public-ingress",
+            "path:public",
+            FabricPathState::Reachable,
+            "https://public.example/interactive-host",
+            ReachabilityScope::Public,
+        )],
+    };
+    let plan = evaluate_fabric(&[hosting_relationship()], &[&public_only]).unwrap();
+    assert!(plan
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.kind == FabricDiagnosticKind::ScopeMismatch));
     assert!(matches!(
         require_fabric_plan(plan),
         Err(WorkcellError::UnsatisfiedDemand(_))
