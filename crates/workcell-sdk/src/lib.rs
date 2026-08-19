@@ -18,8 +18,9 @@ pub mod contract {
     pub use epilogos_workcell_core::{
         AffordanceRequirement, DemandRef, ExecutionDemand, ExposureRequirement, ExternalRef,
         IsolationTrustRequirement, LogicalConnectionRequirement, OutputRequirement,
-        PersistenceScope, ProjectRuntimeRequirement, ResourceRequirement, RetentionExpectation,
-        Tiered, WorkspaceAccess, WorkspaceRequirement,
+        PersistenceScope, PlanStatus, ProjectRuntimeRequirement, RequirementNecessity,
+        ResourceRequirement, RetentionExpectation, Tiered, WorkcellRef, WorkspaceAccess,
+        WorkspaceRequirement,
     };
 }
 
