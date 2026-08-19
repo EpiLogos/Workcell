@@ -241,7 +241,10 @@ impl FabricPathProvider for TailscaleFabricProvider {
     }
 
     fn paths(&self) -> Result<Vec<FabricPathOffer>> {
-        let output = match Command::new(&self.program).args(["status", "--json"]).output() {
+        let output = match Command::new(&self.program)
+            .args(["status", "--json"])
+            .output()
+        {
             Ok(output) => output,
             Err(error) => {
                 return Ok(vec![self.unavailable_path(format!(
@@ -277,7 +280,10 @@ fn path_from_observation(
     provenance.insert("peer_dns_name".into(), observation.dns_name.clone());
     provenance.insert("peer_online".into(), observation.online.to_string());
     provenance.insert("peer_active".into(), observation.active.to_string());
-    provenance.insert("peer_tailscale_ips".into(), observation.tailscale_ips.join(","));
+    provenance.insert(
+        "peer_tailscale_ips".into(),
+        observation.tailscale_ips.join(","),
+    );
     if let Some(address) = &observation.current_address {
         provenance.insert("current_direct_address".into(), address.clone());
     }
@@ -373,8 +379,7 @@ mod tests {
     use epilogos_workcell_sdk::{
         contract::{PlanStatus, RequirementNecessity},
         fabric::{
-            evaluate_fabric, require_fabric_plan, NetworkRelationship,
-            RequiredNetworkRelationship,
+            evaluate_fabric, require_fabric_plan, NetworkRelationship, RequiredNetworkRelationship,
         },
     };
 
@@ -459,14 +464,17 @@ mod tests {
         );
 
         let provider = Fixture(path);
-        let plan = require_fabric_plan(evaluate_fabric(&[relationship()], &[&provider]).unwrap())
-            .unwrap();
+        let plan =
+            require_fabric_plan(evaluate_fabric(&[relationship()], &[&provider]).unwrap()).unwrap();
         assert_eq!(plan.status, PlanStatus::Satisfiable);
         assert_eq!(
             plan.bindings[0].relationship_ref,
             "relationship:workcell-control"
         );
-        assert_eq!(plan.bindings[0].provenance["peer_stable_id"], "peer-stable-id");
+        assert_eq!(
+            plan.bindings[0].provenance["peer_stable_id"],
+            "peer-stable-id"
+        );
     }
 
     #[test]
@@ -480,10 +488,7 @@ mod tests {
         .unwrap();
         let peer_relay_json = DIRECT_STATUS
             .replace("\"CurAddr\": \"192.0.2.50:41641\"", "\"CurAddr\": \"\"")
-            .replace(
-                "\"PeerRelay\": \"\"",
-                "\"PeerRelay\": \"100.64.0.7:1:23\"",
-            );
+            .replace("\"PeerRelay\": \"\"", "\"PeerRelay\": \"100.64.0.7:1:23\"");
         let peer_relay = tailscale_path_from_status_json(
             &config(TailscalePolicyEvidence::Allowed {
                 evidence: "probe:allowed".into(),

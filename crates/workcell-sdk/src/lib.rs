@@ -169,7 +169,11 @@ pub mod testkit {
             }
         }
 
-        pub fn with_availability(mut self, availability: Availability, health: HealthState) -> Self {
+        pub fn with_availability(
+            mut self,
+            availability: Availability,
+            health: HealthState,
+        ) -> Self {
             self.availability = availability;
             self.health = health;
             self
@@ -268,7 +272,10 @@ pub mod testkit {
             })
         }
 
-        fn observe_execution(&self, allocation: &ProviderAllocation) -> Result<ProviderObservation> {
+        fn observe_execution(
+            &self,
+            allocation: &ProviderAllocation,
+        ) -> Result<ProviderObservation> {
             self.fail_if(ExecutionFault::Observe, "observe")?;
             self.known_allocation(allocation)?;
             Ok(ProviderObservation {

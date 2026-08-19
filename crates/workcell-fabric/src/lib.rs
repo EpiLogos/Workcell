@@ -645,7 +645,10 @@ mod tests {
         let second =
             require_fabric_plan(evaluate_fabric(&[relation], &[&replacement]).unwrap()).unwrap();
         assert_eq!(second.bindings[0].relationship_ref, "relationship:service");
-        assert_ne!(first.bindings[0].provider_ref, second.bindings[0].provider_ref);
+        assert_ne!(
+            first.bindings[0].provider_ref,
+            second.bindings[0].provider_ref
+        );
         assert_ne!(first.bindings[0].path_ref, second.bindings[0].path_ref);
     }
 
@@ -782,7 +785,13 @@ mod tests {
         let tunnel = FixtureProvider::new("provider:ssh-tunnel-fixture", vec![tunnel_path]);
         let plan = require_fabric_plan(evaluate_fabric(&[relation], &[&tunnel]).unwrap()).unwrap();
         assert_eq!(plan.bindings[0].relationship_ref, "relationship:control");
-        assert_eq!(plan.bindings[0].path_class.as_deref(), Some("ssh-tunnel-style"));
-        assert_eq!(plan.bindings[0].endpoint.as_deref(), Some("127.0.0.1:49152"));
+        assert_eq!(
+            plan.bindings[0].path_class.as_deref(),
+            Some("ssh-tunnel-style")
+        );
+        assert_eq!(
+            plan.bindings[0].endpoint.as_deref(),
+            Some("127.0.0.1:49152")
+        );
     }
 }

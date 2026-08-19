@@ -1,8 +1,6 @@
 use epilogos_workcell_core::Result;
 
-use crate::{
-    ExternalManagedService, ExternalServiceAcquisition, ExternalServiceCommand,
-};
+use crate::{ExternalManagedService, ExternalServiceAcquisition, ExternalServiceCommand};
 
 pub const HERMES_SOURCE_REVISION: &str = "036cbdfa0a3158454a0a2a7a7388cf70353326b4";
 pub const HERMES_MANAGEMENT_SOURCE: &str =

@@ -192,10 +192,9 @@ fn persistent_hosting_is_service_lifecycle_plus_fabric_not_agent_gateway_ontolog
             ReachabilityScope::Private,
         )],
     };
-    let first_fabric = require_fabric_plan(
-        evaluate_fabric(&[hosting_relationship()], &[&overlay]).unwrap(),
-    )
-    .unwrap();
+    let first_fabric =
+        require_fabric_plan(evaluate_fabric(&[hosting_relationship()], &[&overlay]).unwrap())
+            .unwrap();
     assert_eq!(
         first_fabric.bindings[0].relationship_ref,
         "relationship:interactive-host"
@@ -225,10 +224,9 @@ fn persistent_hosting_is_service_lifecycle_plus_fabric_not_agent_gateway_ontolog
             ReachabilityScope::Private,
         )],
     };
-    let second_fabric = require_fabric_plan(
-        evaluate_fabric(&[hosting_relationship()], &[&replacement]).unwrap(),
-    )
-    .unwrap();
+    let second_fabric =
+        require_fabric_plan(evaluate_fabric(&[hosting_relationship()], &[&replacement]).unwrap())
+            .unwrap();
     assert_eq!(
         second_fabric.bindings[0].relationship_ref,
         first_fabric.bindings[0].relationship_ref

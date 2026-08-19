@@ -142,7 +142,11 @@ impl ExternalManagedService {
         self
     }
 
-    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Result<Self> {
+    pub fn with_metadata(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Result<Self> {
         let key = key.into();
         if key.trim().is_empty() {
             return Err(WorkcellError::InvalidDemand(
@@ -226,7 +230,8 @@ impl ExternalManagedServiceProvider {
             .as_ref()
             .map(run_probe)
             .unwrap_or_else(|| status.clone());
-        let health = if status == HealthState::Unavailable || readiness == HealthState::Unavailable {
+        let health = if status == HealthState::Unavailable || readiness == HealthState::Unavailable
+        {
             HealthState::Unavailable
         } else if status == HealthState::Degraded || readiness == HealthState::Degraded {
             HealthState::Degraded
@@ -237,7 +242,10 @@ impl ExternalManagedServiceProvider {
         detail.insert("logical_ref".into(), record.service.logical_ref.clone());
         detail.insert("endpoint".into(), record.service.endpoint.clone());
         detail.insert("status_command".into(), record.service.status.display());
-        detail.insert("started_by_provider".into(), record.started_by_provider.to_string());
+        detail.insert(
+            "started_by_provider".into(),
+            record.started_by_provider.to_string(),
+        );
         if let Some(readiness) = &record.service.readiness {
             detail.insert("readiness_command".into(), readiness.display());
         }
@@ -354,7 +362,10 @@ impl ServiceProvider for ExternalManagedServiceProvider {
         properties.insert("logical_ref".into(), logical_ref.into());
         properties.insert("endpoint".into(), service.endpoint.clone());
         properties.insert("configuration_owner".into(), "target".into());
-        properties.insert("started_by_provider".into(), started_by_provider.to_string());
+        properties.insert(
+            "started_by_provider".into(),
+            started_by_provider.to_string(),
+        );
         let mut provenance = service.metadata.clone();
         provenance.insert("implementation".into(), "external-managed-service".into());
         provenance.insert("status_command".into(), service.status.display());

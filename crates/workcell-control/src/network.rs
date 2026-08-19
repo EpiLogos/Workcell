@@ -136,7 +136,10 @@ fn write_frame(writer: &mut impl Write, payload: &[u8]) -> io::Result<()> {
         ));
     }
     let length = u32::try_from(payload.len()).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidInput, "control frame length exceeds u32")
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "control frame length exceeds u32",
+        )
     })?;
     writer.write_all(&length.to_be_bytes())?;
     writer.write_all(payload)

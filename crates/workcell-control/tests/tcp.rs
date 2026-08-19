@@ -111,8 +111,7 @@ fn tcp_authentication_failure_remains_distinct_from_transport_failure() {
     let address = server.local_addr().unwrap();
 
     let client_thread = thread::spawn(move || {
-        let mut unauthenticated =
-            ControlClient::new(TcpControlTransport::new(address.to_string()));
+        let mut unauthenticated = ControlClient::new(TcpControlTransport::new(address.to_string()));
         assert!(matches!(
             unauthenticated.discover(),
             Err(ControlClientError::AuthenticationFailed(_))

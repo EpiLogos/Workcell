@@ -54,10 +54,9 @@ fn run() -> Result<(), Box<dyn Error>> {
         "status" => client.status()?,
         "discover" => client.discover()?,
         other => {
-            return Err(format!(
-                "unsupported probe command `{other}`; expected status or discover"
+            return Err(
+                format!("unsupported probe command `{other}`; expected status or discover").into(),
             )
-            .into())
         }
     };
 

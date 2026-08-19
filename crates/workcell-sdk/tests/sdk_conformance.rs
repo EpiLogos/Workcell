@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 
 use epilogos_workcell_sdk::{
     client::{ControlClient, ControlClientError, UnavailableTransport},
-    contract::{DemandRef, ExecutionDemand, ExternalRef, ResourceRequirement, RetentionExpectation},
+    contract::{
+        DemandRef, ExecutionDemand, ExternalRef, ResourceRequirement, RetentionExpectation,
+    },
     provider::{
         Availability, ExecutionMaterialRequest, ExecutionProvider, HealthState, OfferRef,
         OperationalOffer, ProviderOperation, ProviderPort, ProviderPortKind, ProviderRef,
@@ -74,9 +76,8 @@ fn conformance_rejects_provider_identity_drift() {
 #[test]
 fn provider_removal_and_replacement_are_inventory_changes_not_identity_rewrites() {
     let original = verify_provider_port(&ExternalStyleProvider::valid()).unwrap();
-    let replacement = FaultingExecutionProvider::new(
-        ProviderRef::new("provider:example/replacement").unwrap(),
-    );
+    let replacement =
+        FaultingExecutionProvider::new(ProviderRef::new("provider:example/replacement").unwrap());
     let replacement = verify_provider_port(&replacement).unwrap();
 
     let delta = diff_provider_inventory(&[original], &[replacement]);
@@ -87,17 +88,15 @@ fn provider_removal_and_replacement_are_inventory_changes_not_identity_rewrites(
 
 #[test]
 fn public_fault_fixture_covers_degraded_offer_and_partial_lifecycle_failure() {
-    let degraded = FaultingExecutionProvider::new(
-        ProviderRef::new("provider:fixture/degraded").unwrap(),
-    )
-    .with_availability(Availability::Degraded, HealthState::Degraded);
+    let degraded =
+        FaultingExecutionProvider::new(ProviderRef::new("provider:fixture/degraded").unwrap())
+            .with_availability(Availability::Degraded, HealthState::Degraded);
     let report = verify_provider_port(&degraded).unwrap();
     assert_eq!(report.degraded_offers, 1);
 
-    let mut partial = FaultingExecutionProvider::new(
-        ProviderRef::new("provider:fixture/partial").unwrap(),
-    )
-    .with_fault(ExecutionFault::Execute);
+    let mut partial =
+        FaultingExecutionProvider::new(ProviderRef::new("provider:fixture/partial").unwrap())
+            .with_fault(ExecutionFault::Execute);
     let request = ExecutionMaterialRequest {
         demand_ref: DemandRef::new("demand:sdk-fault").unwrap(),
         affordances: vec!["shell".into()],
@@ -116,10 +115,12 @@ fn public_fault_fixture_covers_degraded_offer_and_partial_lifecycle_failure() {
         partial.observe_execution(&allocation).unwrap().health,
         HealthState::Healthy
     );
-    assert!(partial
-        .release_execution(&allocation, &RetentionExpectation::Release)
-        .unwrap()
-        .changed);
+    assert!(
+        partial
+            .release_execution(&allocation, &RetentionExpectation::Release)
+            .unwrap()
+            .changed
+    );
 }
 
 #[test]

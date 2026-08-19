@@ -28,9 +28,7 @@ impl DurableCollapsedLocalWorkcell {
         })?;
         let mut inner = CollapsedLocalWorkcell::new(config)?;
         for entry in fs::read_dir(&receipt_root).map_err(|error| {
-            WorkcellError::OperationFailed(format!(
-                "read control-service world receipts: {error}"
-            ))
+            WorkcellError::OperationFailed(format!("read control-service world receipts: {error}"))
         })? {
             let entry = entry.map_err(|error| {
                 WorkcellError::OperationFailed(format!(
@@ -163,9 +161,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use epilogos_workcell_core::{
-        AffordanceRequirement, DemandRef, ExecutionDemand, WorkcellRef,
-    };
+    use epilogos_workcell_core::{AffordanceRequirement, DemandRef, ExecutionDemand, WorkcellRef};
 
     use super::*;
 
