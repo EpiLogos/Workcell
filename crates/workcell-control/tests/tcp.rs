@@ -92,10 +92,15 @@ fn tcp_path_carries_complete_versioned_control_surface_without_identity_translat
             client.release(&world.world_ref).unwrap()["disposition"],
             "released"
         );
-        assert!(matches!(
-            client.observe(&world.world_ref),
-            Err(ControlClientError::Remote(_))
-        ));
+
+        let released = client.observe(&world.world_ref).unwrap();
+        assert_eq!(released["world_ref"], world.world_ref.as_str());
+        let observations = released["observations"].as_array().unwrap();
+        assert!(!observations.is_empty());
+        assert!(observations.iter().all(|observation| {
+            observation["state"] == "unavailable"
+                && observation["detail"]["lifecycle"] == "released"
+        }));
     });
 
     server.serve_n(10).unwrap();
