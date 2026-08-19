@@ -3,16 +3,12 @@ use std::{
     env,
     error::Error,
     fmt, fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::ExitCode,
 };
 
-use epilogos_workcell_control::{
-    ControlClient, ControlClientError, TcpControlTransport,
-};
-use epilogos_workcell_core::{
-    DesiredMaterialState, ExecutionDemand, MaterialisedExecutionWorld, WorkcellError, WorldRef,
-};
+use epilogos_workcell_control::{ControlClient, ControlClientError, TcpControlTransport};
+use epilogos_workcell_core::{MaterialisedExecutionWorld, WorkcellError, WorldRef};
 use epilogos_workcell_wire::decode_world;
 use serde_json::{json, Value};
 
@@ -42,18 +38,24 @@ mod local_cli {
 
     pub(super) fn parse_remote_demand(
         args: &[String],
-    ) -> Result<epilogos_workcell_core::ExecutionDemand, epilogos_workcell_core::WorkcellError> {
+    ) -> Result<epilogos_workcell_core::ExecutionDemand, epilogos_workcell_core::WorkcellError>
+    {
         parse_demand(args)
     }
 
     pub(super) fn parse_remote_desired(
         args: &[String],
-    ) -> Result<Vec<epilogos_workcell_core::DesiredMaterialState>, epilogos_workcell_core::WorkcellError>
-    {
+    ) -> Result<
+        Vec<epilogos_workcell_core::DesiredMaterialState>,
+        epilogos_workcell_core::WorkcellError,
+    > {
         parse_desired(args)
     }
 
-    pub(super) fn receipt_path(state_root: &std::path::Path, world_ref: &str) -> std::path::PathBuf {
+    pub(super) fn receipt_path(
+        state_root: &std::path::Path,
+        world_ref: &str,
+    ) -> std::path::PathBuf {
         default_receipt_path(state_root, world_ref)
     }
 
@@ -128,24 +130,10 @@ fn main() -> ExitCode {
     };
 
     let Some(endpoint) = selection.endpoint else {
-        if selection.authorization.is_some() {
-            return report_error(
-                WorkcellError::InvalidDemand(
-                    "--authorization/WORKCELL_CONTROL_TOKEN requires a remote --endpoint or WORKCELL_CONTROL_ENDPOINT"
-                        .into(),
-                )
-                .into(),
-                json_requested,
-            );
-        }
         return local_cli::invoke();
     };
 
-    match run_remote(
-        selection.cleaned_args,
-        endpoint,
-        selection.authorization,
-    ) {
+    match run_remote(selection.cleaned_args, endpoint, selection.authorization) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => report_error(error, json_requested),
     }
@@ -164,9 +152,8 @@ fn extract_remote_selection(args: &[String]) -> Result<RemoteSelection, CliError
                 index += 2;
             }
             "--authorization" => {
-                authorization = Some(
-                    required_selector_value(args, index, "--authorization")?.to_owned(),
-                );
+                authorization =
+                    Some(required_selector_value(args, index, "--authorization")?.to_owned());
                 index += 2;
             }
             _ => {
@@ -220,15 +207,15 @@ fn run_remote(
 
     match command {
         "status" => remote_status(&global, &endpoint, &mut client),
-        "discover" => remote_discover(&global, &mut client),
+        "discover" => remote_value(&global, client.discover()?),
         "providers" => remote_providers(&global, &mut client),
         "doctor" => remote_doctor(&global, &endpoint, &mut client),
         "plan" => remote_plan(&global, command_args, &mut client),
         "prepare" => remote_prepare(&global, command_args, &mut client),
-        "observe" => remote_observe(&global, &mut client),
-        "expose" => remote_expose(&global, &mut client),
-        "collect" => remote_collect(&global, &mut client),
-        "release" => remote_release(&global, &mut client),
+        "observe" => remote_world_operation(&global, &mut client, RemoteWorldOperation::Observe),
+        "expose" => remote_world_operation(&global, &mut client, RemoteWorldOperation::Expose),
+        "collect" => remote_world_operation(&global, &mut client, RemoteWorldOperation::Collect),
+        "release" => remote_world_operation(&global, &mut client, RemoteWorldOperation::Release),
         "reconcile" => remote_reconcile(&global, command_args, &mut client),
         other => Err(WorkcellError::InvalidDemand(format!(
             "unknown command `{other}`; run `workcell help`"
@@ -255,31 +242,6 @@ fn remote_status(
         println!("offers: {}", value["offers"].as_u64().unwrap_or(0));
         println!("backend: service");
         println!("control endpoint: {endpoint}");
-    }
-    Ok(())
-}
-
-fn remote_discover(global: &RemoteGlobal, client: &mut RemoteClient) -> Result<(), CliError> {
-    let value = client.discover()?;
-    if global.json {
-        emit_json(with_ok(value));
-    } else {
-        println!(
-            "{} — {}",
-            value["workcell_ref"].as_str().unwrap_or("unknown"),
-            value["health"].as_str().unwrap_or("unknown")
-        );
-        if let Some(offers) = value["offers"].as_array() {
-            for offer in offers {
-                println!(
-                    "{} [{}] {} / {}",
-                    offer["provider_ref"].as_str().unwrap_or("unknown"),
-                    offer["port"].as_str().unwrap_or("unknown"),
-                    offer["availability"].as_str().unwrap_or("unknown"),
-                    offer["health"].as_str().unwrap_or("unknown")
-                );
-            }
-        }
     }
     Ok(())
 }
@@ -352,16 +314,7 @@ fn remote_plan(
 ) -> Result<(), CliError> {
     let demand = local_cli::parse_remote_demand(args)?;
     let value = client.plan(&demand)?;
-    if global.json {
-        emit_json(with_ok(value.clone()));
-    } else {
-        println!(
-            "{} — {}",
-            value["plan_ref"].as_str().unwrap_or("unknown"),
-            value["status"].as_str().unwrap_or("unknown")
-        );
-        print_degradation(&value);
-    }
+    remote_value(global, value.clone())?;
     if value["status"].as_str() == Some("unsatisfiable") {
         return Err(WorkcellError::UnsatisfiedDemand(
             "remote materialisation plan is unsatisfiable".into(),
@@ -396,42 +349,27 @@ fn remote_prepare(
     Ok(())
 }
 
-fn remote_observe(global: &RemoteGlobal, client: &mut RemoteClient) -> Result<(), CliError> {
-    let world_ref = receipt_world_ref(global)?;
-    let value = client.observe(&world_ref)?;
-    output_bundle(global, value, "observations")
+#[derive(Clone, Copy)]
+enum RemoteWorldOperation {
+    Observe,
+    Expose,
+    Collect,
+    Release,
 }
 
-fn remote_expose(global: &RemoteGlobal, client: &mut RemoteClient) -> Result<(), CliError> {
+fn remote_world_operation(
+    global: &RemoteGlobal,
+    client: &mut RemoteClient,
+    operation: RemoteWorldOperation,
+) -> Result<(), CliError> {
     let world_ref = receipt_world_ref(global)?;
-    let value = client.expose(&world_ref)?;
-    output_bundle(global, value, "surfaces")
-}
-
-fn remote_collect(global: &RemoteGlobal, client: &mut RemoteClient) -> Result<(), CliError> {
-    let world_ref = receipt_world_ref(global)?;
-    let value = client.collect(&world_ref)?;
-    output_bundle(global, value, "outputs")
-}
-
-fn remote_release(global: &RemoteGlobal, client: &mut RemoteClient) -> Result<(), CliError> {
-    let world_ref = receipt_world_ref(global)?;
-    let value = client.release(&world_ref)?;
-    if global.json {
-        emit_json(with_ok(value.clone()));
-    } else {
-        println!(
-            "{} — {}{}",
-            value["world_ref"].as_str().unwrap_or(world_ref.as_str()),
-            value["disposition"].as_str().unwrap_or("unknown"),
-            if value["changed"].as_bool().unwrap_or(false) {
-                " (changed)"
-            } else {
-                ""
-            }
-        );
-    }
-    Ok(())
+    let value = match operation {
+        RemoteWorldOperation::Observe => client.observe(&world_ref)?,
+        RemoteWorldOperation::Expose => client.expose(&world_ref)?,
+        RemoteWorldOperation::Collect => client.collect(&world_ref)?,
+        RemoteWorldOperation::Release => client.release(&world_ref)?,
+    };
+    remote_value(global, value)
 }
 
 fn remote_reconcile(
@@ -441,26 +379,7 @@ fn remote_reconcile(
 ) -> Result<(), CliError> {
     let _world_ref = receipt_world_ref(global)?;
     let desired = local_cli::parse_remote_desired(args)?;
-    let value = client.reconcile(&desired)?;
-    if global.json {
-        emit_json(with_ok(value.clone()));
-    } else if value["deltas"].as_array().is_none_or(Vec::is_empty) {
-        println!("reconcile: no delta");
-    } else if let Some(deltas) = value["deltas"].as_array() {
-        for delta in deltas {
-            println!(
-                "{}: {} -> {}{}",
-                delta["logical_ref"].as_str().unwrap_or("unknown"),
-                delta["observed"].as_str().unwrap_or("unknown"),
-                delta["desired"].as_str().unwrap_or("unknown"),
-                delta["action"]
-                    .as_str()
-                    .map(|action| format!(" ({action})"))
-                    .unwrap_or_default()
-            );
-        }
-    }
-    Ok(())
+    remote_value(global, client.reconcile(&desired)?)
 }
 
 fn receipt_world_ref(global: &RemoteGlobal) -> Result<WorldRef, CliError> {
@@ -485,47 +404,16 @@ fn decode_remote_world(value: &Value) -> Result<MaterialisedExecutionWorld, CliE
     Ok(decode_world(&encoded)?)
 }
 
-fn output_bundle(global: &RemoteGlobal, value: Value, collection_key: &str) -> Result<(), CliError> {
+fn remote_value(global: &RemoteGlobal, value: Value) -> Result<(), CliError> {
     if global.json {
         emit_json(with_ok(value));
     } else {
-        println!("{}", value["world_ref"].as_str().unwrap_or("unknown"));
-        if let Some(items) = value[collection_key].as_array() {
-            if items.is_empty() {
-                println!("no {collection_key}");
-            } else {
-                for item in items {
-                    if let Some(logical_ref) = item["logical_ref"].as_str() {
-                        println!("{logical_ref}");
-                    }
-                }
-            }
-        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
+        );
     }
     Ok(())
-}
-
-fn print_degradation(value: &Value) {
-    if let Some(items) = value["degradations"].as_array() {
-        for item in items {
-            println!(
-                "degraded {} ({}): {}",
-                item["requirement"].as_str().unwrap_or("unknown"),
-                item["necessity"].as_str().unwrap_or("unknown"),
-                item["reason"].as_str().unwrap_or("unknown")
-            );
-        }
-    }
-    if let Some(items) = value["omissions"].as_array() {
-        for item in items {
-            println!(
-                "omitted {} ({}): {}",
-                item["requirement"].as_str().unwrap_or("unknown"),
-                item["necessity"].as_str().unwrap_or("unknown"),
-                item["reason"].as_str().unwrap_or("unknown")
-            );
-        }
-    }
 }
 
 fn with_ok(value: Value) -> Value {
