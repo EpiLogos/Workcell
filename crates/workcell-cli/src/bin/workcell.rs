@@ -1,11 +1,4 @@
-use std::{
-    collections::BTreeSet,
-    env,
-    error::Error,
-    fmt, fs,
-    path::PathBuf,
-    process::ExitCode,
-};
+use std::{collections::BTreeSet, env, error::Error, fmt, fs, path::PathBuf, process::ExitCode};
 
 use epilogos_workcell_control::{ControlClient, ControlClientError, TcpControlTransport};
 use epilogos_workcell_core::{MaterialisedExecutionWorld, WorkcellError, WorldRef};
