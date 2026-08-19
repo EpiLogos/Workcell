@@ -1,0 +1,45 @@
+name: one-shot fabric clippy fix
+
+on:
+  push:
+    branches:
+      - agent/workcell-inhabitable-finish
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/workcell-inhabitable-finish
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Apply compiler-prescribed fixes and remove workflow
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('crates/workcell-fabric/src/lib.rs')
+          text = path.read_text()
+          replacements = {
+              'evaluate_fabric(&[relation.clone()], &[&overlay])': 'evaluate_fabric(std::slice::from_ref(&relation), &[&overlay])',
+              'evaluate_fabric(&[relation.clone()], &[&denied])': 'evaluate_fabric(std::slice::from_ref(&relation), &[&denied])',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f'missing expected source: {old}')
+              text = text.replace(old, new, 1)
+          path.write_text(text)
+          PY
+          cargo fmt --all
+          rm .github/workflows/one-shot-clippy-fix.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix(fabric): satisfy strict clippy relationship fixtures'
+          git push origin HEAD:agent/workcell-inhabitable-finish
