@@ -65,7 +65,13 @@ fn native_workcell_cli_selects_service_backend_without_identity_translation() {
     let client_endpoint = endpoint.clone();
     let client_receipt = receipt.clone();
     let client_thread = thread::spawn(move || {
-        let base = || vec!["--endpoint".into(), client_endpoint.clone(), "--json".into()];
+        let base = || {
+            vec![
+                "--endpoint".into(),
+                client_endpoint.clone(),
+                "--json".into(),
+            ]
+        };
 
         let mut args = base();
         args.push("status".into());
