@@ -1,0 +1,34 @@
+name: one-shot rustfmt
+
+on:
+  push:
+    branches:
+      - agent/workcell-inhabitable-finish
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/workcell-inhabitable-finish
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format and remove one-shot workflow
+        run: |
+          cargo fmt --all
+          rm .github/workflows/one-shot-format.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'style: apply rustfmt to Workcell convergence tranche'
+          git push origin HEAD:agent/workcell-inhabitable-finish
