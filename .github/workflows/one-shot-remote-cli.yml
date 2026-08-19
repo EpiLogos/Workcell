@@ -87,10 +87,7 @@ struct GlobalArgs {
 '''
           )
 
-          replace(
-              'fn run(args: Vec<String>) -> Result<(), WorkcellError> {',
-              'fn run(args: Vec<String>) -> Result<(), CliError> {'
-          )
+          replace('fn run(args: Vec<String>) -> Result<(), WorkcellError> {', 'fn run(args: Vec<String>) -> Result<(), CliError> {')
 
           replace(
               '''    let command_args = &global.remaining[1..];
@@ -147,14 +144,8 @@ struct GlobalArgs {
           )
 
           replace(
-              '''    let mut receipt = None;
-    let mut workspace_source = None;
-    let mut remaining = Vec::new();''',
-              '''    let mut receipt = None;
-    let mut workspace_source = None;
-    let mut endpoint = env::var("WORKCELL_CONTROL_ENDPOINT").ok();
-    let mut authorization = env::var("WORKCELL_CONTROL_TOKEN").ok();
-    let mut remaining = Vec::new();'''
+              '    let mut receipt = None;\n    let mut workspace_source = None;\n    let mut remaining = Vec::new();',
+              '    let mut receipt = None;\n    let mut workspace_source = None;\n    let mut endpoint = env::var("WORKCELL_CONTROL_ENDPOINT").ok();\n    let mut authorization = env::var("WORKCELL_CONTROL_TOKEN").ok();\n    let mut remaining = Vec::new();'
           )
 
           replace(
@@ -187,18 +178,8 @@ struct GlobalArgs {
           )
 
           replace(
-              '''        workcell_ref,
-        receipt,
-        workspace_source,
-        remaining,
-    })''',
-              '''        workcell_ref,
-        receipt,
-        workspace_source,
-        endpoint,
-        authorization,
-        remaining,
-    })'''
+              '        workcell_ref,\n        receipt,\n        workspace_source,\n        remaining,\n    })',
+              '        workcell_ref,\n        receipt,\n        workspace_source,\n        endpoint,\n        authorization,\n        remaining,\n    })'
           )
 
           old_errors = '''fn error_kind(error: &WorkcellError) -> &'static str {
@@ -255,9 +236,7 @@ fn workcell_error_kind(error: &WorkcellError) -> &'static str {
 
 fn exit_code(error: &CliError) -> u8 {
     match error {
-        CliError::Workcell(error) | CliError::Control(ControlClientError::Remote(error)) => {
-            workcell_exit_code(error)
-        }
+        CliError::Workcell(error) | CliError::Control(ControlClientError::Remote(error)) => workcell_exit_code(error),
         CliError::Control(ControlClientError::TransportUnavailable(_)) => 8,
         CliError::Control(ControlClientError::ProtocolIncompatible(_)) => 9,
         CliError::Control(ControlClientError::AuthenticationFailed(_)) => 10,
@@ -280,23 +259,9 @@ fn workcell_exit_code(error: &WorkcellError) -> u8 {
 '''
           replace(old_errors, new_errors)
 
-          replace(
-              '''Commands:\n  status       Summarise this local Workcell\n  discover     Discover material offers''',
-              '''Commands:\n  status       Summarise the selected Workcell\n  discover     Discover material offers'''
-          )
-          replace(
-              '''  doctor       Verify the zero-setup local baseline\n\n\\
-Global options:\n  --json                     Structured machine/agent output\n  --state-root PATH          Local Workcell state (default: $WORKCELL_HOME or ~/.workcell)''',
-              '''  doctor       Verify the selected local/service backend\n\n\\
-Global options:\n  --json                     Structured machine/agent output\n  --endpoint HOST:PORT       Use the service-backed Workcell (or $WORKCELL_CONTROL_ENDPOINT)\n  --authorization TOKEN      Control-service credential (prefer $WORKCELL_CONTROL_TOKEN)\n  --state-root PATH          Local state/receipt root (default: $WORKCELL_HOME or ~/.workcell)'''
-          )
-          replace(
-              '''  --workspace-source PATH    Physical local source binding; never semantic identity\n\n\\
-Demand options''',
-              '''  --workspace-source PATH    Physical local source binding; invalid for a remote backend\n\n\\
-Without --endpoint, the CLI remains the zero-daemon collapsed-local Workcell. With --endpoint,\nthe same commands and ExecutionDemand contract run through workcell.control/v1; endpoint and\ntransport remain material routing facts, never Workcell or caller semantic identity.\n\n\\
-Demand options'''
-          )
+          replace('Commands:\\n  status       Summarise this local Workcell\\n  discover     Discover material offers', 'Commands:\\n  status       Summarise the selected Workcell\\n  discover     Discover material offers')
+          replace('  doctor       Verify the zero-setup local baseline\\n\\n\\\\\nGlobal options:\\n  --json                     Structured machine/agent output\\n  --state-root PATH          Local Workcell state (default: $WORKCELL_HOME or ~/.workcell)', '  doctor       Verify the selected local/service backend\\n\\n\\\\\nGlobal options:\\n  --json                     Structured machine/agent output\\n  --endpoint HOST:PORT       Use the service-backed Workcell (or $WORKCELL_CONTROL_ENDPOINT)\\n  --authorization TOKEN      Control-service credential (prefer $WORKCELL_CONTROL_TOKEN)\\n  --state-root PATH          Local state/receipt root (default: $WORKCELL_HOME or ~/.workcell)')
+          replace('  --workspace-source PATH    Physical local source binding; never semantic identity\\n\\n\\\\\nDemand options', '  --workspace-source PATH    Physical local source binding; invalid for a remote backend\\n\\n\\\\\nWithout --endpoint, the CLI remains the zero-daemon collapsed-local Workcell. With --endpoint,\\nthe same commands and ExecutionDemand contract run through workcell.control/v1; endpoint and\\ntransport remain material routing facts, never Workcell or caller semantic identity.\\n\\n\\\\\nDemand options')
 
           path.write_text(text)
           PY
