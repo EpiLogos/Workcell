@@ -627,8 +627,10 @@ mod tests {
                 FabricPathState::Reachable,
             )],
         );
-        let first = require_fabric_plan(evaluate_fabric(&[relation.clone()], &[&overlay]).unwrap())
-            .unwrap();
+        let first = require_fabric_plan(
+            evaluate_fabric(std::slice::from_ref(&relation), &[&overlay]).unwrap(),
+        )
+        .unwrap();
         assert_eq!(first.bindings[0].relationship_ref, "relationship:service");
 
         let replacement = FixtureProvider::new(
@@ -700,7 +702,7 @@ mod tests {
                 FabricPathState::Denied,
             )],
         );
-        let denied_plan = evaluate_fabric(&[relation.clone()], &[&denied]).unwrap();
+        let denied_plan = evaluate_fabric(std::slice::from_ref(&relation), &[&denied]).unwrap();
         assert!(denied_plan
             .diagnostics
             .iter()
