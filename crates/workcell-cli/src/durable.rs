@@ -1,4 +1,4 @@
-use std::{fs, path::{Path, PathBuf}};
+use std::{fs, path::PathBuf};
 
 use epilogos_workcell_core::{
     CollectionBundle, DesiredMaterialState, Discovery, ExecutionDemand, ExposureBundle,
@@ -37,11 +37,15 @@ impl DurableCollapsedLocalWorkcell {
                     "read control-service world receipt entry: {error}"
                 ))
             })?;
-            if !entry.file_type().map_err(|error| {
-                WorkcellError::OperationFailed(format!(
-                    "inspect control-service world receipt: {error}"
-                ))
-            })?.is_file() {
+            if !entry
+                .file_type()
+                .map_err(|error| {
+                    WorkcellError::OperationFailed(format!(
+                        "inspect control-service world receipt: {error}"
+                    ))
+                })?
+                .is_file()
+            {
                 continue;
             }
             if entry.path().extension().and_then(|value| value.to_str()) != Some("json") {
@@ -56,7 +60,10 @@ impl DurableCollapsedLocalWorkcell {
             let world = decode_world(&encoded)?;
             inner.register_world(world)?;
         }
-        Ok(Self { inner, receipt_root })
+        Ok(Self {
+            inner,
+            receipt_root,
+        })
     }
 
     pub fn inner(&self) -> &CollapsedLocalWorkcell {
@@ -64,7 +71,8 @@ impl DurableCollapsedLocalWorkcell {
     }
 
     fn receipt_path(&self, world: &WorldRef) -> PathBuf {
-        self.receipt_root.join(format!("{}.json", safe_key(world.as_str())))
+        self.receipt_root
+            .join(format!("{}.json", safe_key(world.as_str())))
     }
 
     fn persist_world(&self, world: &MaterialisedExecutionWorld) -> Result<()> {
@@ -150,7 +158,10 @@ fn safe_key(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{
+        path::Path,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use epilogos_workcell_core::{
         AffordanceRequirement, DemandRef, ExecutionDemand, WorkcellRef,
