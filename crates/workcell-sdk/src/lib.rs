@@ -224,7 +224,7 @@ pub mod testkit {
                 connections: Vec::new(),
                 exposures: Vec::new(),
                 isolation_trust: Vec::new(),
-                availability: self.availability,
+                availability: self.availability.clone(),
                 health: self.health.clone(),
                 capacity: BTreeMap::new(),
                 metadata: BTreeMap::from([("fixture".into(), "faulting-execution".into())]),
