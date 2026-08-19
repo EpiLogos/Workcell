@@ -21,6 +21,15 @@ pub mod contract {
     };
 }
 
+pub mod fabric {
+    pub use epilogos_workcell_fabric::{
+        evaluate_fabric, require_fabric_plan, FabricDiagnostic, FabricDiagnosticKind,
+        FabricPathOffer, FabricPathProvider, FabricPathState, FabricPlan, FabricPolicyResult,
+        MaterialFabricBinding, NetworkRelationship, NetworkSecurity, ReachabilityScope,
+        RequiredNetworkRelationship,
+    };
+}
+
 pub mod provider {
     pub use epilogos_workcell_core::{
         validate_allocation, validate_provider_port, ArtifactChannelRequest,
