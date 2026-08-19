@@ -7,3 +7,4 @@ publish = false
 [dependencies]
 epilogos-workcell-control = { path = "../workcell-control" }
 epilogos-workcell-core = { path = "../workcell-core" }
+epilogos-workcell-fabric = { path = "../workcell-fabric" }
