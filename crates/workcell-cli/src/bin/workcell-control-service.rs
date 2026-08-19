@@ -1,8 +1,9 @@
 use std::{env, error::Error, path::PathBuf};
 
+use epilogos_workcell_cli::DurableCollapsedLocalWorkcell;
 use epilogos_workcell_control::{ControlService, TcpControlServer};
 use epilogos_workcell_core::WorkcellRef;
-use epilogos_workcell_runtime::{CollapsedLocalConfig, CollapsedLocalWorkcell};
+use epilogos_workcell_runtime::CollapsedLocalConfig;
 
 const DEFAULT_LISTEN: &str = "127.0.0.1:7777";
 const DEFAULT_WORKCELL_REF: &str = "workcell:local";
@@ -50,7 +51,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    let workcell = CollapsedLocalWorkcell::new(CollapsedLocalConfig::new(
+    let workcell = DurableCollapsedLocalWorkcell::new(CollapsedLocalConfig::new(
         WorkcellRef::new(workcell_ref)?,
         state_root,
     ))?;
