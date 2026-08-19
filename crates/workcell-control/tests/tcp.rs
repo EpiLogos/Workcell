@@ -50,44 +50,56 @@ fn tcp_path_carries_complete_versioned_control_surface_without_identity_translat
     let service = ControlService::new(workcell);
     let mut server = TcpControlServer::bind("127.0.0.1:0", service).unwrap();
     let address = server.local_addr().unwrap();
-    let server_thread = thread::spawn(move || server.serve_n(10).unwrap());
 
-    let mut client = ControlClient::new(
-        TcpControlTransport::new(address.to_string()).with_timeout(Some(Duration::from_secs(2))),
-    );
-    let demand = shell_demand("tcp-parity");
-    let discovery = client.discover().unwrap();
-    assert_eq!(discovery["workcell_ref"], "workcell:tcp-control-test");
-    assert_eq!(client.status().unwrap()["health"], "healthy");
-    assert_eq!(client.plan(&demand).unwrap()["status"], "satisfiable");
+    let client_thread = thread::spawn(move || {
+        let mut client = ControlClient::new(
+            TcpControlTransport::new(address.to_string())
+                .with_timeout(Some(Duration::from_secs(2))),
+        );
+        let demand = shell_demand("tcp-parity");
+        let discovery = client.discover().unwrap();
+        assert_eq!(discovery["workcell_ref"], "workcell:tcp-control-test");
+        assert_eq!(client.status().unwrap()["health"], "healthy");
+        assert_eq!(client.plan(&demand).unwrap()["status"], "satisfiable");
 
-    let prepared = client.prepare(&demand).unwrap();
-    let world = decode_world(&serde_json::to_string(&prepared).unwrap()).unwrap();
-    assert_eq!(world.demand_ref, demand.demand_ref);
-    assert_eq!(client.observe(&world.world_ref).unwrap()["world_ref"], world.world_ref.as_str());
-    assert_eq!(client.expose(&world.world_ref).unwrap()["world_ref"], world.world_ref.as_str());
-    assert_eq!(client.collect(&world.world_ref).unwrap()["world_ref"], world.world_ref.as_str());
-    let reconciled = client
-        .reconcile(&[DesiredMaterialState {
-            logical_ref: "affordance:shell".into(),
-            desired: "present".into(),
-        }])
-        .unwrap();
-    assert!(reconciled["deltas"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|delta| delta["logical_ref"] == "affordance:shell"));
-    assert_eq!(
-        client.release(&world.world_ref).unwrap()["disposition"],
-        "released"
-    );
-    assert!(matches!(
-        client.observe(&world.world_ref),
-        Err(ControlClientError::Remote(_))
-    ));
+        let prepared = client.prepare(&demand).unwrap();
+        let world = decode_world(&serde_json::to_string(&prepared).unwrap()).unwrap();
+        assert_eq!(world.demand_ref, demand.demand_ref);
+        assert_eq!(
+            client.observe(&world.world_ref).unwrap()["world_ref"],
+            world.world_ref.as_str()
+        );
+        assert_eq!(
+            client.expose(&world.world_ref).unwrap()["world_ref"],
+            world.world_ref.as_str()
+        );
+        assert_eq!(
+            client.collect(&world.world_ref).unwrap()["world_ref"],
+            world.world_ref.as_str()
+        );
+        let reconciled = client
+            .reconcile(&[DesiredMaterialState {
+                logical_ref: "affordance:shell".into(),
+                desired: "present".into(),
+            }])
+            .unwrap();
+        assert!(reconciled["deltas"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|delta| delta["logical_ref"] == "affordance:shell"));
+        assert_eq!(
+            client.release(&world.world_ref).unwrap()["disposition"],
+            "released"
+        );
+        assert!(matches!(
+            client.observe(&world.world_ref),
+            Err(ControlClientError::Remote(_))
+        ));
+    });
 
-    server_thread.join().unwrap();
+    server.serve_n(10).unwrap();
+    client_thread.join().unwrap();
     let _ = fs::remove_dir_all(root);
 }
 
@@ -97,18 +109,22 @@ fn tcp_authentication_failure_remains_distinct_from_transport_failure() {
     let service = ControlService::new(workcell).with_authorization("secret");
     let mut server = TcpControlServer::bind("127.0.0.1:0", service).unwrap();
     let address = server.local_addr().unwrap();
-    let server_thread = thread::spawn(move || server.serve_n(2).unwrap());
 
-    let mut unauthenticated = ControlClient::new(TcpControlTransport::new(address.to_string()));
-    assert!(matches!(
-        unauthenticated.discover(),
-        Err(ControlClientError::AuthenticationFailed(_))
-    ));
+    let client_thread = thread::spawn(move || {
+        let mut unauthenticated =
+            ControlClient::new(TcpControlTransport::new(address.to_string()));
+        assert!(matches!(
+            unauthenticated.discover(),
+            Err(ControlClientError::AuthenticationFailed(_))
+        ));
 
-    let mut authenticated = ControlClient::new(TcpControlTransport::new(address.to_string()))
-        .with_authorization("secret");
-    assert!(authenticated.discover().is_ok());
-    server_thread.join().unwrap();
+        let mut authenticated = ControlClient::new(TcpControlTransport::new(address.to_string()))
+            .with_authorization("secret");
+        assert!(authenticated.discover().is_ok());
+    });
+
+    server.serve_n(2).unwrap();
+    client_thread.join().unwrap();
 
     let dead_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let dead_address = dead_listener.local_addr().unwrap();
