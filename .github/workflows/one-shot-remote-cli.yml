@@ -1,0 +1,309 @@
+name: one-shot remote CLI wiring
+
+on:
+  push:
+    branches:
+      - agent/workcell-inhabitable-finish
+
+permissions:
+  contents: write
+
+jobs:
+  wire:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/workcell-inhabitable-finish
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Wire backend selection and remove workflow
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('crates/workcell-cli/src/main.rs')
+          text = path.read_text()
+
+          def replace(old, new):
+              global text
+              if old not in text:
+                  raise SystemExit(f'missing expected source:\n{old}')
+              text = text.replace(old, new, 1)
+
+          replace(
+              'use std::{\n    collections::{BTreeMap, BTreeSet},\n    env, fs,\n    path::{Path, PathBuf},\n    process::ExitCode,\n};\n\n',
+              'mod remote;\n\nuse std::{\n    collections::{BTreeMap, BTreeSet},\n    env, fs,\n    error::Error,\n    fmt,\n    path::{Path, PathBuf},\n    process::ExitCode,\n};\n\nuse epilogos_workcell_control::ControlClientError;\n'
+          )
+
+          replace(
+              '#[derive(Debug)]\nstruct GlobalArgs {\n    json: bool,\n    state_root: PathBuf,\n    workcell_ref: String,\n    receipt: Option<PathBuf>,\n    workspace_source: Option<PathBuf>,\n    remaining: Vec<String>,\n}\n',
+              '''enum CliError {
+    Workcell(WorkcellError),
+    Control(ControlClientError),
+}
+
+impl fmt::Display for CliError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Workcell(error) => error.fmt(formatter),
+            Self::Control(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl fmt::Debug for CliError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, formatter)
+    }
+}
+
+impl Error for CliError {}
+
+impl From<WorkcellError> for CliError {
+    fn from(error: WorkcellError) -> Self {
+        Self::Workcell(error)
+    }
+}
+
+impl From<ControlClientError> for CliError {
+    fn from(error: ControlClientError) -> Self {
+        Self::Control(error)
+    }
+}
+
+struct GlobalArgs {
+    json: bool,
+    state_root: PathBuf,
+    workcell_ref: String,
+    receipt: Option<PathBuf>,
+    workspace_source: Option<PathBuf>,
+    endpoint: Option<String>,
+    authorization: Option<String>,
+    remaining: Vec<String>,
+}
+'''
+          )
+
+          replace(
+              'fn run(args: Vec<String>) -> Result<(), WorkcellError> {',
+              'fn run(args: Vec<String>) -> Result<(), CliError> {'
+          )
+
+          replace(
+              '''    let command_args = &global.remaining[1..];
+
+    match command {
+        "help" | "-h" | "--help" => {
+            print_help();
+            Ok(())
+        }
+        "status" => command_status(&global),
+        "discover" => command_discover(&global),
+        "providers" => command_providers(&global),
+        "doctor" => command_doctor(&global),
+        "plan" => command_plan(&global, command_args),
+        "prepare" => command_prepare(&global, command_args),
+        "observe" => command_observe(&global),
+        "expose" => command_expose(&global),
+        "collect" => command_collect(&global),
+        "release" => command_release(&global),
+        "reconcile" => command_reconcile(&global, command_args),
+        other => Err(WorkcellError::InvalidDemand(format!(
+            "unknown command `{other}`; run `workcell help`"
+        ))),
+    }
+}''',
+              '''    let command_args = &global.remaining[1..];
+
+    if matches!(command, "help" | "-h" | "--help") {
+        print_help();
+        return Ok(());
+    }
+    if global.endpoint.is_some() {
+        return remote::run(&global, command, command_args);
+    }
+
+    let result: Result<(), WorkcellError> = match command {
+        "status" => command_status(&global),
+        "discover" => command_discover(&global),
+        "providers" => command_providers(&global),
+        "doctor" => command_doctor(&global),
+        "plan" => command_plan(&global, command_args),
+        "prepare" => command_prepare(&global, command_args),
+        "observe" => command_observe(&global),
+        "expose" => command_expose(&global),
+        "collect" => command_collect(&global),
+        "release" => command_release(&global),
+        "reconcile" => command_reconcile(&global, command_args),
+        other => Err(WorkcellError::InvalidDemand(format!(
+            "unknown command `{other}`; run `workcell help`"
+        ))),
+    };
+    result.map_err(CliError::from)
+}'''
+          )
+
+          replace(
+              '''    let mut receipt = None;
+    let mut workspace_source = None;
+    let mut remaining = Vec::new();''',
+              '''    let mut receipt = None;
+    let mut workspace_source = None;
+    let mut endpoint = env::var("WORKCELL_CONTROL_ENDPOINT").ok();
+    let mut authorization = env::var("WORKCELL_CONTROL_TOKEN").ok();
+    let mut remaining = Vec::new();'''
+          )
+
+          replace(
+              '''            "--workspace-source" => {
+                workspace_source = Some(PathBuf::from(require_value(
+                    &args,
+                    index,
+                    "--workspace-source",
+                )?));
+                index += 2;
+            }
+            _ => {''',
+              '''            "--workspace-source" => {
+                workspace_source = Some(PathBuf::from(require_value(
+                    &args,
+                    index,
+                    "--workspace-source",
+                )?));
+                index += 2;
+            }
+            "--endpoint" => {
+                endpoint = Some(require_value(&args, index, "--endpoint")?.to_owned());
+                index += 2;
+            }
+            "--authorization" => {
+                authorization = Some(require_value(&args, index, "--authorization")?.to_owned());
+                index += 2;
+            }
+            _ => {'''
+          )
+
+          replace(
+              '''        workcell_ref,
+        receipt,
+        workspace_source,
+        remaining,
+    })''',
+              '''        workcell_ref,
+        receipt,
+        workspace_source,
+        endpoint,
+        authorization,
+        remaining,
+    })'''
+          )
+
+          old_errors = '''fn error_kind(error: &WorkcellError) -> &'static str {
+    match error {
+        WorkcellError::InvalidDemand(_) => "invalid-demand",
+        WorkcellError::UnsatisfiedDemand(_) => "unsatisfied-demand",
+        WorkcellError::Unavailable(_) => "unavailable",
+        WorkcellError::Degraded(_) => "degraded",
+        WorkcellError::OperationFailed(_) => "operation-failed",
+        WorkcellError::CleanupFailed(_) => "cleanup-failed",
+        WorkcellError::ReconciliationFailed(_) => "reconciliation-failed",
+        WorkcellError::NotFound(_) => "not-found",
+        WorkcellError::Unsupported(_) => "unsupported",
+    }
+}
+
+fn exit_code(error: &WorkcellError) -> u8 {
+    match error {
+        WorkcellError::InvalidDemand(_) => 2,
+        WorkcellError::UnsatisfiedDemand(_) => 3,
+        WorkcellError::Unavailable(_) | WorkcellError::Degraded(_) => 4,
+        WorkcellError::NotFound(_) => 5,
+        WorkcellError::Unsupported(_) => 6,
+        WorkcellError::OperationFailed(_)
+        | WorkcellError::CleanupFailed(_)
+        | WorkcellError::ReconciliationFailed(_) => 7,
+    }
+}
+'''
+          new_errors = '''fn error_kind(error: &CliError) -> &'static str {
+    match error {
+        CliError::Workcell(error) => workcell_error_kind(error),
+        CliError::Control(ControlClientError::TransportUnavailable(_)) => "transport-unavailable",
+        CliError::Control(ControlClientError::ProtocolIncompatible(_)) => "protocol-incompatible",
+        CliError::Control(ControlClientError::AuthenticationFailed(_)) => "authentication-failed",
+        CliError::Control(ControlClientError::Remote(error)) => workcell_error_kind(error),
+        CliError::Control(ControlClientError::InvalidResponse(_)) => "invalid-control-response",
+    }
+}
+
+fn workcell_error_kind(error: &WorkcellError) -> &'static str {
+    match error {
+        WorkcellError::InvalidDemand(_) => "invalid-demand",
+        WorkcellError::UnsatisfiedDemand(_) => "unsatisfied-demand",
+        WorkcellError::Unavailable(_) => "unavailable",
+        WorkcellError::Degraded(_) => "degraded",
+        WorkcellError::OperationFailed(_) => "operation-failed",
+        WorkcellError::CleanupFailed(_) => "cleanup-failed",
+        WorkcellError::ReconciliationFailed(_) => "reconciliation-failed",
+        WorkcellError::NotFound(_) => "not-found",
+        WorkcellError::Unsupported(_) => "unsupported",
+    }
+}
+
+fn exit_code(error: &CliError) -> u8 {
+    match error {
+        CliError::Workcell(error) | CliError::Control(ControlClientError::Remote(error)) => {
+            workcell_exit_code(error)
+        }
+        CliError::Control(ControlClientError::TransportUnavailable(_)) => 8,
+        CliError::Control(ControlClientError::ProtocolIncompatible(_)) => 9,
+        CliError::Control(ControlClientError::AuthenticationFailed(_)) => 10,
+        CliError::Control(ControlClientError::InvalidResponse(_)) => 7,
+    }
+}
+
+fn workcell_exit_code(error: &WorkcellError) -> u8 {
+    match error {
+        WorkcellError::InvalidDemand(_) => 2,
+        WorkcellError::UnsatisfiedDemand(_) => 3,
+        WorkcellError::Unavailable(_) | WorkcellError::Degraded(_) => 4,
+        WorkcellError::NotFound(_) => 5,
+        WorkcellError::Unsupported(_) => 6,
+        WorkcellError::OperationFailed(_)
+        | WorkcellError::CleanupFailed(_)
+        | WorkcellError::ReconciliationFailed(_) => 7,
+    }
+}
+'''
+          replace(old_errors, new_errors)
+
+          replace(
+              '''Commands:\n  status       Summarise this local Workcell\n  discover     Discover material offers''',
+              '''Commands:\n  status       Summarise the selected Workcell\n  discover     Discover material offers'''
+          )
+          replace(
+              '''  doctor       Verify the zero-setup local baseline\n\n\\
+Global options:\n  --json                     Structured machine/agent output\n  --state-root PATH          Local Workcell state (default: $WORKCELL_HOME or ~/.workcell)''',
+              '''  doctor       Verify the selected local/service backend\n\n\\
+Global options:\n  --json                     Structured machine/agent output\n  --endpoint HOST:PORT       Use the service-backed Workcell (or $WORKCELL_CONTROL_ENDPOINT)\n  --authorization TOKEN      Control-service credential (prefer $WORKCELL_CONTROL_TOKEN)\n  --state-root PATH          Local state/receipt root (default: $WORKCELL_HOME or ~/.workcell)'''
+          )
+          replace(
+              '''  --workspace-source PATH    Physical local source binding; never semantic identity\n\n\\
+Demand options''',
+              '''  --workspace-source PATH    Physical local source binding; invalid for a remote backend\n\n\\
+Without --endpoint, the CLI remains the zero-daemon collapsed-local Workcell. With --endpoint,\nthe same commands and ExecutionDemand contract run through workcell.control/v1; endpoint and\ntransport remain material routing facts, never Workcell or caller semantic identity.\n\n\\
+Demand options'''
+          )
+
+          path.write_text(text)
+          PY
+          cargo fmt --all
+          rm .github/workflows/one-shot-remote-cli.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat(cli): select embedded or service-backed Workcell'
+          git push origin HEAD:agent/workcell-inhabitable-finish
