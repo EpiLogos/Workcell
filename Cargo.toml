@@ -12,6 +12,7 @@ members = [
   "crates/workcell-placement",
   "crates/workcell-runtime",
   "crates/workcell-sdk",
+  "crates/workcell-tailscale",
   "crates/workcell-wire",
   "crates/workcell-workspace",
 ]
