@@ -21,23 +21,24 @@ pub fn hermes_gateway_service(
     endpoint: impl Into<String>,
     acquisition: ExternalServiceAcquisition,
 ) -> Result<ExternalManagedService> {
-    ExternalManagedService::new(
+    let start = command("hermes", &["gateway", "start"])?;
+    let stop = command("hermes", &["gateway", "stop"])?;
+    let restart = command("hermes", &["gateway", "restart"])?;
+
+    Ok(ExternalManagedService::new(
         logical_ref,
         endpoint,
-        command("hermes", &["gateway", "status"] )?,
+        command("hermes", &["gateway", "status"])?,
     )?
     .with_metadata("target", "hermes")?
     .with_metadata("target_source_revision", HERMES_SOURCE_REVISION)?
     .with_metadata("target_management_source", HERMES_MANAGEMENT_SOURCE)?
     .with_metadata("configuration_owner", "hermes")?
-    .with_metadata("application_protocol", "opaque-to-workcell")
-    .map(|service| {
-        service
-            .with_start(command("hermes", &["gateway", "start"]).expect("static command"))
-            .with_stop(command("hermes", &["gateway", "stop"]).expect("static command"))
-            .with_restart(command("hermes", &["gateway", "restart"]).expect("static command"))
-            .with_acquisition(acquisition)
-    })
+    .with_metadata("application_protocol", "opaque-to-workcell")?
+    .with_start(start)
+    .with_stop(stop)
+    .with_restart(restart)
+    .with_acquisition(acquisition))
 }
 
 /// Target-specific material management description for an OpenClaw Gateway.
@@ -51,24 +52,26 @@ pub fn openclaw_gateway_service(
     endpoint: impl Into<String>,
     acquisition: ExternalServiceAcquisition,
 ) -> Result<ExternalManagedService> {
-    ExternalManagedService::new(
+    let readiness = command("openclaw", &["gateway", "health"])?;
+    let start = command("openclaw", &["gateway", "start"])?;
+    let stop = command("openclaw", &["gateway", "stop"])?;
+    let restart = command("openclaw", &["gateway", "restart"])?;
+
+    Ok(ExternalManagedService::new(
         logical_ref,
         endpoint,
-        command("openclaw", &["gateway", "status"] )?,
+        command("openclaw", &["gateway", "status"])?,
     )?
     .with_metadata("target", "openclaw")?
     .with_metadata("target_source_revision", OPENCLAW_SOURCE_REVISION)?
     .with_metadata("target_management_source", OPENCLAW_MANAGEMENT_SOURCE)?
     .with_metadata("configuration_owner", "openclaw")?
-    .with_metadata("application_protocol", "websocket-owned-by-openclaw")
-    .map(|service| {
-        service
-            .with_readiness(command("openclaw", &["gateway", "health"]).expect("static command"))
-            .with_start(command("openclaw", &["gateway", "start"]).expect("static command"))
-            .with_stop(command("openclaw", &["gateway", "stop"]).expect("static command"))
-            .with_restart(command("openclaw", &["gateway", "restart"]).expect("static command"))
-            .with_acquisition(acquisition)
-    })
+    .with_metadata("application_protocol", "websocket-owned-by-openclaw")?
+    .with_readiness(readiness)
+    .with_start(start)
+    .with_stop(stop)
+    .with_restart(restart)
+    .with_acquisition(acquisition))
 }
 
 fn command(program: &str, args: &[&str]) -> Result<ExternalServiceCommand> {
@@ -103,7 +106,10 @@ mod tests {
         assert_eq!(hermes.status.args, ["gateway", "status"]);
         assert!(hermes.readiness.is_none());
         assert_eq!(
-            hermes.metadata.get("target_source_revision").map(String::as_str),
+            hermes
+                .metadata
+                .get("target_source_revision")
+                .map(String::as_str),
             Some(HERMES_SOURCE_REVISION)
         );
 
@@ -114,7 +120,10 @@ mod tests {
             ["gateway", "health"]
         );
         assert_eq!(
-            openclaw.metadata.get("target_source_revision").map(String::as_str),
+            openclaw
+                .metadata
+                .get("target_source_revision")
+                .map(String::as_str),
             Some(OPENCLAW_SOURCE_REVISION)
         );
 
