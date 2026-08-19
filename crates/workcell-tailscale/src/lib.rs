@@ -16,8 +16,8 @@ pub const TAILSCALE_STATUS_COMMAND: &str = "tailscale status --json";
 
 /// Provider-local selector for one Tailscale peer.
 ///
-/// Stable node IDs, MagicDNS names and Tailscale IPs are all provider binding
-/// facts. None is promoted into Workcell semantic identity.
+/// Stable node IDs, MagicDNS names and Tailscale IPs are provider binding facts.
+/// None is promoted into Workcell semantic identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TailscalePeerSelector {
     value: String,
@@ -296,7 +296,7 @@ fn path_from_observation(
     let (state, path_class) = if observation.backend_state != "Running" || !observation.online {
         (FabricPathState::Unavailable, "tailscale-offline")
     } else if let Some(state) = config.policy.blocked_state() {
-        let path_class = if matches!(config.policy, TailscalePolicyEvidence::Denied { .. }) {
+        let path_class = if matches!(&config.policy, TailscalePolicyEvidence::Denied { .. }) {
             "tailscale-policy-denied"
         } else {
             "tailscale-policy-unverified"
