@@ -12,6 +12,10 @@ pub enum ProviderPortKind {
     ProjectRuntime,
     Service,
     ArtifactStorage,
+    /// Material connectivity/path binding. This does not imply one universal
+    /// mesh/VPN provider API; it lets a realised path participate in the same
+    /// inspectable BindingGraph as other material resources.
+    Fabric,
 }
 
 impl ProviderPortKind {
@@ -22,6 +26,7 @@ impl ProviderPortKind {
             Self::ProjectRuntime => "project-runtime",
             Self::Service => "service",
             Self::ArtifactStorage => "artifact-storage",
+            Self::Fabric => "fabric",
         }
     }
 }
