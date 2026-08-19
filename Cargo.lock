@@ -97,6 +97,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "epilogos-workcell-tailscale"
+version = "0.1.0"
+dependencies = [
+ "epilogos-workcell-sdk",
+ "serde_json",
+]
+
+[[package]]
 name = "epilogos-workcell-wire"
 version = "0.1.0"
 dependencies = [
