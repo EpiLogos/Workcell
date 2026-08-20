@@ -7,10 +7,12 @@ members = [
   "crates/workcell-control",
   "crates/workcell-core",
   "crates/workcell-docker",
+  "crates/workcell-fabric",
   "crates/workcell-interop",
   "crates/workcell-placement",
   "crates/workcell-runtime",
   "crates/workcell-sdk",
+  "crates/workcell-tailscale",
   "crates/workcell-wire",
   "crates/workcell-workspace",
 ]

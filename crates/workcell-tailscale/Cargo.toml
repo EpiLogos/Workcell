@@ -1,0 +1,9 @@
+[package]
+name = "epilogos-workcell-tailscale"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+epilogos-workcell-sdk = { path = "../workcell-sdk" }
+serde_json = "1"

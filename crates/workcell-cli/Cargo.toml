@@ -5,9 +5,10 @@ edition.workspace = true
 
 [[bin]]
 name = "workcell"
-path = "src/main.rs"
+path = "src/bin/workcell.rs"
 
 [dependencies]
+epilogos-workcell-control = { path = "../workcell-control" }
 epilogos-workcell-core = { path = "../workcell-core" }
 epilogos-workcell-runtime = { path = "../workcell-runtime" }
 epilogos-workcell-wire = { path = "../workcell-wire" }

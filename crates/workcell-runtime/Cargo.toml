@@ -7,3 +7,6 @@ edition.workspace = true
 epilogos-workcell-artifact = { path = "../workcell-artifact" }
 epilogos-workcell-core = { path = "../workcell-core" }
 epilogos-workcell-workspace = { path = "../workcell-workspace" }
+
+[dev-dependencies]
+epilogos-workcell-fabric = { path = "../workcell-fabric" }

@@ -27,6 +27,7 @@ dependencies = [
 name = "epilogos-workcell-cli"
 version = "0.1.0"
 dependencies = [
+ "epilogos-workcell-control",
  "epilogos-workcell-core",
  "epilogos-workcell-runtime",
  "epilogos-workcell-wire",
@@ -55,6 +56,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "epilogos-workcell-fabric"
+version = "0.1.0"
+dependencies = [
+ "epilogos-workcell-core",
+]
+
+[[package]]
 name = "epilogos-workcell-interop"
 version = "0.1.0"
 dependencies = [
@@ -75,6 +83,7 @@ version = "0.1.0"
 dependencies = [
  "epilogos-workcell-artifact",
  "epilogos-workcell-core",
+ "epilogos-workcell-fabric",
  "epilogos-workcell-workspace",
 ]
 
@@ -84,6 +93,15 @@ version = "0.1.0"
 dependencies = [
  "epilogos-workcell-control",
  "epilogos-workcell-core",
+ "epilogos-workcell-fabric",
+]
+
+[[package]]
+name = "epilogos-workcell-tailscale"
+version = "0.1.0"
+dependencies = [
+ "epilogos-workcell-sdk",
+ "serde_json",
 ]
 
 [[package]]
