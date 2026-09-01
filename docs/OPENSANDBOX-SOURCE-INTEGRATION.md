@@ -1,7 +1,7 @@
 # OpenSandbox provider source integration
 
-**Ticket:** Workcell #43 / W26  
-**O:I convergence:** `EpiLogos/O-I#155` → `EpiLogos/O-I#97`  
+**Ticket:** Workcell #43 / W26
+**O:I convergence:** `EpiLogos/O-I#155` → `EpiLogos/O-I#97`
 **Integration mode:** protocol-first OpenSandbox lifecycle/execd/egress adapter behind Workcell material contracts
 
 ## Relation
