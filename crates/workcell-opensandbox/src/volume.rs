@@ -348,7 +348,7 @@ impl OpenSandboxVolumeMount {
         Ok(())
     }
 
-    pub(crate) fn wire_value(&self) -> Result<Value> {
+    pub fn wire_value(&self) -> Result<Value> {
         self.validate()?;
         let mut value = json!({
             "name": self.name,
