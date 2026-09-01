@@ -71,21 +71,17 @@ fn stable_gateway_service_relationship_can_be_realised_by_tailscale_without_iden
 
     let relationship_ref = "network:agency-gateway/personal-world";
     let logical_service = "service:agency-gateway/personal-world";
-    let relationship = RequiredNetworkRelationship {
-        relationship: NetworkRelationship::new(
-            relationship_ref,
-            "surface:desktop",
-            logical_service,
-        )
-        .unwrap()
-        .with_transport("websocket")
-        .unwrap()
-        .with_scope(ReachabilityScope::Private)
-        .with_security(NetworkSecurity::AuthenticatedEncrypted),
-        necessity: RequirementNecessity::Required,
-        source_workcell: source,
-        destination_workcell: destination,
-    };
+    let relationship = RequiredNetworkRelationship::between_workcells(
+        NetworkRelationship::new(relationship_ref, "surface:desktop", logical_service)
+            .unwrap()
+            .with_transport("websocket")
+            .unwrap()
+            .with_scope(ReachabilityScope::Private)
+            .with_security(NetworkSecurity::AuthenticatedEncrypted),
+        RequirementNecessity::Required,
+        source,
+        destination,
+    );
 
     let plan = evaluate_fabric(&[relationship], &[&provider]).unwrap();
     assert_eq!(plan.status, PlanStatus::Satisfiable);
@@ -101,10 +97,13 @@ fn stable_gateway_service_relationship_can_be_realised_by_tailscale_without_iden
     );
     assert_eq!(binding.path_class.as_deref(), Some("tailscale-direct"));
 
-    // Provider-native node/DNS/address evidence remains material provenance; it
-    // never replaces the caller-owned network relationship or gateway service ref.
+    // Provider-native node/DNS/address evidence remains material path provenance;
+    // it never replaces the caller-owned network relationship or gateway service ref.
     assert_eq!(
-        binding.provenance.get("peer_stable_id").map(String::as_str),
+        binding
+            .path_provenance
+            .get("peer_stable_id")
+            .map(String::as_str),
         Some("node-stable-id-material-only")
     );
     assert_ne!(binding.relationship_ref, "node-stable-id-material-only");
