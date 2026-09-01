@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use epilogos_workcell_core::ReleaseDisposition;
 use epilogos_workcell_sdk::{
     contract::{RetentionExpectation, StorageAccess, StorageRequirement, StorageSharing},
     provider::{
         AttachedStorageRequest, Availability, Capacity, HealthState, OfferRef, OperationalOffer,
         ProviderAllocation, ProviderObservation, ProviderPort, ProviderPortKind, ProviderRef,
-        ProviderReleaseResult, ReleaseDisposition, Result, StorageProvider, WorkcellError,
+        ProviderReleaseResult, Result, StorageProvider, WorkcellError,
     },
 };
 use serde_json::{json, Value};
