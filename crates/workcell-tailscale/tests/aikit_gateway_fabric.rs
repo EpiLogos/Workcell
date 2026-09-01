@@ -64,10 +64,7 @@ fn stable_gateway_service_relationship_can_be_realised_by_tailscale_without_iden
         DIRECT_STATUS,
     )
     .unwrap();
-    let provider = FixturePathProvider {
-        provider_ref,
-        path,
-    };
+    let provider = FixturePathProvider { provider_ref, path };
 
     let relationship_ref = "network:agency-gateway/personal-world";
     let logical_service = "service:agency-gateway/personal-world";
