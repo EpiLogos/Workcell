@@ -15,8 +15,7 @@ pub const OPENCLAW_MANAGEMENT_SOURCE: &str = "openclaw/openclaw:docs/cli/gateway
 ///
 /// This remains a target source revision rather than a Workcell-owned protocol
 /// version: AIKit owns the Gateway semantics and Workcell materialises that body.
-pub const AIKIT_GATEWAY_SOURCE_REVISION: &str =
-    "4b614a732090df3abda7940d2fede649fc218492";
+pub const AIKIT_GATEWAY_SOURCE_REVISION: &str = "4b614a732090df3abda7940d2fede649fc218492";
 pub const AIKIT_GATEWAY_MANAGEMENT_SOURCE: &str =
     "EpiLogos/ai-kit:crates/aikit-adapters/src/bin/aikit-gateway.rs";
 pub const AIKIT_GATEWAY_APPLICATION_PROTOCOL: &str = "aikit.agency-gateway/v1";
@@ -55,23 +54,25 @@ pub fn aikit_gateway_service(
     let bind = format!("{host}:{port}");
     let endpoint = format!("ws://{bind}");
 
-    Ok(ManagedHostService::new(logical_ref, endpoint, "aikit-gateway")?
-        .with_arg("serve")
-        .with_arg("--ws")
-        .with_arg(bind)
-        .with_arg("--token-env")
-        .with_arg(token_env.clone())
-        .with_arg("--state-file")
-        .with_arg(state_file)
-        .with_metadata("target", "aikit-gateway")
-        .with_metadata("target_source_revision", AIKIT_GATEWAY_SOURCE_REVISION)
-        .with_metadata("target_management_source", AIKIT_GATEWAY_MANAGEMENT_SOURCE)
-        .with_metadata("configuration_owner", "aikit")
-        .with_metadata("application_protocol", AIKIT_GATEWAY_APPLICATION_PROTOCOL)
-        .with_metadata("credential_materialisation", "environment-name-only")
-        .with_metadata("credential_env", token_env)
-        .with_metadata("semantic_state_owner", "aikit")
-        .with_tcp_readiness(readiness))
+    Ok(
+        ManagedHostService::new(logical_ref, endpoint, "aikit-gateway")?
+            .with_arg("serve")
+            .with_arg("--ws")
+            .with_arg(bind)
+            .with_arg("--token-env")
+            .with_arg(token_env.clone())
+            .with_arg("--state-file")
+            .with_arg(state_file)
+            .with_metadata("target", "aikit-gateway")
+            .with_metadata("target_source_revision", AIKIT_GATEWAY_SOURCE_REVISION)
+            .with_metadata("target_management_source", AIKIT_GATEWAY_MANAGEMENT_SOURCE)
+            .with_metadata("configuration_owner", "aikit")
+            .with_metadata("application_protocol", AIKIT_GATEWAY_APPLICATION_PROTOCOL)
+            .with_metadata("credential_materialisation", "environment-name-only")
+            .with_metadata("credential_env", token_env)
+            .with_metadata("semantic_state_owner", "aikit")
+            .with_tcp_readiness(readiness),
+    )
 }
 
 /// Target-specific material management description for a Hermes gateway.
@@ -188,9 +189,15 @@ mod tests {
         let readiness = service.readiness.as_ref().unwrap();
         assert_eq!(readiness.host, "127.0.0.1");
         assert_eq!(readiness.port, 7778);
-        assert_eq!(service.metadata.get("target").map(String::as_str), Some("aikit-gateway"));
         assert_eq!(
-            service.metadata.get("application_protocol").map(String::as_str),
+            service.metadata.get("target").map(String::as_str),
+            Some("aikit-gateway")
+        );
+        assert_eq!(
+            service
+                .metadata
+                .get("application_protocol")
+                .map(String::as_str),
             Some(AIKIT_GATEWAY_APPLICATION_PROTOCOL)
         );
         assert_eq!(
