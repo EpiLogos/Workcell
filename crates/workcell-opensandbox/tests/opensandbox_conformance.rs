@@ -7,18 +7,17 @@ use std::{
 };
 
 use epilogos_workcell_core::{
-    AffordanceRequirement, Availability, DemandRef, DesiredMaterialState, ExecutionDemand,
-    ExecutionMaterialRequest, ExecutionProvider, ExternalRef, HealthState, MaterialCheckpointProvider,
-    MaterialisationPlan, OfferRef, PersistenceScope, PlanRef, PlanStatus, PlannedBinding,
-    PlannedAllocation, ProviderAllocation, ProviderPort, ProviderPortKind, ProviderRef,
-    RequirementNecessity, ResourceRequirement, RetentionExpectation, WorkcellControlPlane,
-    WorkcellError, WorkcellRef,
+    AffordanceRequirement, Availability, CheckpointRequest, DemandRef, DesiredMaterialState,
+    ExecutionDemand, ExecutionMaterialRequest, ExecutionProvider, ExternalRef, HealthState,
+    MaterialCheckpointProvider, MaterialisationPlan, OfferRef, PersistenceScope, PlanRef,
+    PlanStatus, PlannedAllocation, PlannedBinding, ProviderAllocation, ProviderPort,
+    ProviderPortKind, ProviderRef, RequirementNecessity, ResourceRequirement, RetentionExpectation,
+    WorkcellControlPlane, WorkcellError, WorkcellRef,
 };
 use epilogos_workcell_opensandbox::{
-    compose_opensandbox_material_world, CheckpointRequest, OpenSandboxConfig,
-    OpenSandboxExecutionProvider, OpenSandboxHttpRequest, OpenSandboxHttpResponse,
-    OpenSandboxMaterialComposition, OpenSandboxStartupSource, OpenSandboxTransport,
-    OPENSANDBOX_SOURCE_REVISION,
+    compose_opensandbox_material_world, OpenSandboxConfig, OpenSandboxExecutionProvider,
+    OpenSandboxHttpRequest, OpenSandboxHttpResponse, OpenSandboxMaterialComposition,
+    OpenSandboxStartupSource, OpenSandboxTransport, OPENSANDBOX_SOURCE_REVISION,
 };
 use serde_json::{json, Value};
 
@@ -42,7 +41,10 @@ impl RecordingTransport {
 }
 
 impl OpenSandboxTransport for RecordingTransport {
-    fn request(&self, request: OpenSandboxHttpRequest) -> epilogos_workcell_core::Result<OpenSandboxHttpResponse> {
+    fn request(
+        &self,
+        request: OpenSandboxHttpRequest,
+    ) -> epilogos_workcell_core::Result<OpenSandboxHttpResponse> {
         self.requests.lock().unwrap().push(request);
         self.responses
             .lock()
@@ -70,7 +72,10 @@ impl AvailabilityTransport {
 }
 
 impl OpenSandboxTransport for AvailabilityTransport {
-    fn request(&self, request: OpenSandboxHttpRequest) -> epilogos_workcell_core::Result<OpenSandboxHttpResponse> {
+    fn request(
+        &self,
+        request: OpenSandboxHttpRequest,
+    ) -> epilogos_workcell_core::Result<OpenSandboxHttpResponse> {
         if !self.available.load(Ordering::SeqCst) {
             return Err(WorkcellError::Unavailable(
                 "fixture OpenSandbox lifecycle endpoint unavailable".into(),
@@ -162,10 +167,8 @@ fn stable_execution_allocation() -> ProviderAllocation {
 
 fn stable_world() -> epilogos_workcell_core::MaterialisedExecutionWorld {
     let demand_ref = DemandRef::new("demand:stable-world").unwrap();
-    let mut demand = ExecutionDemand::new(demand_ref.clone()).with_subject(
-        "project",
-        ExternalRef::new("project:stable").unwrap(),
-    );
+    let mut demand = ExecutionDemand::new(demand_ref.clone())
+        .with_subject("project", ExternalRef::new("project:stable").unwrap());
     demand
         .affordances
         .required
@@ -238,8 +241,14 @@ fn one_generic_demand_crosses_local_docker_and_remote_cluster_lifecycle_shapes_u
     let local_allocation = local.prepare_execution(&demand).unwrap();
     let cluster_allocation = cluster.prepare_execution(&demand).unwrap();
 
-    assert_eq!(local_allocation.provider_ref, cluster_allocation.provider_ref);
-    assert_ne!(local_allocation.material_ref, cluster_allocation.material_ref);
+    assert_eq!(
+        local_allocation.provider_ref,
+        cluster_allocation.provider_ref
+    );
+    assert_ne!(
+        local_allocation.material_ref,
+        cluster_allocation.material_ref
+    );
     let local_request = local_inspect.requests().pop().unwrap();
     let cluster_request = cluster_inspect.requests().pop().unwrap();
     assert_eq!(local_request.method, "POST");
@@ -318,7 +327,10 @@ fn provider_loss_and_reappearance_reconcile_the_same_world_and_material_ref() {
     assert_eq!(lost.deltas[0].action.as_deref(), Some("recover"));
     let stale_world = control.world(&world_ref).unwrap();
     assert_eq!(stale_world.demand_ref, demand_ref);
-    assert_eq!(stale_world.binding_graph.bindings[0].material_ref, material_ref);
+    assert_eq!(
+        stale_world.binding_graph.bindings[0].material_ref,
+        material_ref
+    );
 
     controller.set_available(true);
     let recovered = control.reconcile(&desired).unwrap();
@@ -339,18 +351,9 @@ fn provider_loss_and_reappearance_reconcile_the_same_world_and_material_ref() {
 #[test]
 fn arbitrary_native_service_ports_are_exposed_without_promoting_app_surface_ontology() {
     let transport = RecordingTransport::new(vec![
-        json_response(
-            200,
-            json!({"endpoint":"browser.fixture:9222","headers":{}}),
-        ),
-        json_response(
-            200,
-            json!({"endpoint":"desktop.fixture:6080","headers":{}}),
-        ),
-        json_response(
-            200,
-            json!({"endpoint":"code.fixture:3000","headers":{}}),
-        ),
+        json_response(200, json!({"endpoint":"browser.fixture:9222","headers":{}})),
+        json_response(200, json!({"endpoint":"desktop.fixture:6080","headers":{}})),
+        json_response(200, json!({"endpoint":"code.fixture:3000","headers":{}})),
     ]);
     let inspect = transport.clone();
     let provider = OpenSandboxExecutionProvider::new(
@@ -360,9 +363,27 @@ fn arbitrary_native_service_ports_are_exposed_without_promoting_app_surface_onto
     .unwrap();
     let allocation = stable_execution_allocation();
 
-    assert_eq!(provider.endpoint_reading(&allocation, 9222).unwrap().endpoint, "browser.fixture:9222");
-    assert_eq!(provider.endpoint_reading(&allocation, 6080).unwrap().endpoint, "desktop.fixture:6080");
-    assert_eq!(provider.endpoint_reading(&allocation, 3000).unwrap().endpoint, "code.fixture:3000");
+    assert_eq!(
+        provider
+            .endpoint_reading(&allocation, 9222)
+            .unwrap()
+            .endpoint,
+        "browser.fixture:9222"
+    );
+    assert_eq!(
+        provider
+            .endpoint_reading(&allocation, 6080)
+            .unwrap()
+            .endpoint,
+        "desktop.fixture:6080"
+    );
+    assert_eq!(
+        provider
+            .endpoint_reading(&allocation, 3000)
+            .unwrap()
+            .endpoint,
+        "code.fixture:3000"
+    );
 
     let requests = inspect.requests();
     assert!(requests[0].url.contains("/endpoints/9222"));
