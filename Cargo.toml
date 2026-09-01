@@ -9,6 +9,7 @@ members = [
   "crates/workcell-docker",
   "crates/workcell-fabric",
   "crates/workcell-interop",
+  "crates/workcell-opensandbox",
   "crates/workcell-placement",
   "crates/workcell-runtime",
   "crates/workcell-sdk",
