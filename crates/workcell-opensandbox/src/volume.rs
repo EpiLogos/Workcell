@@ -103,7 +103,10 @@ impl OpenSandboxPvcStorageProvider {
         })
     }
 
-    fn compatible<'a>(&'a self, requirement: &StorageRequirement) -> Option<&'a OpenSandboxPvcVolume> {
+    fn compatible<'a>(
+        &'a self,
+        requirement: &StorageRequirement,
+    ) -> Option<&'a OpenSandboxPvcVolume> {
         self.volumes.iter().find(|volume| {
             volume.logical_ref == requirement.logical_ref
                 && (requirement.access == StorageAccess::ReadOnly || volume.writable)
@@ -147,7 +150,11 @@ impl ProviderPort for OpenSandboxPvcStorageProvider {
                     affordances: vec![
                         format!(
                             "storage:access:{}",
-                            if volume.writable { "writable" } else { "read-only" }
+                            if volume.writable {
+                                "writable"
+                            } else {
+                                "read-only"
+                            }
                         ),
                         format!(
                             "storage:sharing:{}",
@@ -174,12 +181,15 @@ impl ProviderPort for OpenSandboxPvcStorageProvider {
 impl StorageProvider for OpenSandboxPvcStorageProvider {
     fn prepare_storage(&mut self, request: &AttachedStorageRequest) -> Result<ProviderAllocation> {
         request.requirement.validate()?;
-        let volume = self.compatible(&request.requirement).cloned().ok_or_else(|| {
-            WorkcellError::UnsatisfiedDemand(format!(
-                "no OpenSandbox named volume satisfies `{}`",
-                request.requirement.logical_ref
-            ))
-        })?;
+        let volume = self
+            .compatible(&request.requirement)
+            .cloned()
+            .ok_or_else(|| {
+                WorkcellError::UnsatisfiedDemand(format!(
+                    "no OpenSandbox named volume satisfies `{}`",
+                    request.requirement.logical_ref
+                ))
+            })?;
         *self
             .active_bindings
             .entry(volume.claim_name.clone())
@@ -210,7 +220,10 @@ impl StorageProvider for OpenSandboxPvcStorageProvider {
             ]),
             provenance: BTreeMap::from([
                 ("provider".into(), "opensandbox:pvc-storage".into()),
-                ("upstream.revision".into(), OPENSANDBOX_SOURCE_REVISION.into()),
+                (
+                    "upstream.revision".into(),
+                    OPENSANDBOX_SOURCE_REVISION.into(),
+                ),
                 ("opensandbox.volume_backend".into(), "pvc".into()),
                 ("storage.lifecycle".into(), "externally-managed".into()),
             ]),
@@ -245,12 +258,15 @@ impl StorageProvider for OpenSandboxPvcStorageProvider {
         _retention: &RetentionExpectation,
     ) -> Result<ProviderReleaseResult> {
         require_storage_allocation(&self.provider_ref, allocation)?;
-        let count = self.active_bindings.get_mut(&allocation.material_ref).ok_or_else(|| {
-            WorkcellError::NotFound(format!(
-                "OpenSandbox storage binding `{}` is not active",
-                allocation.material_ref
-            ))
-        })?;
+        let count = self
+            .active_bindings
+            .get_mut(&allocation.material_ref)
+            .ok_or_else(|| {
+                WorkcellError::NotFound(format!(
+                    "OpenSandbox storage binding `{}` is not active",
+                    allocation.material_ref
+                ))
+            })?;
         *count = count.saturating_sub(1);
         if *count == 0 {
             self.active_bindings.remove(&allocation.material_ref);
@@ -321,11 +337,9 @@ impl OpenSandboxVolumeMount {
                     .into(),
             ));
         }
-        if self
-            .sub_path
-            .as_deref()
-            .is_some_and(|value| value.trim().is_empty() || value.starts_with('/') || value.contains(".."))
-        {
+        if self.sub_path.as_deref().is_some_and(|value| {
+            value.trim().is_empty() || value.starts_with('/') || value.contains("..")
+        }) {
             return Err(WorkcellError::InvalidDemand(
                 "OpenSandbox volume subPath must be safe and relative".into(),
             ));
@@ -418,7 +432,9 @@ mod tests {
     #[test]
     fn storage_binding_is_independent_of_underlying_volume_lifecycle() {
         let mut provider = provider();
-        let allocation = provider.prepare_storage(&request(StorageSharing::Shared)).unwrap();
+        let allocation = provider
+            .prepare_storage(&request(StorageSharing::Shared))
+            .unwrap();
         assert_eq!(allocation.port, ProviderPortKind::Storage);
         assert_eq!(allocation.material_ref, "project-state");
         assert_eq!(
@@ -436,7 +452,9 @@ mod tests {
     #[test]
     fn mount_consumes_storage_allocation_without_collapsing_storage_identity() {
         let mut provider = provider();
-        let allocation = provider.prepare_storage(&request(StorageSharing::Shared)).unwrap();
+        let allocation = provider
+            .prepare_storage(&request(StorageSharing::Shared))
+            .unwrap();
         let mount = OpenSandboxVolumeMount::pvc_from_storage_allocation(
             "project-state",
             &allocation,

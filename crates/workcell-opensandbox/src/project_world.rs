@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use epilogos_workcell_core::{
-    ExternalRef, ProviderAllocation, Result, WorkcellError, WorldRef,
-};
+use epilogos_workcell_core::{ExternalRef, ProviderAllocation, Result, WorkcellError, WorldRef};
 use serde_json::{json, Value};
 
 use super::{
@@ -207,7 +205,10 @@ where
             source_authority_preserved: true,
             provenance: BTreeMap::from([
                 ("provider".into(), "opensandbox:execd".into()),
-                ("upstream.revision".into(), OPENSANDBOX_SOURCE_REVISION.into()),
+                (
+                    "upstream.revision".into(),
+                    OPENSANDBOX_SOURCE_REVISION.into(),
+                ),
                 ("execd.port".into(), OPENSANDBOX_EXECD_PORT.to_string()),
                 ("workspace.realisation".into(), "staged-copy".into()),
                 ("source.authority".into(), spec.source_authority.to_string()),
@@ -441,10 +442,8 @@ mod tests {
             }))
             .unwrap(),
         );
-        let command_response = response(
-            200,
-            b"data: {\"type\":\"execution_complete\"}\n\n".to_vec(),
-        );
+        let command_response =
+            response(200, b"data: {\"type\":\"execution_complete\"}\n\n".to_vec());
         let mut responses = vec![endpoint_response, command_response];
         responses.extend(
             spec.files
@@ -480,7 +479,9 @@ mod tests {
             requests[1].headers.get("X-EXECD-TOKEN"),
             Some(&"provider-secret".to_string())
         );
-        assert!(requests[2].url.contains("/files/download?path=%2Fworkspace%2FSpecimen%2FREADME.md"));
+        assert!(requests[2]
+            .url
+            .contains("/files/download?path=%2Fworkspace%2FSpecimen%2FREADME.md"));
     }
 
     #[test]
@@ -489,6 +490,9 @@ mod tests {
         spec.files.push(
             OpenSandboxProjectWorldFile::new("Control/user/private.md", "private\n").unwrap(),
         );
-        assert!(matches!(spec.validate(), Err(WorkcellError::InvalidDemand(_))));
+        assert!(matches!(
+            spec.validate(),
+            Err(WorkcellError::InvalidDemand(_))
+        ));
     }
 }

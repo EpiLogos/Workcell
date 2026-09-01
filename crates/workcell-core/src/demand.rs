@@ -386,7 +386,10 @@ mod tests {
             .storage
             .optional
             .push(StorageRequirement::new("state:shared").unwrap());
-        assert!(matches!(demand.validate(), Err(WorkcellError::InvalidDemand(_))));
+        assert!(matches!(
+            demand.validate(),
+            Err(WorkcellError::InvalidDemand(_))
+        ));
     }
 
     #[test]

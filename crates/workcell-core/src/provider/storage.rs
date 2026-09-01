@@ -1,7 +1,5 @@
 use super::{ProviderAllocation, ProviderObservation, ProviderPort, ProviderReleaseResult};
-use crate::{
-    DemandRef, PersistenceScope, Result, RetentionExpectation, StorageRequirement,
-};
+use crate::{DemandRef, PersistenceScope, Result, RetentionExpectation, StorageRequirement};
 
 /// Material allocation request for storage attached to a prepared working world.
 ///

@@ -1,6 +1,6 @@
 use crate::{
-    Availability, ExecutionDemand, HealthState, OperationalOffer, StorageAccess, StorageRequirement,
-    StorageSharing,
+    Availability, ExecutionDemand, HealthState, OperationalOffer, StorageAccess,
+    StorageRequirement, StorageSharing,
 };
 
 use super::{policy::PlanningPolicy, requirements::MatchRule, requirements::RequirementAtom};
@@ -120,7 +120,12 @@ fn capacity_match(
 }
 
 fn storage_match(offer: &OperationalOffer, requirement: &StorageRequirement) -> OfferMatch {
-    if offer.port != "storage" || !offer.affordances.iter().any(|value| value == "storage:attached") {
+    if offer.port != "storage"
+        || !offer
+            .affordances
+            .iter()
+            .any(|value| value == "storage:attached")
+    {
         return OfferMatch::Unsupported;
     }
     if requirement.access == StorageAccess::Writable

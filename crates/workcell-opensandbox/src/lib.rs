@@ -9,19 +9,16 @@ use epilogos_workcell_core::{
     Availability, Capacity, CheckpointRequest, ExecutionMaterialRequest, ExecutionProvider,
     HealthState, LeaseRenewalRequest, MaterialCheckpoint, MaterialCheckpointProvider,
     MaterialCheckpointState, MaterialLease, MaterialLeaseProvider, OfferRef, OperationalOffer,
-    ProviderAllocation, ProviderObservation, ProviderOperation, ProviderOperationResult, ProviderPort,
-    ProviderPortKind, ProviderRef, ProviderReleaseResult, ReleaseDisposition, ResourceRequirement,
-    Result, RetentionExpectation, WorkcellError,
+    ProviderAllocation, ProviderObservation, ProviderOperation, ProviderOperationResult,
+    ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult, ReleaseDisposition,
+    ResourceRequirement, Result, RetentionExpectation, WorkcellError,
 };
 use serde_json::{json, Map, Value};
 
 /// Exact OpenSandbox source/spec revision inspected for this provider cut.
-pub const OPENSANDBOX_SOURCE_REVISION: &str =
-    "173a576d3afcd1fb9ab116b4c1353b2f4b0848d1";
-pub const OPENSANDBOX_LIFECYCLE_SPEC_BLOB: &str =
-    "8723921f2599e2e349428af3b864f30a5987e9a8";
-pub const OPENSANDBOX_EXECD_SPEC_BLOB: &str =
-    "ccfbce2d4330ec8a70ea359206fab17afa9e7a98";
+pub const OPENSANDBOX_SOURCE_REVISION: &str = "173a576d3afcd1fb9ab116b4c1353b2f4b0848d1";
+pub const OPENSANDBOX_LIFECYCLE_SPEC_BLOB: &str = "8723921f2599e2e349428af3b864f30a5987e9a8";
+pub const OPENSANDBOX_EXECD_SPEC_BLOB: &str = "ccfbce2d4330ec8a70ea359206fab17afa9e7a98";
 pub const OPENSANDBOX_LIFECYCLE_API_VERSION: &str = "0.1.0";
 pub const OPENSANDBOX_EXECD_PORT: u16 = 44772;
 pub const OPENSANDBOX_API_KEY_HEADER: &str = "OPEN-SANDBOX-API-KEY";
@@ -183,12 +180,13 @@ pub struct StdHttpOpenSandboxTransport;
 impl OpenSandboxTransport for StdHttpOpenSandboxTransport {
     fn request(&self, request: OpenSandboxHttpRequest) -> Result<OpenSandboxHttpResponse> {
         let parsed = parse_http_url(&request.url)?;
-        let mut stream = TcpStream::connect((parsed.host.as_str(), parsed.port)).map_err(|error| {
-            WorkcellError::Unavailable(format!(
-                "connect OpenSandbox HTTP endpoint {}:{}: {error}",
-                parsed.host, parsed.port
-            ))
-        })?;
+        let mut stream =
+            TcpStream::connect((parsed.host.as_str(), parsed.port)).map_err(|error| {
+                WorkcellError::Unavailable(format!(
+                    "connect OpenSandbox HTTP endpoint {}:{}: {error}",
+                    parsed.host, parsed.port
+                ))
+            })?;
         let mut head = format!(
             "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
             request.method, parsed.path_and_query, parsed.host
@@ -321,9 +319,7 @@ where
         );
         let value = self.lifecycle_json("GET", &path, None)?;
         let object = value.as_object().ok_or_else(|| {
-            WorkcellError::OperationFailed(
-                "OpenSandbox endpoint response must be an object".into(),
-            )
+            WorkcellError::OperationFailed("OpenSandbox endpoint response must be an object".into())
         })?;
         let endpoint = string_field(object, "endpoint")?.to_owned();
         let headers = match object.get("headers") {
@@ -501,13 +497,14 @@ impl<T> ExecutionProvider for OpenSandboxExecutionProvider<T>
 where
     T: OpenSandboxTransport,
 {
-    fn prepare_execution(&mut self, request: &ExecutionMaterialRequest) -> Result<ProviderAllocation> {
+    fn prepare_execution(
+        &mut self,
+        request: &ExecutionMaterialRequest,
+    ) -> Result<ProviderAllocation> {
         let body = create_sandbox_body(&self.config, request)?;
         let value = self.lifecycle_json("POST", "/sandboxes", Some(body))?;
         let object = value.as_object().ok_or_else(|| {
-            WorkcellError::OperationFailed(
-                "OpenSandbox create response must be an object".into(),
-            )
+            WorkcellError::OperationFailed("OpenSandbox create response must be an object".into())
         })?;
         let material_ref = string_field(object, "id")?.to_owned();
         let state = sandbox_state(object);
@@ -624,19 +621,14 @@ where
                 "lease renewal expires_at must not be empty".into(),
             ));
         }
-        let path = format!(
-            "/sandboxes/{}/renew-expiration",
-            allocation.material_ref
-        );
+        let path = format!("/sandboxes/{}/renew-expiration", allocation.material_ref);
         let value = self.lifecycle_json(
             "POST",
             &path,
             Some(json!({"expiresAt": request.expires_at})),
         )?;
         let object = value.as_object().ok_or_else(|| {
-            WorkcellError::OperationFailed(
-                "OpenSandbox renewal response must be an object".into(),
-            )
+            WorkcellError::OperationFailed("OpenSandbox renewal response must be an object".into())
         })?;
         Ok(MaterialLease {
             provider_ref: self.config.provider_ref.clone(),
@@ -696,7 +688,10 @@ struct ResolvedEndpoint {
     headers: BTreeMap<String, String>,
 }
 
-fn create_sandbox_body(config: &OpenSandboxConfig, request: &ExecutionMaterialRequest) -> Result<Value> {
+fn create_sandbox_body(
+    config: &OpenSandboxConfig,
+    request: &ExecutionMaterialRequest,
+) -> Result<Value> {
     let mut body = Map::new();
     match &config.startup {
         OpenSandboxStartupSource::Image { uri } => {
@@ -821,7 +816,10 @@ fn provider_provenance() -> BTreeMap<String, String> {
             "upstream.repository".into(),
             "opensandbox-group/OpenSandbox".into(),
         ),
-        ("upstream.revision".into(), OPENSANDBOX_SOURCE_REVISION.into()),
+        (
+            "upstream.revision".into(),
+            OPENSANDBOX_SOURCE_REVISION.into(),
+        ),
         (
             "upstream.lifecycle_spec_blob".into(),
             OPENSANDBOX_LIFECYCLE_SPEC_BLOB.into(),
@@ -865,14 +863,11 @@ fn require_success(response: &OpenSandboxHttpResponse, operation: &str) -> Resul
 }
 
 fn string_field<'a>(object: &'a Map<String, Value>, field: &str) -> Result<&'a str> {
-    object
-        .get(field)
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            WorkcellError::OperationFailed(format!(
-                "OpenSandbox response field `{field}` must be a string"
-            ))
-        })
+    object.get(field).and_then(Value::as_str).ok_or_else(|| {
+        WorkcellError::OperationFailed(format!(
+            "OpenSandbox response field `{field}` must be a string"
+        ))
+    })
 }
 
 #[derive(Default)]
@@ -899,9 +894,7 @@ fn parse_execd_stream(bytes: &[u8]) -> Result<ExecdStream> {
             continue;
         }
         let event: Value = serde_json::from_str(data).map_err(|error| {
-            WorkcellError::OperationFailed(format!(
-                "decode OpenSandbox execd SSE event: {error}"
-            ))
+            WorkcellError::OperationFailed(format!("decode OpenSandbox execd SSE event: {error}"))
         })?;
         let Some(object) = event.as_object() else {
             continue;
@@ -1018,7 +1011,9 @@ fn parse_http_response(bytes: &[u8]) -> Result<OpenSandboxHttpResponse> {
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
         .ok_or_else(|| {
-            WorkcellError::OperationFailed("OpenSandbox HTTP response has no header boundary".into())
+            WorkcellError::OperationFailed(
+                "OpenSandbox HTTP response has no header boundary".into(),
+            )
         })?;
     let head = std::str::from_utf8(&bytes[..split]).map_err(|error| {
         WorkcellError::OperationFailed(format!("OpenSandbox HTTP headers are not UTF-8: {error}"))
@@ -1034,9 +1029,7 @@ fn parse_http_response(bytes: &[u8]) -> Result<OpenSandboxHttpResponse> {
             WorkcellError::OperationFailed("OpenSandbox HTTP status line is invalid".into())
         })?
         .parse::<u16>()
-        .map_err(|_| {
-            WorkcellError::OperationFailed("OpenSandbox HTTP status is invalid".into())
-        })?;
+        .map_err(|_| WorkcellError::OperationFailed("OpenSandbox HTTP status is invalid".into()))?;
     let mut headers = BTreeMap::new();
     for line in lines {
         if let Some((name, value)) = line.split_once(':') {
@@ -1186,7 +1179,10 @@ mod tests {
         assert_eq!(allocation.material_ref, "sbx_123");
         assert_eq!(allocation.port, ProviderPortKind::Execution);
         assert_eq!(
-            allocation.provenance.get("upstream.revision").map(String::as_str),
+            allocation
+                .provenance
+                .get("upstream.revision")
+                .map(String::as_str),
             Some(OPENSANDBOX_SOURCE_REVISION)
         );
         let requests = inspect.requests();
@@ -1196,7 +1192,10 @@ mod tests {
         let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
         assert_eq!(body["image"]["uri"], "opensandbox/code-interpreter:v1.1.0");
         assert_eq!(body["resourceLimits"]["memory"], "2Gi");
-        assert_eq!(body["metadata"]["workcell.demand_ref"], "demand:project-world");
+        assert_eq!(
+            body["metadata"]["workcell.demand_ref"],
+            "demand:project-world"
+        );
     }
 
     #[test]
@@ -1302,7 +1301,10 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(result.output.get("stdout").map(String::as_str), Some("hello\n"));
+        assert_eq!(
+            result.output.get("stdout").map(String::as_str),
+            Some("hello\n")
+        );
         assert!(!format!("{result:?}").contains("secret-route-token"));
         let requests = inspect.requests();
         assert_eq!(
@@ -1333,7 +1335,10 @@ mod tests {
             provenance: BTreeMap::new(),
         };
         let reading = provider.endpoint_reading(&allocation, 8080).unwrap();
-        assert_eq!(reading.required_header_names, vec!["OpenSandbox-Secure-Access"]);
+        assert_eq!(
+            reading.required_header_names,
+            vec!["OpenSandbox-Secure-Access"]
+        );
         assert!(!format!("{reading:?}").contains("do-not-disclose"));
     }
 

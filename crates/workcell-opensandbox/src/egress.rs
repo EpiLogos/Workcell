@@ -2,9 +2,7 @@ use std::collections::BTreeMap;
 
 use epilogos_workcell_sdk::{
     contract::{ExternalRef, WorkcellRef},
-    fabric::{
-        FabricPolicyOffer, FabricPolicyProvider, FabricPolicyState, NetworkEndpoint,
-    },
+    fabric::{FabricPolicyOffer, FabricPolicyProvider, FabricPolicyState, NetworkEndpoint},
     provider::{ProviderAllocation, ProviderRef, Result, WorkcellError},
 };
 use serde_json::{json, Value};
@@ -121,7 +119,9 @@ where
         targets: Vec<OpenSandboxEgressTarget>,
     ) -> Result<Self> {
         config.validate()?;
-        if allocation.provider_ref != config.provider_ref || allocation.material_ref.trim().is_empty() {
+        if allocation.provider_ref != config.provider_ref
+            || allocation.material_ref.trim().is_empty()
+        {
             return Err(WorkcellError::InvalidDemand(
                 "OpenSandbox egress provider requires an allocation from the same provider instance"
                     .into(),
@@ -226,13 +226,7 @@ where
                 source: NetworkEndpoint::Workcell(self.source_workcell.clone()),
                 destination: NetworkEndpoint::External(target.endpoint_ref.clone()),
                 state: FabricPolicyState::Unavailable,
-                provenance: policy_provenance(
-                    &self.allocation,
-                    target,
-                    None,
-                    None,
-                    Some(reason),
-                ),
+                provenance: policy_provenance(&self.allocation, target, None, None, Some(reason)),
             })
             .collect()
     }
@@ -389,10 +383,22 @@ fn policy_provenance(
 ) -> BTreeMap<String, String> {
     let mut provenance = BTreeMap::from([
         ("provider".into(), "opensandbox:egress-policy".into()),
-        ("upstream.revision".into(), OPENSANDBOX_SOURCE_REVISION.into()),
-        ("upstream.egress_spec_blob".into(), OPENSANDBOX_EGRESS_SPEC_BLOB.into()),
-        ("upstream.egress_api".into(), OPENSANDBOX_EGRESS_API_VERSION.into()),
-        ("sandbox.material_ref".into(), allocation.material_ref.clone()),
+        (
+            "upstream.revision".into(),
+            OPENSANDBOX_SOURCE_REVISION.into(),
+        ),
+        (
+            "upstream.egress_spec_blob".into(),
+            OPENSANDBOX_EGRESS_SPEC_BLOB.into(),
+        ),
+        (
+            "upstream.egress_api".into(),
+            OPENSANDBOX_EGRESS_API_VERSION.into(),
+        ),
+        (
+            "sandbox.material_ref".into(),
+            allocation.material_ref.clone(),
+        ),
         ("provider.target".into(), target.target.clone()),
     ]);
     if let Some(mode) = mode {
@@ -536,10 +542,7 @@ mod tests {
         let policies = provider.policies().unwrap();
         assert_eq!(policies[0].state, FabricPolicyState::Allowed);
         assert_eq!(policies[1].state, FabricPolicyState::Denied);
-        assert_eq!(
-            policies[0].provenance["egress.enforcement_mode"],
-            "dns+nft"
-        );
+        assert_eq!(policies[0].provenance["egress.enforcement_mode"], "dns+nft");
     }
 
     #[test]
@@ -568,7 +571,8 @@ mod tests {
         )
         .unwrap();
         let source = NetworkEndpoint::Workcell(WorkcellRef::new("workcell:sandbox").unwrap());
-        let destination = NetworkEndpoint::External(ExternalRef::new("service:github-api").unwrap());
+        let destination =
+            NetworkEndpoint::External(ExternalRef::new("service:github-api").unwrap());
         let path = PathFixture(FabricPathOffer {
             provider_ref: ProviderRef::new("provider:kubernetes-network").unwrap(),
             path_ref: "path:public-egress".into(),

@@ -8,9 +8,7 @@ use serde_json::{json, Value};
 
 use super::{
     client::{data_request, require_success_safe, resolve_data_endpoint},
-    protocol::{
-        OpenSandboxConfig, OpenSandboxTransport, OPENSANDBOX_SOURCE_REVISION,
-    },
+    protocol::{OpenSandboxConfig, OpenSandboxTransport, OPENSANDBOX_SOURCE_REVISION},
 };
 
 pub const OPENSANDBOX_EGRESS_PORT: u16 = 18080;
@@ -220,7 +218,10 @@ where
             reinjection_required_after_sidecar_recreation: true,
             provenance: BTreeMap::from([
                 ("provider".into(), "opensandbox:credential-vault".into()),
-                ("upstream.revision".into(), OPENSANDBOX_SOURCE_REVISION.into()),
+                (
+                    "upstream.revision".into(),
+                    OPENSANDBOX_SOURCE_REVISION.into(),
+                ),
                 ("egress.port".into(), OPENSANDBOX_EGRESS_PORT.to_string()),
                 ("secret.visibility".into(), "use-without-read".into()),
             ]),

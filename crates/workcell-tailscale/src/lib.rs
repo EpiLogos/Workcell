@@ -4,7 +4,8 @@ use epilogos_workcell_sdk::{
     contract::WorkcellRef,
     fabric::{
         FabricPathOffer, FabricPathProvider, FabricPathState, FabricPolicyOffer,
-        FabricPolicyProvider, FabricPolicyState, NetworkEndpoint, NetworkSecurity, ReachabilityScope,
+        FabricPolicyProvider, FabricPolicyState, NetworkEndpoint, NetworkSecurity,
+        ReachabilityScope,
     },
     provider::{ProviderRef, Result, WorkcellError},
 };

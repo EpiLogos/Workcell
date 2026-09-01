@@ -909,7 +909,10 @@ mod tests {
         };
         let second =
             require_fabric_plan(evaluate_fabric(&[relation], &[&replacement]).unwrap()).unwrap();
-        assert_eq!(first.bindings[0].relationship_ref, second.bindings[0].relationship_ref);
+        assert_eq!(
+            first.bindings[0].relationship_ref,
+            second.bindings[0].relationship_ref
+        );
         assert_ne!(
             first.bindings[0].path_provider_ref,
             second.bindings[0].path_provider_ref
@@ -977,12 +980,9 @@ mod tests {
                 provenance: BTreeMap::from([("engine".into(), "dns+nft".into())]),
             }],
         };
-        let denied_plan = evaluate_fabric_with_policies(
-            std::slice::from_ref(&relation),
-            &[&route],
-            &[&denied],
-        )
-        .unwrap();
+        let denied_plan =
+            evaluate_fabric_with_policies(std::slice::from_ref(&relation), &[&route], &[&denied])
+                .unwrap();
         assert!(denied_plan
             .diagnostics
             .iter()
@@ -1037,9 +1037,15 @@ mod tests {
         )
         .unwrap();
         let binding = &plan.bindings[0];
-        assert_eq!(binding.path_provider_ref.to_string(), "provider:docker-network");
         assert_eq!(
-            binding.policy_provider_ref.as_ref().map(ToString::to_string),
+            binding.path_provider_ref.to_string(),
+            "provider:docker-network"
+        );
+        assert_eq!(
+            binding
+                .policy_provider_ref
+                .as_ref()
+                .map(ToString::to_string),
             Some("provider:opensandbox-egress".into())
         );
         assert_eq!(binding.policy, FabricPolicyResult::Allowed);

@@ -56,9 +56,7 @@ pub(crate) fn resolve_data_endpoint<T: OpenSandboxTransport>(
     let response = lifecycle_request(config, transport, "GET", &path, Vec::new())?;
     require_success_safe(&response, "resolve data-plane endpoint")?;
     let value: Value = serde_json::from_slice(&response.body).map_err(|error| {
-        WorkcellError::OperationFailed(format!(
-            "decode OpenSandbox endpoint response: {error}"
-        ))
+        WorkcellError::OperationFailed(format!("decode OpenSandbox endpoint response: {error}"))
     })?;
     let object = value.as_object().ok_or_else(|| {
         WorkcellError::OperationFailed("OpenSandbox endpoint response must be an object".into())
