@@ -4,13 +4,16 @@ on:
   push:
     branches:
       - feat/opensandbox-world-hosting-43
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
   format-and-retire:
-    if: github.event.head_commit.message != 'W26: apply canonical rustfmt and retire finalizer'
+    if: github.event_name == 'pull_request' || github.event.head_commit.message != 'W26: apply canonical rustfmt and retire finalizer'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
