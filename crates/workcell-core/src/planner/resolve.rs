@@ -1,4 +1,7 @@
-use crate::{Availability, ExecutionDemand, HealthState, OperationalOffer};
+use crate::{
+    Availability, ExecutionDemand, HealthState, OperationalOffer, StorageAccess, StorageRequirement,
+    StorageSharing,
+};
 
 use super::{policy::PlanningPolicy, requirements::MatchRule, requirements::RequirementAtom};
 
@@ -90,22 +93,64 @@ fn offer_match(offer: &OperationalOffer, rule: &MatchRule) -> OfferMatch {
         MatchRule::Connection(value) => list_match(&offer.connections, value),
         MatchRule::Exposure(value) => list_match(&offer.exposures, value),
         MatchRule::Isolation(value) => list_match(&offer.isolation_trust, value),
-        MatchRule::Capacity(requirement) => match offer.capacity.get(&requirement.key) {
-            Some(capacity) => {
-                if requirement.unit.is_some() && requirement.unit != capacity.unit {
-                    OfferMatch::Unsupported
-                } else if requirement
-                    .minimum
-                    .is_some_and(|minimum| capacity.amount < minimum)
-                {
-                    OfferMatch::CapacityShortfall
-                } else {
-                    OfferMatch::Matched
-                }
-            }
-            None => OfferMatch::Unsupported,
-        },
+        MatchRule::Capacity(requirement) => capacity_match(offer, requirement),
+        MatchRule::Storage(requirement) => storage_match(offer, requirement),
     }
+}
+
+fn capacity_match(
+    offer: &OperationalOffer,
+    requirement: &crate::ResourceRequirement,
+) -> OfferMatch {
+    match offer.capacity.get(&requirement.key) {
+        Some(capacity) => {
+            if requirement.unit.is_some() && requirement.unit != capacity.unit {
+                OfferMatch::Unsupported
+            } else if requirement
+                .minimum
+                .is_some_and(|minimum| capacity.amount < minimum)
+            {
+                OfferMatch::CapacityShortfall
+            } else {
+                OfferMatch::Matched
+            }
+        }
+        None => OfferMatch::Unsupported,
+    }
+}
+
+fn storage_match(offer: &OperationalOffer, requirement: &StorageRequirement) -> OfferMatch {
+    if offer.port != "storage" || !offer.affordances.iter().any(|value| value == "storage:attached") {
+        return OfferMatch::Unsupported;
+    }
+    if requirement.access == StorageAccess::Writable
+        && !offer
+            .affordances
+            .iter()
+            .any(|value| value == "storage:writable")
+    {
+        return OfferMatch::Unsupported;
+    }
+    if requirement.sharing == StorageSharing::Shared
+        && !offer
+            .affordances
+            .iter()
+            .any(|value| value == "storage:shared")
+    {
+        return OfferMatch::Unsupported;
+    }
+    if let Some(minimum) = requirement.minimum_capacity {
+        let Some(capacity) = offer.capacity.get("storage") else {
+            return OfferMatch::Unsupported;
+        };
+        if requirement.unit.is_some() && requirement.unit != capacity.unit {
+            return OfferMatch::Unsupported;
+        }
+        if capacity.amount < minimum {
+            return OfferMatch::CapacityShortfall;
+        }
+    }
+    OfferMatch::Matched
 }
 
 fn list_match(values: &[String], value: &str) -> OfferMatch {
