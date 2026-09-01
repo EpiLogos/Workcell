@@ -111,6 +111,22 @@ impl OpenSandboxCredentialBindingSpec {
     }
 }
 
+/// One complete authorised credential materialisation relation.
+///
+/// Keeping these values together matters: the selected sandbox allocation,
+/// source secret provider, broker policy/handle, Workcell request, authorised
+/// route and provider-native rendering describe one material act. The bundle
+/// prevents a call site from silently mixing pieces from different grants.
+pub struct OpenSandboxCredentialMaterialisation<'a, P: SecretProvider> {
+    pub allocation: &'a ProviderAllocation,
+    pub source_provider: &'a P,
+    pub policy: &'a BrokerPolicy,
+    pub handle: &'a BrokerHandle,
+    pub request: &'a SecretMaterialisationRequest,
+    pub route: &'a BrokerRoute,
+    pub binding: &'a OpenSandboxCredentialBindingSpec,
+}
+
 /// Portable evidence that Workcell authorised material use and the provider
 /// accepted a sandbox-local Vault revision. It deliberately contains no secret
 /// value and no provider endpoint authentication value.
@@ -141,14 +157,17 @@ where
 
     pub fn materialise<P: SecretProvider>(
         &self,
-        allocation: &ProviderAllocation,
-        source_provider: &P,
-        policy: &BrokerPolicy,
-        handle: &BrokerHandle,
-        request: &SecretMaterialisationRequest,
-        route: &BrokerRoute,
-        binding: &OpenSandboxCredentialBindingSpec,
+        materialisation: OpenSandboxCredentialMaterialisation<'_, P>,
     ) -> Result<OpenSandboxCredentialMaterialReceipt> {
+        let OpenSandboxCredentialMaterialisation {
+            allocation,
+            source_provider,
+            policy,
+            handle,
+            request,
+            route,
+            binding,
+        } = materialisation;
         binding.validate()?;
 
         // Authorisation happens before endpoint discovery or provider writes.
@@ -386,17 +405,18 @@ mod tests {
             OpenSandboxCredentialAuth::Bearer,
         )
         .unwrap();
+        let allocation = allocation();
 
         let receipt = broker
-            .materialise(
-                &allocation(),
-                &provider,
-                &policy,
-                &handle,
-                &request,
-                &route,
-                &binding,
-            )
+            .materialise(OpenSandboxCredentialMaterialisation {
+                allocation: &allocation,
+                source_provider: &provider,
+                policy: &policy,
+                handle: &handle,
+                request: &request,
+                route: &route,
+                binding: &binding,
+            })
             .unwrap();
 
         assert_eq!(receipt.vault_revision, Some(7));
@@ -435,16 +455,17 @@ mod tests {
             OpenSandboxCredentialAuth::Bearer,
         )
         .unwrap();
+        let allocation = allocation();
 
-        let result = broker.materialise(
-            &allocation(),
-            &provider,
-            &policy,
-            &handle,
-            &request,
-            &denied,
-            &binding,
-        );
+        let result = broker.materialise(OpenSandboxCredentialMaterialisation {
+            allocation: &allocation,
+            source_provider: &provider,
+            policy: &policy,
+            handle: &handle,
+            request: &request,
+            route: &denied,
+            binding: &binding,
+        });
         assert!(result.is_err());
         assert!(transport.requests().is_empty());
     }
