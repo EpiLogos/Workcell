@@ -3,21 +3,17 @@ use std::{collections::BTreeMap, process::Command};
 use epilogos_workcell_sdk::{
     contract::WorkcellRef,
     fabric::{
-        FabricPathOffer, FabricPathProvider, FabricPathState, NetworkSecurity, ReachabilityScope,
+        FabricPathOffer, FabricPathProvider, FabricPathState, FabricPolicyOffer,
+        FabricPolicyProvider, FabricPolicyState, NetworkEndpoint, NetworkSecurity, ReachabilityScope,
     },
     provider::{ProviderRef, Result, WorkcellError},
 };
 use serde_json::Value;
 
-/// Exact upstream source inspected when this optional reference adapter was authored.
 pub const TAILSCALE_SOURCE_REVISION: &str = "90ed0bcf4bc227a81e39e686dc52cf24f17b0c63";
 pub const TAILSCALE_STATUS_SOURCE: &str = "tailscale/tailscale:ipn/ipnstate/ipnstate.go";
 pub const TAILSCALE_STATUS_COMMAND: &str = "tailscale status --json";
 
-/// Provider-local selector for one Tailscale peer.
-///
-/// Stable node IDs, MagicDNS names and Tailscale IPs are provider binding facts.
-/// None is promoted into Workcell semantic identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TailscalePeerSelector {
     value: String,
@@ -40,8 +36,7 @@ impl TailscalePeerSelector {
 }
 
 /// Independently obtained policy/access evidence for the material relation.
-///
-/// `tailscale status` peer visibility is not treated as authorization proof.
+/// `tailscale status` peer visibility is not authorization proof.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TailscalePolicyEvidence {
     Allowed { evidence: String },
@@ -50,11 +45,11 @@ pub enum TailscalePolicyEvidence {
 }
 
 impl TailscalePolicyEvidence {
-    fn blocked_state(&self) -> Option<FabricPathState> {
+    fn state(&self) -> FabricPolicyState {
         match self {
-            Self::Allowed { .. } => None,
-            Self::Denied { .. } => Some(FabricPathState::Denied),
-            Self::Unknown => Some(FabricPathState::Unavailable),
+            Self::Allowed { .. } => FabricPolicyState::Allowed,
+            Self::Denied { .. } => FabricPolicyState::Denied,
+            Self::Unknown => FabricPolicyState::Unavailable,
         }
     }
 
@@ -74,9 +69,7 @@ pub struct TailscalePathConfig {
     pub source_workcell: WorkcellRef,
     pub destination_workcell: WorkcellRef,
     pub peer: TailscalePeerSelector,
-    /// Target-native endpoint reached through the tailnet.
     pub endpoint: String,
-    /// Application/material transport property, where relevant.
     pub transport: Option<String>,
     pub policy: TailscalePolicyEvidence,
 }
@@ -120,8 +113,6 @@ pub struct TailscalePeerObservation {
     pub peer_relay: Option<String>,
 }
 
-/// Parse the small source-pinned portion of `tailscale status --json` needed by
-/// Workcell fabric conformance. Missing fields are treated conservatively.
 pub fn parse_tailscale_status(
     status_json: &str,
     selector: &TailscalePeerSelector,
@@ -186,11 +177,28 @@ pub fn tailscale_path_from_status_json(
     Ok(path_from_observation(config, &observation))
 }
 
-/// Optional external-style reference adapter over an installed Tailscale CLI.
-///
-/// It depends only on `epilogos-workcell-sdk` plus Tailscale's public command
-/// output. Installation, authentication, Grants, Serve/Funnel and Tailscale SSH
-/// remain target/deployment responsibilities.
+pub fn tailscale_policy_offer(config: &TailscalePathConfig) -> Result<FabricPolicyOffer> {
+    config.validate()?;
+    let (policy_result, policy_evidence) = config.policy.provenance();
+    let mut provenance = BTreeMap::from([
+        ("implementation".into(), "tailscale-policy-reference".into()),
+        ("source_revision".into(), TAILSCALE_SOURCE_REVISION.into()),
+        ("policy_result".into(), policy_result.into()),
+    ]);
+    if let Some(evidence) = policy_evidence {
+        provenance.insert("policy_evidence".into(), evidence.into());
+    }
+    Ok(FabricPolicyOffer {
+        provider_ref: config.provider_ref.clone(),
+        policy_ref: format!("policy:{}", config.path_ref),
+        relationship_ref: None,
+        source: NetworkEndpoint::Workcell(config.source_workcell.clone()),
+        destination: NetworkEndpoint::Workcell(config.destination_workcell.clone()),
+        state: config.policy.state(),
+        provenance,
+    })
+}
+
 pub struct TailscaleFabricProvider {
     config: TailscalePathConfig,
     program: String,
@@ -217,13 +225,13 @@ impl TailscaleFabricProvider {
     }
 
     fn unavailable_path(&self, detail: impl Into<String>) -> FabricPathOffer {
-        let mut provenance = base_provenance(&self.config);
+        let mut provenance = base_path_provenance(&self.config);
         provenance.insert("observation_error".into(), detail.into());
         FabricPathOffer {
             provider_ref: self.config.provider_ref.clone(),
             path_ref: self.config.path_ref.clone(),
-            source_workcell: self.config.source_workcell.clone(),
-            destination_workcell: self.config.destination_workcell.clone(),
+            source: NetworkEndpoint::Workcell(self.config.source_workcell.clone()),
+            destination: NetworkEndpoint::Workcell(self.config.destination_workcell.clone()),
             transport: self.config.transport.clone(),
             scope: ReachabilityScope::Private,
             security: NetworkSecurity::AuthenticatedEncrypted,
@@ -269,11 +277,21 @@ impl FabricPathProvider for TailscaleFabricProvider {
     }
 }
 
+impl FabricPolicyProvider for TailscaleFabricProvider {
+    fn provider_ref(&self) -> &ProviderRef {
+        &self.config.provider_ref
+    }
+
+    fn policies(&self) -> Result<Vec<FabricPolicyOffer>> {
+        Ok(vec![tailscale_policy_offer(&self.config)?])
+    }
+}
+
 fn path_from_observation(
     config: &TailscalePathConfig,
     observation: &TailscalePeerObservation,
 ) -> FabricPathOffer {
-    let mut provenance = base_provenance(config);
+    let mut provenance = base_path_provenance(config);
     provenance.insert("backend_state".into(), observation.backend_state.clone());
     provenance.insert("peer_stable_id".into(), observation.stable_id.clone());
     provenance.insert("peer_hostname".into(), observation.hostname.clone());
@@ -293,21 +311,9 @@ fn path_from_observation(
     if let Some(relay) = &observation.derp_relay {
         provenance.insert("derp_relay".into(), relay.clone());
     }
-    let (policy_result, policy_evidence) = config.policy.provenance();
-    provenance.insert("policy_result".into(), policy_result.into());
-    if let Some(evidence) = policy_evidence {
-        provenance.insert("policy_evidence".into(), evidence.into());
-    }
 
     let (state, path_class) = if observation.backend_state != "Running" || !observation.online {
         (FabricPathState::Unavailable, "tailscale-offline")
-    } else if let Some(state) = config.policy.blocked_state() {
-        let path_class = if matches!(&config.policy, TailscalePolicyEvidence::Denied { .. }) {
-            "tailscale-policy-denied"
-        } else {
-            "tailscale-policy-unverified"
-        };
-        (state, path_class)
     } else if observation.current_address.is_some() {
         (FabricPathState::Reachable, "tailscale-direct")
     } else if observation.peer_relay.is_some() {
@@ -321,8 +327,8 @@ fn path_from_observation(
     FabricPathOffer {
         provider_ref: config.provider_ref.clone(),
         path_ref: config.path_ref.clone(),
-        source_workcell: config.source_workcell.clone(),
-        destination_workcell: config.destination_workcell.clone(),
+        source: NetworkEndpoint::Workcell(config.source_workcell.clone()),
+        destination: NetworkEndpoint::Workcell(config.destination_workcell.clone()),
         transport: config.transport.clone(),
         scope: ReachabilityScope::Private,
         security: NetworkSecurity::AuthenticatedEncrypted,
@@ -333,7 +339,7 @@ fn path_from_observation(
     }
 }
 
-fn base_provenance(config: &TailscalePathConfig) -> BTreeMap<String, String> {
+fn base_path_provenance(config: &TailscalePathConfig) -> BTreeMap<String, String> {
     BTreeMap::from([
         ("implementation".into(), "tailscale-reference".into()),
         ("source_revision".into(), TAILSCALE_SOURCE_REVISION.into()),
@@ -379,7 +385,8 @@ mod tests {
     use epilogos_workcell_sdk::{
         contract::{PlanStatus, RequirementNecessity},
         fabric::{
-            evaluate_fabric, require_fabric_plan, NetworkRelationship, RequiredNetworkRelationship,
+            evaluate_fabric_with_policies, require_fabric_plan, NetworkRelationship,
+            RequiredNetworkRelationship,
         },
     };
 
@@ -416,8 +423,8 @@ mod tests {
     }
 
     fn relationship() -> RequiredNetworkRelationship {
-        RequiredNetworkRelationship {
-            relationship: NetworkRelationship::new(
+        RequiredNetworkRelationship::between_workcells(
+            NetworkRelationship::new(
                 "relationship:workcell-control",
                 "workcell:client/control",
                 "workcell:server/control",
@@ -427,33 +434,44 @@ mod tests {
             .unwrap()
             .with_scope(ReachabilityScope::Private)
             .with_security(NetworkSecurity::AuthenticatedEncrypted),
-            necessity: RequirementNecessity::Required,
-            source_workcell: WorkcellRef::new("workcell:client").unwrap(),
-            destination_workcell: WorkcellRef::new("workcell:server").unwrap(),
-        }
+            RequirementNecessity::Required,
+            WorkcellRef::new("workcell:client").unwrap(),
+            WorkcellRef::new("workcell:server").unwrap(),
+        )
+        .with_required_policy()
     }
 
-    struct Fixture(FabricPathOffer);
+    struct Fixture {
+        path: FabricPathOffer,
+        policy: FabricPolicyOffer,
+    }
 
     impl FabricPathProvider for Fixture {
         fn provider_ref(&self) -> &ProviderRef {
-            &self.0.provider_ref
+            &self.path.provider_ref
         }
 
         fn paths(&self) -> Result<Vec<FabricPathOffer>> {
-            Ok(vec![self.0.clone()])
+            Ok(vec![self.path.clone()])
+        }
+    }
+
+    impl FabricPolicyProvider for Fixture {
+        fn provider_ref(&self) -> &ProviderRef {
+            &self.policy.provider_ref
+        }
+
+        fn policies(&self) -> Result<Vec<FabricPolicyOffer>> {
+            Ok(vec![self.policy.clone()])
         }
     }
 
     #[test]
     fn direct_path_keeps_provider_addresses_out_of_relationship_identity() {
-        let path = tailscale_path_from_status_json(
-            &config(TailscalePolicyEvidence::Allowed {
-                evidence: "probe:control-service-authenticated".into(),
-            }),
-            DIRECT_STATUS,
-        )
-        .unwrap();
+        let config = config(TailscalePolicyEvidence::Allowed {
+            evidence: "probe:control-service-authenticated".into(),
+        });
+        let path = tailscale_path_from_status_json(&config, DIRECT_STATUS).unwrap();
         assert_eq!(path.state, FabricPathState::Reachable);
         assert_eq!(path.path_class.as_deref(), Some("tailscale-direct"));
         assert_eq!(
@@ -463,49 +481,43 @@ mod tests {
             Some("192.0.2.50:41641")
         );
 
-        let provider = Fixture(path);
-        let plan =
-            require_fabric_plan(evaluate_fabric(&[relationship()], &[&provider]).unwrap()).unwrap();
+        let fixture = Fixture {
+            path,
+            policy: tailscale_policy_offer(&config).unwrap(),
+        };
+        let plan = require_fabric_plan(
+            evaluate_fabric_with_policies(&[relationship()], &[&fixture], &[&fixture]).unwrap(),
+        )
+        .unwrap();
         assert_eq!(plan.status, PlanStatus::Satisfiable);
         assert_eq!(
             plan.bindings[0].relationship_ref,
             "relationship:workcell-control"
         );
         assert_eq!(
-            plan.bindings[0].provenance["peer_stable_id"],
+            plan.bindings[0].path_provenance["peer_stable_id"],
             "peer-stable-id"
+        );
+        assert_eq!(
+            plan.bindings[0].policy_provider_ref.as_ref(),
+            Some(&ProviderRef::new("provider:tailscale-reference").unwrap())
         );
     }
 
     #[test]
     fn direct_peer_relay_and_derp_change_path_class_not_binding_identity() {
-        let direct = tailscale_path_from_status_json(
-            &config(TailscalePolicyEvidence::Allowed {
-                evidence: "probe:allowed".into(),
-            }),
-            DIRECT_STATUS,
-        )
-        .unwrap();
+        let config = config(TailscalePolicyEvidence::Allowed {
+            evidence: "probe:allowed".into(),
+        });
+        let direct = tailscale_path_from_status_json(&config, DIRECT_STATUS).unwrap();
         let peer_relay_json = DIRECT_STATUS
             .replace("\"CurAddr\": \"192.0.2.50:41641\"", "\"CurAddr\": \"\"")
             .replace("\"PeerRelay\": \"\"", "\"PeerRelay\": \"100.64.0.7:1:23\"");
-        let peer_relay = tailscale_path_from_status_json(
-            &config(TailscalePolicyEvidence::Allowed {
-                evidence: "probe:allowed".into(),
-            }),
-            &peer_relay_json,
-        )
-        .unwrap();
+        let peer_relay = tailscale_path_from_status_json(&config, &peer_relay_json).unwrap();
         let derp_json = DIRECT_STATUS
             .replace("\"CurAddr\": \"192.0.2.50:41641\"", "\"CurAddr\": \"\"")
             .replace("\"Relay\": \"\"", "\"Relay\": \"lhr\"");
-        let derp = tailscale_path_from_status_json(
-            &config(TailscalePolicyEvidence::Allowed {
-                evidence: "probe:allowed".into(),
-            }),
-            &derp_json,
-        )
-        .unwrap();
+        let derp = tailscale_path_from_status_json(&config, &derp_json).unwrap();
 
         assert_eq!(direct.path_class.as_deref(), Some("tailscale-direct"));
         assert_eq!(
@@ -519,24 +531,19 @@ mod tests {
     }
 
     #[test]
-    fn unknown_or_denied_policy_is_never_promoted_to_reachable() {
-        let unknown = tailscale_path_from_status_json(
-            &config(TailscalePolicyEvidence::Unknown),
-            DIRECT_STATUS,
-        )
-        .unwrap();
-        assert_eq!(unknown.state, FabricPathState::Unavailable);
-        assert_eq!(unknown.provenance["policy_result"], "unverified");
-
-        let denied = tailscale_path_from_status_json(
-            &config(TailscalePolicyEvidence::Denied {
-                evidence: "grant-probe:denied".into(),
-            }),
-            DIRECT_STATUS,
-        )
-        .unwrap();
-        assert_eq!(denied.state, FabricPathState::Denied);
+    fn policy_evidence_changes_policy_state_not_path_reachability() {
+        let denied_config = config(TailscalePolicyEvidence::Denied {
+            evidence: "grant-probe:denied".into(),
+        });
+        let path = tailscale_path_from_status_json(&denied_config, DIRECT_STATUS).unwrap();
+        let denied = tailscale_policy_offer(&denied_config).unwrap();
+        assert_eq!(path.state, FabricPathState::Reachable);
+        assert_eq!(denied.state, FabricPolicyState::Denied);
         assert_eq!(denied.provenance["policy_result"], "denied");
+
+        let unknown = tailscale_policy_offer(&config(TailscalePolicyEvidence::Unknown)).unwrap();
+        assert_eq!(unknown.state, FabricPolicyState::Unavailable);
+        assert_eq!(unknown.provenance["policy_result"], "unverified");
     }
 
     #[test]
