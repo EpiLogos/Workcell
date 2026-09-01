@@ -71,6 +71,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "epilogos-workcell-opensandbox"
+version = "0.1.0"
+dependencies = [
+ "epilogos-workcell-core",
+ "epilogos-workcell-sdk",
+ "serde_json",
+]
+
+[[package]]
 name = "epilogos-workcell-placement"
 version = "0.1.0"
 dependencies = [
