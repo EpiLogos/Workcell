@@ -11,13 +11,12 @@ pub const HERMES_MANAGEMENT_SOURCE: &str =
 pub const OPENCLAW_SOURCE_REVISION: &str = "9d4ba33c4a6e5e8386829e1c0010b280983599c5";
 pub const OPENCLAW_MANAGEMENT_SOURCE: &str = "openclaw/openclaw:docs/cli/gateway.md";
 
-/// Source pin for the first persistent `aikit-gateway serve` carrier implementation.
+/// Source pin for the accepted persistent `aikit-gateway serve` carrier implementation.
 ///
-/// This is intentionally the accepted/under-review AIKit target revision rather
-/// than a Workcell-owned protocol version. Repin to the merged native-main SHA
-/// when the AIKit carrier PR lands.
+/// This remains a target source revision rather than a Workcell-owned protocol
+/// version: AIKit owns the Gateway semantics and Workcell materialises that body.
 pub const AIKIT_GATEWAY_SOURCE_REVISION: &str =
-    "bf51ee53b20303a02f5572467b21db21b875ba6e";
+    "4b614a732090df3abda7940d2fede649fc218492";
 pub const AIKIT_GATEWAY_MANAGEMENT_SOURCE: &str =
     "EpiLogos/ai-kit:crates/aikit-adapters/src/bin/aikit-gateway.rs";
 pub const AIKIT_GATEWAY_APPLICATION_PROTOCOL: &str = "aikit.agency-gateway/v1";
