@@ -19,8 +19,8 @@ pub mod contract {
         AffordanceRequirement, DemandRef, ExecutionDemand, ExposureRequirement, ExternalRef,
         IsolationTrustRequirement, LogicalConnectionRequirement, OutputRequirement,
         PersistenceScope, PlanStatus, ProjectRuntimeRequirement, RequirementNecessity,
-        ResourceRequirement, RetentionExpectation, Tiered, WorkcellRef, WorkspaceAccess,
-        WorkspaceRequirement,
+        ResourceRequirement, RetentionExpectation, StorageAccess, StorageRequirement, StorageSharing,
+        Tiered, WorkcellRef, WorkspaceAccess, WorkspaceRequirement,
     };
 }
 
@@ -36,14 +36,15 @@ pub mod fabric {
 pub mod provider {
     pub use epilogos_workcell_core::{
         validate_allocation, validate_provider_port, ArtifactChannelRequest,
-        ArtifactStorageProvider, Availability, Capacity, ExecutionMaterialRequest,
-        ExecutionProvider, HealthState, MaterialExposureProvider, OfferRef, OperationalOffer,
-        ProjectRuntimeMaterialRequest, ProjectRuntimeProvider, ProviderAllocation,
-        ProviderCollectedMaterial, ProviderExposedSurface, ProviderExposureRequest,
-        ProviderObservation, ProviderOperation, ProviderOperationResult, ProviderPort,
-        ProviderPortKind, ProviderRef, ProviderReleaseResult, Result, ServiceMaterialRequest,
-        ServiceProvider, WorkcellError, WorkspaceMaterialRequest, WorkspaceMaterialSource,
-        WorkspaceProvider,
+        ArtifactStorageProvider, AttachedStorageRequest, Availability, Capacity, CheckpointRequest,
+        ExecutionMaterialRequest, ExecutionProvider, HealthState, LeaseRenewalRequest,
+        MaterialCheckpoint, MaterialCheckpointProvider, MaterialCheckpointState, MaterialExposureProvider,
+        MaterialLease, MaterialLeaseProvider, OfferRef, OperationalOffer, ProjectRuntimeMaterialRequest,
+        ProjectRuntimeProvider, ProviderAllocation, ProviderCollectedMaterial, ProviderExposedSurface,
+        ProviderExposureRequest, ProviderObservation, ProviderOperation, ProviderOperationResult,
+        ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult, Result,
+        ServiceMaterialRequest, ServiceProvider, StorageProvider, WorkcellError,
+        WorkspaceMaterialRequest, WorkspaceMaterialSource, WorkspaceProvider,
     };
 }
 
