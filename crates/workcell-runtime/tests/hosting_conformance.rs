@@ -9,8 +9,9 @@ use epilogos_workcell_core::{
     WorkspaceAccess, WorkspaceRequirement,
 };
 use epilogos_workcell_fabric::{
-    evaluate_fabric, require_fabric_plan, FabricDiagnosticKind, FabricPathOffer,
-    FabricPathProvider, FabricPathState, NetworkRelationship, NetworkSecurity, ReachabilityScope,
+    evaluate_fabric, evaluate_fabric_with_policies, require_fabric_plan, FabricDiagnosticKind,
+    FabricPathOffer, FabricPathProvider, FabricPathState, FabricPolicyOffer, FabricPolicyProvider,
+    FabricPolicyState, NetworkEndpoint, NetworkRelationship, NetworkSecurity, ReachabilityScope,
     RequiredNetworkRelationship,
 };
 use epilogos_workcell_runtime::{ManagedHostService, ManagedHostServiceProvider};
@@ -30,8 +31,27 @@ impl FabricPathProvider for FixtureFabric {
     }
 }
 
+struct FixturePolicy {
+    provider_ref: ProviderRef,
+    policies: Vec<FabricPolicyOffer>,
+}
+
+impl FabricPolicyProvider for FixturePolicy {
+    fn provider_ref(&self) -> &ProviderRef {
+        &self.provider_ref
+    }
+
+    fn policies(&self) -> epilogos_workcell_core::Result<Vec<FabricPolicyOffer>> {
+        Ok(self.policies.clone())
+    }
+}
+
 fn workcell(value: &str) -> WorkcellRef {
     WorkcellRef::new(value).unwrap()
+}
+
+fn endpoint(value: &str) -> NetworkEndpoint {
+    NetworkEndpoint::Workcell(workcell(value))
 }
 
 fn hosting_demand() -> ExecutionDemand {
@@ -83,27 +103,27 @@ fn fabric_path(
     provider: &str,
     path_ref: &str,
     state: FabricPathState,
-    endpoint: &str,
+    material_endpoint: &str,
     scope: ReachabilityScope,
 ) -> FabricPathOffer {
     FabricPathOffer {
         provider_ref: ProviderRef::new(provider).unwrap(),
         path_ref: path_ref.into(),
-        source_workcell: workcell("workcell:caller"),
-        destination_workcell: workcell("workcell:host"),
+        source: endpoint("workcell:caller"),
+        destination: endpoint("workcell:host"),
         transport: Some("opaque-stream".into()),
         scope,
         security: NetworkSecurity::AuthenticatedEncrypted,
         state,
-        endpoint: Some(endpoint.into()),
+        endpoint: Some(material_endpoint.into()),
         path_class: Some("fixture-overlay".into()),
         provenance: BTreeMap::from([("fixture".into(), "deterministic".into())]),
     }
 }
 
 fn hosting_relationship() -> RequiredNetworkRelationship {
-    RequiredNetworkRelationship {
-        relationship: NetworkRelationship::new(
+    RequiredNetworkRelationship::between_workcells(
+        NetworkRelationship::new(
             "relationship:interactive-host",
             "caller:control-surface",
             "service:interactive-host",
@@ -113,10 +133,10 @@ fn hosting_relationship() -> RequiredNetworkRelationship {
         .unwrap()
         .with_scope(ReachabilityScope::Private)
         .with_security(NetworkSecurity::AuthenticatedEncrypted),
-        necessity: RequirementNecessity::Required,
-        source_workcell: workcell("workcell:caller"),
-        destination_workcell: workcell("workcell:host"),
-    }
+        RequirementNecessity::Required,
+        workcell("workcell:caller"),
+        workcell("workcell:host"),
+    )
 }
 
 fn managed_provider() -> ManagedHostServiceProvider {
@@ -232,8 +252,8 @@ fn persistent_hosting_is_service_lifecycle_plus_fabric_not_agent_gateway_ontolog
         first_fabric.bindings[0].relationship_ref
     );
     assert_ne!(
-        second_fabric.bindings[0].provider_ref,
-        first_fabric.bindings[0].provider_ref
+        second_fabric.bindings[0].path_provider_ref,
+        first_fabric.bindings[0].path_provider_ref
     );
     assert_ne!(
         second_fabric.bindings[0].endpoint,
@@ -246,22 +266,39 @@ fn persistent_hosting_is_service_lifecycle_plus_fabric_not_agent_gateway_ontolog
 }
 
 #[test]
-fn hosting_reachability_policy_failure_is_not_service_absence() {
-    let denied = FixtureFabric {
+fn hosting_reachability_policy_failure_is_not_service_or_path_absence() {
+    let relationship = hosting_relationship().with_required_policy();
+    let route = FixtureFabric {
         provider_ref: ProviderRef::new("provider:private-overlay").unwrap(),
         paths: vec![fabric_path(
             "provider:private-overlay",
-            "path:denied",
-            FabricPathState::Denied,
-            "material://denied",
+            "path:reachable",
+            FabricPathState::Reachable,
+            "material://reachable",
             ReachabilityScope::Private,
         )],
     };
-    let plan = evaluate_fabric(&[hosting_relationship()], &[&denied]).unwrap();
+    let policy = FixturePolicy {
+        provider_ref: ProviderRef::new("provider:policy").unwrap(),
+        policies: vec![FabricPolicyOffer {
+            provider_ref: ProviderRef::new("provider:policy").unwrap(),
+            policy_ref: "policy:deny-interactive-host".into(),
+            relationship_ref: Some("relationship:interactive-host".into()),
+            source: endpoint("workcell:caller"),
+            destination: endpoint("workcell:host"),
+            state: FabricPolicyState::Denied,
+            provenance: BTreeMap::from([("fixture".into(), "policy".into())]),
+        }],
+    };
+    let plan = evaluate_fabric_with_policies(&[relationship], &[&route], &[&policy]).unwrap();
     assert!(plan
         .diagnostics
         .iter()
         .any(|diagnostic| diagnostic.kind == FabricDiagnosticKind::PolicyDenied));
+    assert!(!plan
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.kind == FabricDiagnosticKind::DestinationUnavailable));
     assert!(matches!(
         require_fabric_plan(plan),
         Err(WorkcellError::UnsatisfiedDemand(_))
