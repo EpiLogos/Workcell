@@ -1,0 +1,33 @@
+name: W26 rustfmt finalizer
+
+on:
+  push:
+    branches:
+      - feat/opensandbox-world-hosting-43
+
+permissions:
+  contents: write
+
+jobs:
+  format-and-retire:
+    if: github.event.head_commit.message != 'W26: apply canonical rustfmt and retire finalizer'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: feat/opensandbox-world-hosting-43
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all
+      - name: Commit canonical formatter result and retire helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/w26-rustfmt-finalizer.yml
+          git config user.name "EpiLogos CI"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "W26: apply canonical rustfmt and retire finalizer"
+          git push origin HEAD:feat/opensandbox-world-hosting-43
