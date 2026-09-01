@@ -16,8 +16,10 @@ pub use host::{HostProcessExecutionProvider, HostProcessOperationGrant};
 pub use local::{CollapsedLocalConfig, CollapsedLocalWorkcell};
 pub use profile::*;
 pub use reference_services::{
-    hermes_gateway_service, openclaw_gateway_service, HERMES_MANAGEMENT_SOURCE,
-    HERMES_SOURCE_REVISION, OPENCLAW_MANAGEMENT_SOURCE, OPENCLAW_SOURCE_REVISION,
+    aikit_gateway_service, hermes_gateway_service, openclaw_gateway_service,
+    AIKIT_GATEWAY_APPLICATION_PROTOCOL, AIKIT_GATEWAY_MANAGEMENT_SOURCE,
+    AIKIT_GATEWAY_SOURCE_REVISION, HERMES_MANAGEMENT_SOURCE, HERMES_SOURCE_REVISION,
+    OPENCLAW_MANAGEMENT_SOURCE, OPENCLAW_SOURCE_REVISION,
 };
 pub use runtime::{ReferenceProjectRuntimeProvider, RuntimeMode};
 pub use secret::{
