@@ -62,6 +62,73 @@ pub struct WorkspaceRequirement {
     pub access: WorkspaceAccess,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageAccess {
+    ReadOnly,
+    Writable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageSharing {
+    Exclusive,
+    Shared,
+}
+
+/// Provider-neutral requirement for storage attached to the material world.
+///
+/// This does not describe source/workspace identity and is not an output
+/// collection channel. Providers decide the concrete volume/filesystem/storage
+/// backend and mount locator below the material binding boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StorageRequirement {
+    pub logical_ref: String,
+    pub access: StorageAccess,
+    pub sharing: StorageSharing,
+    pub minimum_capacity: Option<u64>,
+    pub unit: Option<String>,
+    pub persistence: Option<PersistenceScope>,
+    pub retention: RetentionExpectation,
+}
+
+impl StorageRequirement {
+    pub fn new(logical_ref: impl Into<String>) -> Result<Self> {
+        let requirement = Self {
+            logical_ref: logical_ref.into(),
+            access: StorageAccess::Writable,
+            sharing: StorageSharing::Exclusive,
+            minimum_capacity: None,
+            unit: None,
+            persistence: None,
+            retention: RetentionExpectation::Release,
+        };
+        requirement.validate()?;
+        Ok(requirement)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.logical_ref.trim().is_empty() {
+            return Err(WorkcellError::InvalidDemand(
+                "storage logical_ref must not be empty".into(),
+            ));
+        }
+        if self
+            .unit
+            .as_deref()
+            .is_some_and(|unit| unit.trim().is_empty())
+        {
+            return Err(WorkcellError::InvalidDemand(
+                "storage capacity unit must not be empty when supplied".into(),
+            ));
+        }
+        if self.minimum_capacity.is_some() && self.unit.is_none() {
+            return Err(WorkcellError::InvalidDemand(
+                "storage minimum capacity requires a unit".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResourceRequirement {
     pub key: String,
@@ -99,6 +166,7 @@ pub struct ExecutionDemand {
     pub subjects: BTreeMap<String, ExternalRef>,
     pub affordances: Tiered<AffordanceRequirement>,
     pub workspace: Option<WorkspaceRequirement>,
+    pub storage: Tiered<StorageRequirement>,
     pub project_runtime: Option<ProjectRuntimeRequirement>,
     pub resources: Vec<ResourceRequirement>,
     pub connectivity: Tiered<LogicalConnectionRequirement>,
@@ -117,6 +185,7 @@ impl ExecutionDemand {
             subjects: BTreeMap::new(),
             affordances: Tiered::default(),
             workspace: None,
+            storage: Tiered::default(),
             project_runtime: None,
             resources: Vec::new(),
             connectivity: Tiered::default(),
@@ -144,6 +213,7 @@ impl ExecutionDemand {
         }
 
         validate_tiered("affordance", &self.affordances, |item| item.as_str())?;
+        validate_storage(&self.storage)?;
         validate_tiered("connectivity", &self.connectivity, |item| item.as_str())?;
         validate_tiered("exposure", &self.exposure, |item| item.as_str())?;
         validate_tiered("output", &self.outputs, |item| item.as_str())?;
@@ -217,6 +287,26 @@ where
     Ok(())
 }
 
+fn validate_storage(storage: &Tiered<StorageRequirement>) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for (tier_name, items) in [
+        ("required", &storage.required),
+        ("preferred", &storage.preferred),
+        ("optional", &storage.optional),
+    ] {
+        for item in items {
+            item.validate()?;
+            if !seen.insert(item.logical_ref.clone()) {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "storage requirement `{}` appears more than once across necessity tiers ({tier_name})",
+                    item.logical_ref
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A Candidate materialisation is a use of ExecutionDemand, not a competing
 /// material-demand primitive. This constructor merely adds an opaque role.
 pub fn candidate_materialisation_demand(
@@ -269,6 +359,34 @@ mod tests {
         demand.affordances.preferred.push(affordance("shell"));
         let error = demand.validate().unwrap_err();
         assert!(matches!(error, WorkcellError::InvalidDemand(_)));
+    }
+
+    #[test]
+    fn attached_storage_is_distinct_and_tiered() {
+        let mut demand = ExecutionDemand::new(DemandRef::new("demand:storage").unwrap());
+        let mut storage = StorageRequirement::new("state:project").unwrap();
+        storage.sharing = StorageSharing::Shared;
+        storage.minimum_capacity = Some(20);
+        storage.unit = Some("GiB".into());
+        storage.persistence = Some(PersistenceScope::Project);
+        storage.retention = RetentionExpectation::Preserve;
+        demand.storage.required.push(storage);
+        demand.validate().unwrap();
+        assert_eq!(demand.storage.required[0].logical_ref, "state:project");
+    }
+
+    #[test]
+    fn storage_identity_cannot_repeat_across_tiers() {
+        let mut demand = ExecutionDemand::new(DemandRef::new("demand:storage-tier").unwrap());
+        demand
+            .storage
+            .required
+            .push(StorageRequirement::new("state:shared").unwrap());
+        demand
+            .storage
+            .optional
+            .push(StorageRequirement::new("state:shared").unwrap());
+        assert!(matches!(demand.validate(), Err(WorkcellError::InvalidDemand(_))));
     }
 
     #[test]
