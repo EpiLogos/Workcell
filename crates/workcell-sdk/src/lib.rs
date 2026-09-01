@@ -26,10 +26,11 @@ pub mod contract {
 
 pub mod fabric {
     pub use epilogos_workcell_fabric::{
-        evaluate_fabric, require_fabric_plan, FabricDiagnostic, FabricDiagnosticKind,
-        FabricPathOffer, FabricPathProvider, FabricPathState, FabricPlan, FabricPolicyResult,
-        MaterialFabricBinding, NetworkRelationship, NetworkSecurity, ReachabilityScope,
-        RequiredNetworkRelationship,
+        evaluate_fabric, evaluate_fabric_with_policies, require_fabric_plan, FabricDiagnostic,
+        FabricDiagnosticKind, FabricPathOffer, FabricPathProvider, FabricPathState, FabricPlan,
+        FabricPolicyOffer, FabricPolicyProvider, FabricPolicyResult, FabricPolicyState,
+        MaterialFabricBinding, NetworkEndpoint, NetworkRelationship, NetworkSecurity,
+        ReachabilityScope, RequiredNetworkRelationship,
     };
 }
 
@@ -38,13 +39,14 @@ pub mod provider {
         validate_allocation, validate_provider_port, ArtifactChannelRequest,
         ArtifactStorageProvider, AttachedStorageRequest, Availability, Capacity, CheckpointRequest,
         ExecutionMaterialRequest, ExecutionProvider, HealthState, LeaseRenewalRequest,
-        MaterialCheckpoint, MaterialCheckpointProvider, MaterialCheckpointState, MaterialExposureProvider,
-        MaterialLease, MaterialLeaseProvider, OfferRef, OperationalOffer, ProjectRuntimeMaterialRequest,
-        ProjectRuntimeProvider, ProviderAllocation, ProviderCollectedMaterial, ProviderExposedSurface,
-        ProviderExposureRequest, ProviderObservation, ProviderOperation, ProviderOperationResult,
-        ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult, Result,
-        ServiceMaterialRequest, ServiceProvider, StorageProvider, WorkcellError,
-        WorkspaceMaterialRequest, WorkspaceMaterialSource, WorkspaceProvider,
+        MaterialCheckpoint, MaterialCheckpointProvider, MaterialCheckpointState,
+        MaterialExposureProvider, MaterialLease, MaterialLeaseProvider, OfferRef, OperationalOffer,
+        ProjectRuntimeMaterialRequest, ProjectRuntimeProvider, ProviderAllocation,
+        ProviderCollectedMaterial, ProviderExposedSurface, ProviderExposureRequest,
+        ProviderObservation, ProviderOperation, ProviderOperationResult, ProviderPort,
+        ProviderPortKind, ProviderRef, ProviderReleaseResult, Result, ServiceMaterialRequest,
+        ServiceProvider, StorageProvider, WorkcellError, WorkspaceMaterialRequest,
+        WorkspaceMaterialSource, WorkspaceProvider,
     };
 }
 
@@ -82,10 +84,6 @@ pub mod testkit {
         }
     }
 
-    /// Verify the provider-neutral invariants common to every public provider
-    /// port. Provider-specific live behavior remains the provider's own test
-    /// responsibility; this catches identity/port/offer drift before a provider
-    /// is admitted to a Workcell composition.
     pub fn verify_provider_port<P: ProviderPort>(provider: &P) -> Result<ProviderConformance> {
         validate_provider_port(provider)?;
         let offers = provider.offers()?;
@@ -115,9 +113,6 @@ pub mod testkit {
         pub retained: Vec<ProviderRef>,
     }
 
-    /// Compare provider inventory by provider identity only. Removing or
-    /// replacing a provider changes material availability; it never rewrites a
-    /// caller semantic reference.
     pub fn diff_provider_inventory(
         before: &[ProviderConformance],
         after: &[ProviderConformance],
@@ -146,11 +141,6 @@ pub mod testkit {
         Release,
     }
 
-    /// Public deterministic execution-provider fixture for SDK authors.
-    ///
-    /// It deliberately has no privileged runtime access. Authors can inject
-    /// offer and lifecycle failures through the same public traits their real
-    /// provider must implement.
     pub struct FaultingExecutionProvider {
         provider_ref: ProviderRef,
         availability: Availability,
@@ -180,33 +170,13 @@ pub mod testkit {
             self
         }
 
-        pub fn with_fault(mut self, fault: ExecutionFault) -> Self {
+        pub fn fail(mut self, fault: ExecutionFault) -> Self {
             self.faults.insert(fault);
             self
         }
 
-        fn fail_if(&self, fault: ExecutionFault, operation: &str) -> Result<()> {
-            if self.faults.contains(&fault) {
-                return Err(WorkcellError::OperationFailed(format!(
-                    "injected execution-provider {operation} failure"
-                )));
-            }
-            Ok(())
-        }
-
-        fn known_allocation(&self, allocation: &ProviderAllocation) -> Result<()> {
-            if allocation.provider_ref != self.provider_ref {
-                return Err(WorkcellError::OperationFailed(
-                    "fixture allocation changed provider identity".into(),
-                ));
-            }
-            if !self.allocations.contains_key(&allocation.material_ref) {
-                return Err(WorkcellError::NotFound(format!(
-                    "fixture allocation `{}` is not present",
-                    allocation.material_ref
-                )));
-            }
-            Ok(())
+        fn faulted(&self, fault: ExecutionFault) -> bool {
+            self.faults.contains(&fault)
         }
     }
 
@@ -220,10 +190,13 @@ pub mod testkit {
         }
 
         fn offers(&self) -> Result<Vec<OperationalOffer>> {
-            self.fail_if(ExecutionFault::Offers, "offers")?;
+            if self.faulted(ExecutionFault::Offers) {
+                return Err(WorkcellError::Unavailable(
+                    "fixture offer discovery failed".into(),
+                ));
+            }
             Ok(vec![OperationalOffer {
-                offer_ref: OfferRef::new(format!("offer:{}:fixture", self.provider_ref))
-                    .map_err(|error| WorkcellError::OperationFailed(error.into()))?,
+                offer_ref: OfferRef::new(format!("offer:{}:execution", self.provider_ref))?,
                 provider_ref: self.provider_ref.clone(),
                 port: ProviderPortKind::Execution.as_str().into(),
                 affordances: vec!["shell".into()],
@@ -233,7 +206,7 @@ pub mod testkit {
                 availability: self.availability.clone(),
                 health: self.health.clone(),
                 capacity: BTreeMap::new(),
-                metadata: BTreeMap::from([("fixture".into(), "faulting-execution".into())]),
+                metadata: BTreeMap::new(),
             }])
         }
     }
@@ -243,15 +216,19 @@ pub mod testkit {
             &mut self,
             request: &ExecutionMaterialRequest,
         ) -> Result<ProviderAllocation> {
-            self.fail_if(ExecutionFault::Prepare, "prepare")?;
-            let material_ref = format!("execution:fixture:{}", request.demand_ref.as_str());
+            if self.faulted(ExecutionFault::Prepare) {
+                return Err(WorkcellError::Unavailable(
+                    "fixture execution prepare failed".into(),
+                ));
+            }
+            let material_ref = format!("fixture:{}", request.demand_ref);
             let allocation = ProviderAllocation {
                 provider_ref: self.provider_ref.clone(),
                 port: ProviderPortKind::Execution,
                 material_ref: material_ref.clone(),
                 health: self.health.clone(),
-                properties: BTreeMap::from([("logical_ref".into(), "execution:fixture".into())]),
-                provenance: BTreeMap::from([("fixture".into(), "faulting-execution".into())]),
+                properties: BTreeMap::new(),
+                provenance: BTreeMap::from([("fixture".into(), "sdk-testkit".into())]),
             };
             self.allocations.insert(material_ref, allocation.clone());
             Ok(allocation)
@@ -262,28 +239,39 @@ pub mod testkit {
             allocation: &ProviderAllocation,
             operation: &ProviderOperation,
         ) -> Result<ProviderOperationResult> {
-            self.fail_if(ExecutionFault::Execute, "execute")?;
-            self.known_allocation(allocation)?;
+            if self.faulted(ExecutionFault::Execute) {
+                return Err(WorkcellError::OperationFailed(
+                    "fixture execution operation failed".into(),
+                ));
+            }
+            validate_allocation(self, allocation)?;
             Ok(ProviderOperationResult {
                 provider_ref: self.provider_ref.clone(),
                 material_ref: allocation.material_ref.clone(),
                 operation: operation.key.clone(),
                 output: BTreeMap::new(),
-                provenance: BTreeMap::from([("fixture".into(), "faulting-execution".into())]),
+                provenance: BTreeMap::from([("fixture".into(), "sdk-testkit".into())]),
             })
         }
 
-        fn observe_execution(
-            &self,
-            allocation: &ProviderAllocation,
-        ) -> Result<ProviderObservation> {
-            self.fail_if(ExecutionFault::Observe, "observe")?;
-            self.known_allocation(allocation)?;
+        fn observe_execution(&self, allocation: &ProviderAllocation) -> Result<ProviderObservation> {
+            if self.faulted(ExecutionFault::Observe) {
+                return Err(WorkcellError::Unavailable(
+                    "fixture execution observation failed".into(),
+                ));
+            }
+            validate_allocation(self, allocation)?;
+            if !self.allocations.contains_key(&allocation.material_ref) {
+                return Err(WorkcellError::NotFound(format!(
+                    "fixture material `{}` is absent",
+                    allocation.material_ref
+                )));
+            }
             Ok(ProviderObservation {
                 provider_ref: self.provider_ref.clone(),
                 material_ref: allocation.material_ref.clone(),
                 health: self.health.clone(),
-                detail: BTreeMap::from([("fixture".into(), "faulting-execution".into())]),
+                detail: BTreeMap::new(),
             })
         }
 
@@ -292,21 +280,26 @@ pub mod testkit {
             allocation: &ProviderAllocation,
             retention: &RetentionExpectation,
         ) -> Result<ProviderReleaseResult> {
-            self.fail_if(ExecutionFault::Release, "release")?;
-            self.known_allocation(allocation)?;
-            let disposition = match retention {
-                RetentionExpectation::Preserve => ReleaseDisposition::Preserved,
-                _ => ReleaseDisposition::Released,
-            };
-            let changed = disposition == ReleaseDisposition::Released;
-            if changed {
-                self.allocations.remove(&allocation.material_ref);
+            if self.faulted(ExecutionFault::Release) {
+                return Err(WorkcellError::OperationFailed(
+                    "fixture execution release failed".into(),
+                ));
             }
+            validate_allocation(self, allocation)?;
+            let disposition = match retention {
+                RetentionExpectation::Release => {
+                    self.allocations.remove(&allocation.material_ref);
+                    ReleaseDisposition::Released
+                }
+                RetentionExpectation::Preserve => ReleaseDisposition::Preserved,
+                RetentionExpectation::SuspendIfSupported => ReleaseDisposition::Suspended,
+                RetentionExpectation::SnapshotIfSupported => ReleaseDisposition::Snapshotted,
+            };
             Ok(ProviderReleaseResult {
                 provider_ref: self.provider_ref.clone(),
                 material_ref: allocation.material_ref.clone(),
                 disposition,
-                changed,
+                changed: matches!(retention, RetentionExpectation::Release),
             })
         }
     }
