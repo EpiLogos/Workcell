@@ -3,6 +3,7 @@ mod protocol;
 
 pub use protocol::*;
 
+mod client;
 mod credential;
 mod project_world;
 
