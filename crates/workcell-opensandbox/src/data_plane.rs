@@ -219,6 +219,8 @@ mod tests {
     fn file_surface_requires_an_absolute_target_native_path() {
         let transport = FixtureTransport::with_responses(Vec::new());
         let data_plane = OpenSandboxDataPlane::new(config(), transport).unwrap();
-        assert!(data_plane.read_file(&allocation(), "relative/path").is_err());
+        assert!(data_plane
+            .read_file(&allocation(), "relative/path")
+            .is_err());
     }
 }

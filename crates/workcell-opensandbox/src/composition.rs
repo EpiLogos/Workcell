@@ -174,10 +174,8 @@ mod tests {
     fn one_sandbox_materialises_multiple_bindings_without_becoming_world_identity() {
         let provider_ref = ProviderRef::new("provider:opensandbox").unwrap();
         let demand_ref = DemandRef::new("demand:project-world").unwrap();
-        let mut demand = ExecutionDemand::new(demand_ref.clone()).with_subject(
-            "project",
-            ExternalRef::new("project:fixture").unwrap(),
-        );
+        let mut demand = ExecutionDemand::new(demand_ref.clone())
+            .with_subject("project", ExternalRef::new("project:fixture").unwrap());
         demand.storage.required.push(StorageRequirement {
             logical_ref: "storage:project-state".into(),
             access: StorageAccess::Writable,
