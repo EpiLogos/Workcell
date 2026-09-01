@@ -1,0 +1,13 @@
+[package]
+name = "epilogos-workcell-opensandbox"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[lib]
+path = "src/root.rs"
+
+[dependencies]
+epilogos-workcell-core = { path = "../workcell-core" }
+epilogos-workcell-sdk = { path = "../workcell-sdk" }
+serde_json = "1"

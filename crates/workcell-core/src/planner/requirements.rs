@@ -1,6 +1,6 @@
 use crate::{
     ExecutionDemand, RequirementNecessity, ResourceRequirement, RetentionExpectation,
-    WorkspaceAccess,
+    StorageRequirement, WorkspaceAccess,
 };
 
 #[derive(Clone, Debug)]
@@ -18,6 +18,7 @@ pub(crate) enum MatchRule {
     Exposure(String),
     Isolation(String),
     Capacity(ResourceRequirement),
+    Storage(StorageRequirement),
 }
 
 pub(crate) fn atoms(demand: &ExecutionDemand) -> Vec<RequirementAtom> {
@@ -42,6 +43,21 @@ pub(crate) fn atoms(demand: &ExecutionDemand) -> Vec<RequirementAtom> {
         demand.affordances.optional.iter().map(|v| v.as_str()),
         RequirementNecessity::Optional,
         MatchRule::Affordance,
+    );
+    add_storage(
+        &mut out,
+        &demand.storage.required,
+        RequirementNecessity::Required,
+    );
+    add_storage(
+        &mut out,
+        &demand.storage.preferred,
+        RequirementNecessity::Preferred,
+    );
+    add_storage(
+        &mut out,
+        &demand.storage.optional,
+        RequirementNecessity::Optional,
     );
     add_strings(
         &mut out,
@@ -171,6 +187,21 @@ fn add_strings<'a>(
 ) {
     for value in values {
         out.push(atom(kind, value, necessity, rule(value.into())));
+    }
+}
+
+fn add_storage(
+    out: &mut Vec<RequirementAtom>,
+    values: &[StorageRequirement],
+    necessity: RequirementNecessity,
+) {
+    for value in values {
+        out.push(RequirementAtom {
+            kind: "storage",
+            key: value.logical_ref.clone(),
+            necessity,
+            rule: MatchRule::Storage(value.clone()),
+        });
     }
 }
 

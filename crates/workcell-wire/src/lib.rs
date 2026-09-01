@@ -310,6 +310,7 @@ fn port_str(value: ProviderPortKind) -> Result<&'static str> {
         ProviderPortKind::Execution => Ok("execution"),
         ProviderPortKind::ProjectRuntime => Ok("project-runtime"),
         ProviderPortKind::Service => Ok("service"),
+        ProviderPortKind::Storage => Ok("storage"),
         ProviderPortKind::ArtifactStorage => Ok("artifact-storage"),
         _ => Err(WorkcellError::Unsupported(
             "material world contains a provider port unknown to this wire version".into(),
@@ -323,6 +324,7 @@ fn parse_port(value: &str) -> Result<ProviderPortKind> {
         "execution" => Ok(ProviderPortKind::Execution),
         "project-runtime" => Ok(ProviderPortKind::ProjectRuntime),
         "service" => Ok(ProviderPortKind::Service),
+        "storage" => Ok(ProviderPortKind::Storage),
         "artifact-storage" => Ok(ProviderPortKind::ArtifactStorage),
         other => Err(WorkcellError::Unsupported(format!(
             "provider port `{other}` is not supported by this material-world wire version"
@@ -455,6 +457,45 @@ mod tests {
         };
 
         let encoded = encode_world(&world).unwrap();
+        assert_eq!(decode_world(&encoded).unwrap(), world);
+    }
+
+    #[test]
+    fn attached_storage_binding_round_trips_without_provider_translation() {
+        let binding = Binding {
+            binding_ref: BindingRef::new("binding:storage:shared").unwrap(),
+            logical_ref: "state:shared".into(),
+            necessity: RequirementNecessity::Required,
+            provider_ref: ProviderRef::new("provider:storage").unwrap(),
+            offer_ref: OfferRef::new("offer:storage").unwrap(),
+            port: ProviderPortKind::Storage,
+            material_ref: "volume:provider-native-42".into(),
+            health: HealthState::Healthy,
+            presence: BindingPresence::Present,
+            properties: BTreeMap::from([("mount".into(), "/workspace/state".into())]),
+            provenance: BTreeMap::from([("backend".into(), "fixture".into())]),
+        };
+        let world = MaterialisedExecutionWorld {
+            world_ref: WorldRef::new("world:wire-storage").unwrap(),
+            workcell_ref: WorkcellRef::new("workcell:wire").unwrap(),
+            demand_ref: DemandRef::new("demand:wire-storage").unwrap(),
+            subjects: BTreeMap::new(),
+            binding_graph: BindingGraph {
+                bindings: vec![binding],
+                relations: vec![],
+            },
+            planned_exposures: vec![],
+            planned_constraints: vec![],
+            plan_degradations: vec![],
+            plan_omissions: vec![],
+            persistence: Some(PersistenceScope::Project),
+            retention: RetentionExpectation::Preserve,
+            state: HealthState::Healthy,
+            provenance: BTreeMap::new(),
+        };
+
+        let encoded = encode_world(&world).unwrap();
+        assert!(encoded.contains("\"port\": \"storage\""));
         assert_eq!(decode_world(&encoded).unwrap(), world);
     }
 

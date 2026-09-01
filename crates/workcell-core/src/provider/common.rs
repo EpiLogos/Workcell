@@ -11,6 +11,7 @@ pub enum ProviderPortKind {
     Execution,
     ProjectRuntime,
     Service,
+    Storage,
     ArtifactStorage,
 }
 
@@ -21,6 +22,7 @@ impl ProviderPortKind {
             Self::Execution => "execution",
             Self::ProjectRuntime => "project-runtime",
             Self::Service => "service",
+            Self::Storage => "storage",
             Self::ArtifactStorage => "artifact-storage",
         }
     }

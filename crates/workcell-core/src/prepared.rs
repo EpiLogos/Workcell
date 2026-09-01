@@ -9,8 +9,8 @@ use crate::{
     ProviderAllocation, ProviderCollectedMaterial, ProviderExposedSurface, ProviderExposureRequest,
     ProviderObservation, ProviderPort, ProviderPortKind, ProviderReleaseResult,
     ReconciliationDelta, ReconciliationResult, ReleaseDisposition, ReleaseResult,
-    RequirementNecessity, Result, RetentionExpectation, ServiceProvider, WorkcellControlPlane,
-    WorkcellError, WorkcellRef, WorkspaceProvider, WorldRef,
+    RequirementNecessity, Result, RetentionExpectation, ServiceProvider, StorageProvider,
+    WorkcellControlPlane, WorkcellError, WorkcellRef, WorkspaceProvider, WorldRef,
 };
 
 pub trait RuntimeExposureProvider: ProjectRuntimeProvider + MaterialExposureProvider {}
@@ -154,6 +154,37 @@ where
     }
 }
 
+trait ErasedStorageProvider {
+    fn offers(&self) -> Result<Vec<OperationalOffer>>;
+    fn observe(&self, allocation: &ProviderAllocation) -> Result<ProviderObservation>;
+    fn release(
+        &mut self,
+        allocation: &ProviderAllocation,
+        retention: &RetentionExpectation,
+    ) -> Result<ProviderReleaseResult>;
+}
+
+impl<P> ErasedStorageProvider for P
+where
+    P: StorageProvider,
+{
+    fn offers(&self) -> Result<Vec<OperationalOffer>> {
+        ProviderPort::offers(self)
+    }
+
+    fn observe(&self, allocation: &ProviderAllocation) -> Result<ProviderObservation> {
+        StorageProvider::observe_storage(self, allocation)
+    }
+
+    fn release(
+        &mut self,
+        allocation: &ProviderAllocation,
+        retention: &RetentionExpectation,
+    ) -> Result<ProviderReleaseResult> {
+        StorageProvider::release_storage(self, allocation, retention)
+    }
+}
+
 trait ErasedArtifactProvider {
     fn offers(&self) -> Result<Vec<OperationalOffer>>;
     fn collect_material(
@@ -212,6 +243,7 @@ pub struct PreparedWorldControlPlane {
     execution_providers: BTreeMap<String, Box<dyn ErasedExecutionProvider>>,
     runtime_providers: BTreeMap<String, Box<dyn ErasedRuntimeProvider>>,
     service_providers: BTreeMap<String, Box<dyn ErasedServiceProvider>>,
+    storage_providers: BTreeMap<String, Box<dyn ErasedStorageProvider>>,
     artifact_providers: BTreeMap<String, Box<dyn ErasedArtifactProvider>>,
 }
 
@@ -226,6 +258,7 @@ impl PreparedWorldControlPlane {
             execution_providers: BTreeMap::new(),
             runtime_providers: BTreeMap::new(),
             service_providers: BTreeMap::new(),
+            storage_providers: BTreeMap::new(),
             artifact_providers: BTreeMap::new(),
         }
     }
@@ -304,6 +337,16 @@ impl PreparedWorldControlPlane {
         Ok(())
     }
 
+    pub fn register_storage_provider<P>(&mut self, provider: P) -> Result<()>
+    where
+        P: StorageProvider + 'static,
+    {
+        let key = ProviderPort::provider_ref(&provider).to_string();
+        register_provider(&self.storage_providers, &key, "storage")?;
+        self.storage_providers.insert(key, Box::new(provider));
+        Ok(())
+    }
+
     pub fn register_artifact_provider<P>(&mut self, provider: P) -> Result<()>
     where
         P: ArtifactStorageProvider + 'static,
@@ -346,6 +389,11 @@ impl PreparedWorldControlPlane {
                 .get(binding.provider_ref.as_str())
                 .ok_or_else(|| provider_unavailable(binding))?
                 .offers(),
+            ProviderPortKind::Storage => self
+                .storage_providers
+                .get(binding.provider_ref.as_str())
+                .ok_or_else(|| provider_unavailable(binding))?
+                .offers(),
             ProviderPortKind::ArtifactStorage => self
                 .artifact_providers
                 .get(binding.provider_ref.as_str())
@@ -374,6 +422,11 @@ impl PreparedWorldControlPlane {
                 .observe(&allocation),
             ProviderPortKind::Service => self
                 .service_providers
+                .get(binding.provider_ref.as_str())
+                .ok_or_else(|| provider_unavailable(binding))?
+                .observe(&allocation),
+            ProviderPortKind::Storage => self
+                .storage_providers
                 .get(binding.provider_ref.as_str())
                 .ok_or_else(|| provider_unavailable(binding))?
                 .observe(&allocation),
@@ -419,6 +472,11 @@ impl PreparedWorldControlPlane {
                 .release(&allocation, retention),
             ProviderPortKind::Service => self
                 .service_providers
+                .get_mut(binding.provider_ref.as_str())
+                .ok_or_else(|| provider_unavailable(binding))?
+                .release(&allocation, retention),
+            ProviderPortKind::Storage => self
+                .storage_providers
                 .get_mut(binding.provider_ref.as_str())
                 .ok_or_else(|| provider_unavailable(binding))?
                 .release(&allocation, retention),
@@ -587,6 +645,9 @@ impl WorkcellControlPlane for PreparedWorldControlPlane {
             offers.extend(provider.offers()?);
         }
         for provider in self.service_providers.values() {
+            offers.extend(provider.offers()?);
+        }
+        for provider in self.storage_providers.values() {
             offers.extend(provider.offers()?);
         }
         for provider in self.artifact_providers.values() {
