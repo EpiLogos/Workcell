@@ -19,7 +19,10 @@ fn version_requested(args: &[String]) -> bool {
                 }
                 index += 2;
             }
-            argument if argument.starts_with("--endpoint=") || argument.starts_with("--authorization=") => {
+            argument
+                if argument.starts_with("--endpoint=")
+                    || argument.starts_with("--authorization=") =>
+            {
                 index += 1;
             }
             _ => {
@@ -53,9 +56,20 @@ mod tests {
         assert!(version_requested(&args(&["--version"])));
         assert!(version_requested(&args(&["-V"])));
         assert!(version_requested(&args(&["version"])));
-        assert!(version_requested(&args(&["--endpoint", "127.0.0.1:7788", "--version"])));
-        assert!(version_requested(&args(&["--endpoint=127.0.0.1:7788", "version"])));
-        assert!(version_requested(&args(&["--authorization", "token", "-V"])));
+        assert!(version_requested(&args(&[
+            "--endpoint",
+            "127.0.0.1:7788",
+            "--version"
+        ])));
+        assert!(version_requested(&args(&[
+            "--endpoint=127.0.0.1:7788",
+            "version"
+        ])));
+        assert!(version_requested(&args(&[
+            "--authorization",
+            "token",
+            "-V"
+        ])));
     }
 
     #[test]
