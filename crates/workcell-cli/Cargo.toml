@@ -2,10 +2,11 @@
 name = "epilogos-workcell-cli"
 version = "0.1.0"
 edition.workspace = true
+autobins = false
 
 [[bin]]
 name = "workcell"
-path = "src/bin/workcell.rs"
+path = "src/bin/workcell_entry.rs"
 
 [dependencies]
 epilogos-workcell-control = { path = "../workcell-control" }
