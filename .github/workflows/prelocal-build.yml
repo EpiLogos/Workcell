@@ -1,4 +1,4 @@
-name: Pre-local release
+name: Pre-local build
 
 on:
   pull_request:
@@ -7,7 +7,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'crates/**'
-      - '.github/workflows/prelocal-release.yml'
+      - '.github/workflows/prelocal-build.yml'
   push:
     branches: [main]
     paths:
@@ -15,7 +15,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'crates/**'
-      - '.github/workflows/prelocal-release.yml'
+      - '.github/workflows/prelocal-build.yml'
 
 permissions:
   contents: read
@@ -51,14 +51,16 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Build locked native artifact
         run: cargo build --locked --release --target '${{ matrix.target }}' --package epilogos-workcell-cli --bin workcell
-      - name: Package
+      - name: Package exact-main build artifact
         shell: bash
         run: |
           set -euo pipefail
-          name="workcell-0.1.0-${{ matrix.target }}"
+          short_sha="${GITHUB_SHA::12}"
+          name="workcell-0.1.0-${short_sha}-${{ matrix.target }}"
           mkdir -p "dist/$name"
           cp "target/${{ matrix.target }}/release/workcell" "dist/$name/workcell"
           cp .oi/product.json "dist/$name/product.json"
+          printf '%s\n' "$GITHUB_SHA" > "dist/$name/source-commit.txt"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           shasum -a 256 "dist/$name.tar.gz" > "dist/$name.tar.gz.sha256"
       - uses: actions/attest@v4
@@ -66,32 +68,7 @@ jobs:
           subject-path: dist/*.tar.gz
       - uses: actions/upload-artifact@v4
         with:
-          name: workcell-${{ matrix.target }}
+          name: workcell-${{ matrix.target }}-${{ github.sha }}
           path: |
             dist/*.tar.gz
             dist/*.sha256
-
-  release:
-    if: github.event_name == 'push'
-    needs: artifact
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: workcell-*
-          path: dist
-          merge-multiple: true
-      - name: Publish immutable pre-local release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          tag='workcell-v0.1.0-prelocal.2'
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "release $tag already exists; refusing to mutate an accepted release" >&2
-            exit 1
-          fi
-          gh release create "$tag" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title 'Workcell 0.1.0 pre-local.2' --notes 'Accepted O:I suite pre-local.2 artifact. Physical workstation/provider acceptance is not claimed.'
