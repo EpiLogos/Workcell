@@ -50,6 +50,28 @@ The canonical semantic operations remain:
 
 Transport, authentication, fabric provider and service-process identity remain below that contract.
 
+## Executable identity is not a control operation
+
+Selecting a remote Workcell does not move every question about the command to the remote side. Which `workcell` binary is running is a fact about the local executable, and it is answered locally:
+
+```text
+workcell --version
+workcell -V
+workcell version
+```
+
+All three spellings report the same native identity of the binary actually invoked. `--endpoint` and `--authorization` choose which Workcell a control operation addresses; they do not redirect the identity probe, and an endpoint that cannot be reached does not make it fail. The CLI's unit and binary tests hold that property directly.
+
+Three version facts are now in play, and none stands in for another:
+
+```text
+executable identity        which workcell binary is running here
+control protocol version   which remote contract that binary can speak
+consumed fixture version   which external schema an interop path accepts
+```
+
+The second belongs to the versioned transport-neutral control contract under #21. The third is Factory-side and is specified in [`FACTORY-INTEROP.md`](FACTORY-INTEROP.md). Only the first is settled by the binary in the operator's hand.
+
 ## Control protocol is not connectivity fabric
 
 Remote control has two independent questions:
