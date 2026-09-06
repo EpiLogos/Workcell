@@ -56,7 +56,10 @@ jobs:
         run: |
           set -euo pipefail
           short_sha="${GITHUB_SHA::12}"
-          name="workcell-0.1.0-${short_sha}-${{ matrix.target }}"
+          # Artifact identity derives from the product manifest, never a
+          # restated version string that rots between releases.
+          version="$(node -p "require('./.oi/product.json').version")"
+          name="workcell-${version}-${short_sha}-${{ matrix.target }}"
           mkdir -p "dist/$name"
           cp "target/${{ matrix.target }}/release/workcell" "dist/$name/workcell"
           cp .oi/product.json "dist/$name/product.json"
