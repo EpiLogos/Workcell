@@ -208,40 +208,47 @@ pub fn identity_hash(executable_sha256: &str, identity_material: &str) -> String
     hex(&hasher.finalize())
 }
 
-/// Build a `workcell.harness-instance/v1` record.
-///
-/// `identity_material` is whatever stable material first established the
-/// instance (e.g. the resolved executable path at first observation).
+/// The observed material from which an instance record is built.
+pub struct InstanceObservation {
+    pub slug: String,
+    pub executable: PathBuf,
+    pub executable_sha256: String,
+    /// Stable first-seen identity material (e.g. the resolved executable
+    /// path at first observation). Never a pid.
+    pub identity_material: String,
+    pub pid: Option<u32>,
+    pub evidence_grade: String,
+    pub seams: Vec<Value>,
+}
+
+/// Build a `workcell.harness-instance/v1` record from an observation.
 pub fn build_instance_record(
     workcell_ref: &WorkcellRef,
-    slug: &str,
-    executable: &Path,
-    executable_sha256: &str,
-    identity_material: &str,
-    pid: Option<u32>,
-    evidence_grade: &str,
-    seams: Vec<Value>,
+    observation: &InstanceObservation,
 ) -> Value {
-    let stable_hash = identity_hash(executable_sha256, identity_material);
+    let stable_hash = identity_hash(
+        &observation.executable_sha256,
+        &observation.identity_material,
+    );
     // A declared-unverified instance has no live observation; `stale` is the
     // disclosed not-observed state, never a silent absence.
-    let liveness = if evidence_grade == EVIDENCE_DECLARED_UNVERIFIED {
+    let liveness = if observation.evidence_grade == EVIDENCE_DECLARED_UNVERIFIED {
         LIVENESS_STALE
     } else {
         LIVENESS_LIVE
     };
     json!({
         "schema": HARNESS_INSTANCE_SCHEMA,
-        "instance_ref": format!("instance:{slug}:{stable_hash}"),
-        "harness_ref": format!("harness/{slug}"),
+        "instance_ref": format!("instance:{}:{stable_hash}", observation.slug),
+        "harness_ref": format!("harness/{}", observation.slug),
         "workcell_ref": workcell_ref.to_string(),
-        "pid": pid,
+        "pid": observation.pid,
         "executable": {
-            "path": executable.display().to_string(),
-            "sha256": executable_sha256,
+            "path": observation.executable.display().to_string(),
+            "sha256": observation.executable_sha256,
         },
-        "seams": seams,
-        "evidence_grade": evidence_grade,
+        "seams": observation.seams,
+        "evidence_grade": observation.evidence_grade,
         "liveness": liveness,
         "observed_at": observed_now(),
     })
@@ -473,17 +480,19 @@ mod tests {
         let executable = root.join("bin").join(slug);
         build_instance_record(
             &WorkcellRef::new("workcell:local").unwrap(),
-            slug,
-            &executable,
-            sha,
-            &executable.display().to_string(),
-            pid,
-            if pid.is_some() {
-                EVIDENCE_LIVE_PID
-            } else {
-                EVIDENCE_DECLARED_UNVERIFIED
+            &InstanceObservation {
+                slug: slug.to_owned(),
+                executable: executable.clone(),
+                executable_sha256: sha.to_owned(),
+                identity_material: executable.display().to_string(),
+                pid,
+                evidence_grade: if pid.is_some() {
+                    EVIDENCE_LIVE_PID.into()
+                } else {
+                    EVIDENCE_DECLARED_UNVERIFIED.into()
+                },
+                seams: vec![seam("skills", executable.join("skills"), false, None)],
             },
-            vec![seam("skills", executable.join("skills"), false, None)],
         )
     }
 

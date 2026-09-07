@@ -16,9 +16,9 @@ pub use external_service::{
 pub use host::{HostProcessExecutionProvider, HostProcessOperationGrant};
 pub use instance_registry::{
     build_instance_record, by_slug, identity_hash, seam, sort_by_reference,
-    validate_instance_record, InstanceRegistry, RegisterOutcome, EVIDENCE_DECLARED_UNVERIFIED,
-    EVIDENCE_GATEWAY_CONFIRMED, EVIDENCE_LIVE_PID, HARNESS_INSTANCE_SCHEMA, LIVENESS_LIVE,
-    LIVENESS_STALE, REGISTRY_SCHEMA,
+    validate_instance_record, InstanceObservation, InstanceRegistry, RegisterOutcome,
+    EVIDENCE_DECLARED_UNVERIFIED, EVIDENCE_GATEWAY_CONFIRMED, EVIDENCE_LIVE_PID,
+    HARNESS_INSTANCE_SCHEMA, LIVENESS_LIVE, LIVENESS_STALE, REGISTRY_SCHEMA,
 };
 pub use local::{CollapsedLocalConfig, CollapsedLocalWorkcell};
 pub use profile::*;

@@ -914,13 +914,15 @@ fn command_instances(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
             };
             let record = build_instance_record(
                 &workcell_ref,
-                &harness,
-                Path::new(&executable),
-                &sha256,
-                &executable.to_string_lossy(),
-                pid,
-                evidence_grade,
-                seams,
+                &epilogos_workcell_runtime::InstanceObservation {
+                    slug: harness.clone(),
+                    executable: executable.clone(),
+                    executable_sha256: sha256.clone(),
+                    identity_material: executable.to_string_lossy().into_owned(),
+                    pid,
+                    evidence_grade: evidence_grade.to_owned(),
+                    seams,
+                },
             );
             match registry.register(record)? {
                 RegisterOutcome::Registered => {
