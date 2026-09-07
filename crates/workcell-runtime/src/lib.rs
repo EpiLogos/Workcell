@@ -1,5 +1,6 @@
 mod external_service;
 mod host;
+mod instance_registry;
 mod local;
 mod profile;
 mod reference_services;
@@ -13,6 +14,12 @@ pub use external_service::{
     ExternalServiceCommand,
 };
 pub use host::{HostProcessExecutionProvider, HostProcessOperationGrant};
+pub use instance_registry::{
+    build_instance_record, by_slug, identity_hash, seam, sort_by_reference,
+    validate_instance_record, InstanceObservation, InstanceRegistry, RegisterOutcome,
+    EVIDENCE_DECLARED_UNVERIFIED, EVIDENCE_GATEWAY_CONFIRMED, EVIDENCE_LIVE_PID,
+    HARNESS_INSTANCE_SCHEMA, LIVENESS_LIVE, LIVENESS_STALE, REGISTRY_SCHEMA,
+};
 pub use local::{CollapsedLocalConfig, CollapsedLocalWorkcell};
 pub use profile::*;
 pub use reference_services::{
