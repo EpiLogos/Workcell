@@ -255,9 +255,11 @@ fn one_generic_demand_crosses_local_docker_and_remote_cluster_lifecycle_shapes_u
     assert_eq!(cluster_request.method, "POST");
     assert_ne!(local_request.url, cluster_request.url);
     assert_eq!(local_request.body, cluster_request.body);
+    // The demand ref is stamped label-safe (OpenSandbox validates metadata
+    // values as Kubernetes labels); the projection is identical across shapes.
     assert!(String::from_utf8(local_request.body)
         .unwrap()
-        .contains("demand:portable-world"));
+        .contains("demand-portable-world"));
 }
 
 #[test]

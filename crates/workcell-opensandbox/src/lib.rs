@@ -24,6 +24,11 @@ pub const OPENSANDBOX_EXECD_PORT: u16 = 44772;
 pub const OPENSANDBOX_API_KEY_HEADER: &str = "OPEN-SANDBOX-API-KEY";
 pub const OPENSANDBOX_DEFAULT_API_KEY_ENV: &str = "OPEN_SANDBOX_API_KEY";
 
+/// Bound on how long `checkpoint()` waits for a snapshot to leave `Creating`.
+pub const SNAPSHOT_READY_TIMEOUT_SECS: u64 = 180;
+/// Poll interval while `checkpoint()` waits for snapshot readiness.
+pub const SNAPSHOT_READY_POLL_INTERVAL_SECS: u64 = 2;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OpenSandboxStartupSource {
     Image { uri: String },
@@ -654,10 +659,30 @@ where
         let body = request
             .name
             .as_ref()
-            .map(|name| json!({"name": name}))
+            .map(|name| json!({ "name": name }))
             .unwrap_or_else(|| json!({}));
         let value = self.lifecycle_json("POST", &path, Some(body))?;
-        checkpoint_from_value(&self.config.provider_ref, &allocation.material_ref, &value)
+        let mut checkpoint =
+            checkpoint_from_value(&self.config.provider_ref, &allocation.material_ref, &value)?;
+        // Snapshot materialisation is asynchronous upstream: the POST returns
+        // while state is still `Creating`, and restoring immediately fails
+        // HTTP 409 SNAPSHOT::NOT_READY. Wait for a terminal state so callers
+        // holding a returned checkpoint can rely on it.
+        let mut waited_secs = 0u64;
+        while checkpoint.state == MaterialCheckpointState::Creating {
+            if waited_secs >= SNAPSHOT_READY_TIMEOUT_SECS {
+                return Err(WorkcellError::OperationFailed(format!(
+                    "OpenSandbox snapshot {} did not leave Creating within {SNAPSHOT_READY_TIMEOUT_SECS}s",
+                    checkpoint.checkpoint_ref
+                )));
+            }
+            std::thread::sleep(std::time::Duration::from_secs(
+                SNAPSHOT_READY_POLL_INTERVAL_SECS,
+            ));
+            waited_secs += SNAPSHOT_READY_POLL_INTERVAL_SECS;
+            checkpoint = self.observe_checkpoint(&checkpoint)?;
+        }
+        Ok(checkpoint)
     }
 
     fn observe_checkpoint(&self, checkpoint: &MaterialCheckpoint) -> Result<MaterialCheckpoint> {
@@ -688,6 +713,55 @@ struct ResolvedEndpoint {
     headers: BTreeMap<String, String>,
 }
 
+/// Project an arbitrary Workcell ref into a Kubernetes-label-safe value
+/// (≤63 chars, starts/ends alphanumeric, interior `-`, `_`, `.`).
+/// Non-label characters map to `-`; overlong results are truncated at an
+/// alphanumeric boundary and disambiguated with an FNV-1a hash suffix.
+fn label_safe_metadata_value(value: &str) -> String {
+    const MAX_LEN: usize = 63;
+    let filtered: String = value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed: String = filtered
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+        .to_string();
+    let core = if trimmed.is_empty() {
+        "workcell-ref".to_string()
+    } else {
+        trimmed
+    };
+    if core.len() <= MAX_LEN {
+        return core;
+    }
+    let hash = fnv1a_32(core.as_bytes());
+    let budget = MAX_LEN - 9; // "-" + 8 hex chars
+    let mut prefix: String = core.chars().take(budget).collect();
+    while prefix
+        .chars()
+        .last()
+        .is_some_and(|c| !c.is_ascii_alphanumeric())
+    {
+        prefix.pop();
+    }
+    format!("{prefix}-{hash:08x}")
+}
+
+fn fnv1a_32(bytes: &[u8]) -> u32 {
+    let mut hash: u32 = 0x811c9dc5;
+    for byte in bytes {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
 fn create_sandbox_body(
     config: &OpenSandboxConfig,
     request: &ExecutionMaterialRequest,
@@ -711,7 +785,16 @@ fn create_sandbox_body(
         body.insert("env".into(), json!(config.environment));
     }
     let mut metadata = config.metadata.clone();
-    metadata.insert("workcell.demand_ref".into(), request.demand_ref.to_string());
+    // OpenSandbox validates metadata values as Kubernetes label values
+    // (≤63 chars, alphanumeric ends, interior [-_.]). Workcell demand refs use
+    // a `kind:identity` form whose colon is label-illegal, so the verbatim ref
+    // is rejected by a real server (HTTP 400 SANDBOX::INVALID_METADATA_LABEL).
+    // Stamp the deterministic label-safe projection instead; the full ref
+    // remains recoverable in Workcell receipts and provenance.
+    metadata.insert(
+        "workcell.demand_ref".into(),
+        label_safe_metadata_value(&request.demand_ref.to_string()),
+    );
     body.insert("metadata".into(), json!(metadata));
 
     let limits = resource_limits(&request.resources)?;
@@ -1194,8 +1277,32 @@ mod tests {
         assert_eq!(body["resourceLimits"]["memory"], "2Gi");
         assert_eq!(
             body["metadata"]["workcell.demand_ref"],
-            "demand:project-world"
+            "demand-project-world"
         );
+    }
+
+    #[test]
+    fn demand_ref_metadata_is_label_safe_for_real_servers() {
+        // OpenSandbox validates metadata values as Kubernetes label values;
+        // the canonical `kind:identity` ref form must be projected, not stamped.
+        assert_eq!(
+            label_safe_metadata_value("demand:project-world"),
+            "demand-project-world"
+        );
+        assert_eq!(
+            label_safe_metadata_value("demand:weird/label@value"),
+            "demand-weird-label-value"
+        );
+        assert_eq!(label_safe_metadata_value(":::"), "workcell-ref");
+        let long = format!("demand:{}", "a".repeat(80));
+        let safe = label_safe_metadata_value(&long);
+        assert!(safe.len() <= 63);
+        assert!(safe.chars().next().unwrap().is_ascii_alphanumeric());
+        assert!(safe.chars().last().unwrap().is_ascii_alphanumeric());
+        assert!(safe.contains('-')); // hash suffix present
+                                     // Deterministic and distinct from the un-hashed short form.
+        assert_eq!(safe, label_safe_metadata_value(&long));
+        assert_ne!(safe, label_safe_metadata_value("demand:other"));
     }
 
     #[test]
@@ -1234,11 +1341,15 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_returns_reusable_material_checkpoint() {
-        let transport = FixtureTransport::with_responses(vec![response(
-            202,
-            json!({"id":"snap_42","status":{"state":"Creating"}}),
-        )]);
+    fn snapshot_waits_until_ready_before_returning_checkpoint() {
+        // POST returns while upstream is still Creating; the provider polls
+        // observe until a terminal state so restore does not race NOT_READY.
+        let transport = FixtureTransport::with_responses(vec![
+            response(202, json!({"id":"snap_42","status":{"state":"Creating"}})),
+            response(202, json!({"id":"snap_42","status":{"state":"Creating"}})),
+            response(200, json!({"id":"snap_42","status":{"state":"Ready"}})),
+        ]);
+        let inspect = transport.clone();
         let mut provider = OpenSandboxExecutionProvider::new(config(), transport).unwrap();
         let allocation = ProviderAllocation {
             provider_ref: provider.provider_ref().clone(),
@@ -1257,8 +1368,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!(checkpoint.checkpoint_ref, "snap_42");
-        assert_eq!(checkpoint.state, MaterialCheckpointState::Creating);
+        assert_eq!(checkpoint.state, MaterialCheckpointState::Ready);
         assert!(checkpoint.reusable);
+        let requests = inspect.requests();
+        assert_eq!(requests.len(), 3);
+        assert!(requests[0].method == "POST" && requests[0].url.ends_with("/snapshots"));
+        assert!(requests[1].method == "GET" && requests[1].url.ends_with("/snapshots/snap_42"));
+        assert!(requests[2].method == "GET" && requests[2].url.ends_with("/snapshots/snap_42"));
+    }
+
+    #[test]
+    fn snapshot_terminal_failure_is_returned_without_polling() {
+        let transport = FixtureTransport::with_responses(vec![response(
+            202,
+            json!({"id":"snap_fail","status":{"state":"Failed"}}),
+        )]);
+        let mut provider = OpenSandboxExecutionProvider::new(config(), transport).unwrap();
+        let allocation = ProviderAllocation {
+            provider_ref: provider.provider_ref().clone(),
+            port: ProviderPortKind::Execution,
+            material_ref: "sbx_snapshot".into(),
+            health: HealthState::Healthy,
+            properties: BTreeMap::new(),
+            provenance: BTreeMap::new(),
+        };
+        let checkpoint = provider
+            .checkpoint(&allocation, &CheckpointRequest::default())
+            .unwrap();
+        assert_eq!(checkpoint.state, MaterialCheckpointState::Failed);
+        assert!(!checkpoint.reusable);
     }
 
     #[test]
