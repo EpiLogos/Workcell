@@ -281,6 +281,12 @@ fn command_doctor(global: &GlobalArgs) -> Result<(), WorkcellError> {
         ));
     }
 
+    let scan = epilogos_workcell_runtime::scan_live(
+        &global.state_root,
+        &parse_workcell_ref(&global.workcell_ref)?,
+        "actuation",
+    );
+
     if global.json {
         emit_json(json!({
             "ok": true,
@@ -289,6 +295,12 @@ fn command_doctor(global: &GlobalArgs) -> Result<(), WorkcellError> {
             "writable_workspace": writable_workspace,
             "filesystem_artifacts": filesystem_artifacts,
             "optional_external_providers_required": false,
+            "instances": {
+                "status": scan.status,
+                "reason": scan.reason,
+                "live": scan.live.len(),
+                "stale": scan.stale.len(),
+            },
         }));
     } else {
         println!("doctor: healthy");
@@ -297,6 +309,17 @@ fn command_doctor(global: &GlobalArgs) -> Result<(), WorkcellError> {
         println!("  writable local workspace: yes");
         println!("  local artifact storage: yes");
         println!("  Docker/Arrakis/Tailscale required: no");
+        match scan.status {
+            "ok" => println!(
+                "  harness instances: {} live, {} stale",
+                scan.live.len(),
+                scan.stale.len()
+            ),
+            other => println!(
+                "  harness instances: unavailable ({})",
+                scan.reason.unwrap_or_else(|| other.to_owned())
+            ),
+        }
     }
     Ok(())
 }
@@ -788,11 +811,54 @@ fn command_instances(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
     let registry = InstanceRegistry::new(&global.state_root, workcell_ref.clone());
     let Some(subcommand) = args.first().map(String::as_str) else {
         return Err(WorkcellError::InvalidDemand(
-            "usage: workcell instances <list|show|register> [args]".into(),
+            "usage: workcell instances <list|show|register|scan> [args]".into(),
         ));
     };
 
     match subcommand {
+        "scan" => {
+            let report = epilogos_workcell_runtime::scan_live(
+                &global.state_root,
+                &workcell_ref,
+                "actuation",
+            );
+            if global.json {
+                emit_json(epilogos_workcell_runtime::report_json(&report));
+            } else {
+                match report.status {
+                    "ok" => {
+                        println!(
+                            "scan: {} live, {} stale ({} registered, {} refreshed, {} revived, {} went stale)",
+                            report.live.len(),
+                            report.stale.len(),
+                            report.transitions.registered,
+                            report.transitions.refreshed,
+                            report.transitions.revived,
+                            report.transitions.went_stale,
+                        );
+                        for record in report.live.iter().chain(report.stale.iter()) {
+                            println!(
+                                "  {} [{}] {} (pid {})",
+                                record["instance_ref"].as_str().unwrap_or("?"),
+                                record["liveness"].as_str().unwrap_or("?"),
+                                record["harness_ref"].as_str().unwrap_or("?"),
+                                record["pids"].as_array().map_or("-".to_string(), |pids| {
+                                    pids.iter().filter_map(Value::as_u64).map(|pid| pid.to_string()).collect::<Vec<_>>().join(",")
+                                }),
+                            );
+                        }
+                        if !report.unmatched_processes.is_empty() {
+                            println!("  unmatched processes: {}", report.unmatched_processes.join(", "));
+                        }
+                    }
+                    other => println!(
+                        "scan: unavailable ({})",
+                        report.reason.unwrap_or_else(|| other.to_owned())
+                    ),
+                }
+            }
+            Ok(())
+        }
         "list" => {
             let records = epilogos_workcell_runtime::sort_by_reference(registry.list()?);
             if global.json {
@@ -811,7 +877,9 @@ fn command_instances(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
                         record["instance_ref"].as_str().unwrap_or("?"),
                         record["evidence_grade"].as_str().unwrap_or("?"),
                         record["harness_ref"].as_str().unwrap_or("?"),
-                        record["pid"].as_u64().map_or("-".to_string(), |pid| pid.to_string()),
+                        record["pids"].as_array().map_or("-".to_string(), |pids| {
+                            pids.iter().filter_map(Value::as_u64).map(|pid| pid.to_string()).collect::<Vec<_>>().join(",")
+                        }),
                     );
                 }
             }
@@ -835,7 +903,7 @@ fn command_instances(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
             let mut harness = None;
             let mut executable = None;
             let mut sha256 = None;
-            let mut pid = None;
+            let mut pids: Vec<u32> = Vec::new();
             let mut declared = false;
             let mut seams: Vec<Value> = Vec::new();
             let mut index = 1;
@@ -855,12 +923,13 @@ fn command_instances(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
                     }
                     "--pid" => {
                         index += 1;
-                        pid = args.get(index).and_then(|value| value.parse::<u32>().ok());
-                        if pid.is_none() {
+                        let Some(parsed) = args.get(index).and_then(|value| value.parse::<u32>().ok())
+                        else {
                             return Err(WorkcellError::InvalidDemand(
                                 "--pid requires a numeric process id".into(),
                             ));
-                        }
+                        };
+                        pids.push(parsed);
                     }
                     "--declared" => declared = true,
                     "--seam" => {
@@ -897,7 +966,7 @@ fn command_instances(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
                         .into(),
                 ));
             };
-            if declared && pid.is_some() {
+            if declared && !pids.is_empty() {
                 return Err(WorkcellError::InvalidDemand(
                     "--declared and --pid are mutually exclusive".into(),
                 ));
@@ -905,7 +974,7 @@ fn command_instances(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
             let evidence_grade = if declared {
                 EVIDENCE_DECLARED_UNVERIFIED
             } else {
-                if pid.is_none() {
+                if pids.is_empty() {
                     return Err(WorkcellError::InvalidDemand(
                         "a live registration requires --pid (or pass --declared)".into(),
                     ));
@@ -919,7 +988,7 @@ fn command_instances(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
                     executable: executable.clone(),
                     executable_sha256: sha256.clone(),
                     identity_material: executable.to_string_lossy().into_owned(),
-                    pid,
+                    pids,
                     evidence_grade: evidence_grade.to_owned(),
                     seams,
                 },

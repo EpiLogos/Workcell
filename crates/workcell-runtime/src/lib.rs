@@ -1,6 +1,7 @@
 mod external_service;
 mod host;
 mod instance_registry;
+mod instance_scan;
 mod local;
 mod profile;
 mod reference_services;
@@ -19,6 +20,10 @@ pub use instance_registry::{
     validate_instance_record, InstanceObservation, InstanceRegistry, RegisterOutcome,
     EVIDENCE_DECLARED_UNVERIFIED, EVIDENCE_GATEWAY_CONFIRMED, EVIDENCE_LIVE_PID,
     HARNESS_INSTANCE_SCHEMA, LIVENESS_LIVE, LIVENESS_STALE, REGISTRY_SCHEMA,
+};
+pub use instance_scan::{
+    gateway_answering, read_pid_table, reconcile, report_json, scan_live, ObservedInstance,
+    ScanInputs, ScanReport, ScanTransitions, PID_ALIASES, STALE_AFTER_MISSED_SCANS,
 };
 pub use local::{CollapsedLocalConfig, CollapsedLocalWorkcell};
 pub use profile::*;
