@@ -150,9 +150,9 @@ impl InstanceRegistry {
                 return Ok(RegisterOutcome::Unchanged);
             }
             // Same identity hash but different bytes: refresh the observation
-            // fields (pid, observed_at, seams) in place; identity is stable.
+            // fields (pids, observed_at, seams) in place; identity is stable.
             let mut updated = existing.clone();
-            for key in ["pid", "observed_at", "seams", "liveness"] {
+            for key in ["pids", "observed_at", "seams", "liveness"] {
                 if let Some(value) = record.get(key) {
                     updated[key] = value.clone();
                 }
@@ -182,6 +182,25 @@ impl InstanceRegistry {
         Ok(RegisterOutcome::Registered)
     }
 
+    /// Apply liveness bookkeeping from a completed scan: the named records
+    /// get their miss count and liveness state written; every other record
+    /// is untouched. Records are never deleted here — `stale` is disclosed,
+    /// not removed.
+    pub fn apply_liveness(&self, updates: &[(String, u64, &str)]) -> Result<()> {
+        let mut file = self.load()?;
+        let instances = file
+            .get_mut("instances")
+            .and_then(Value::as_object_mut)
+            .expect("validated registry file has an instances object");
+        for (reference, misses, liveness) in updates {
+            if let Some(record) = instances.get_mut(reference) {
+                record["consecutive_misses"] = (*misses).into();
+                record["liveness"] = (*liveness).into();
+            }
+        }
+        self.store(&file)
+    }
+
     fn store(&self, file: &Value) -> Result<()> {
         let path = self.registry_path();
         if let Some(parent) = path.parent() {
@@ -209,6 +228,10 @@ pub fn identity_hash(executable_sha256: &str, identity_material: &str) -> String
 }
 
 /// The observed material from which an instance record is built.
+///
+/// `pids` holds every live process observation for this identity this scan:
+/// multi-execution is the default paradigm — one contract identity, many
+/// simultaneous executions, each named.
 pub struct InstanceObservation {
     pub slug: String,
     pub executable: PathBuf,
@@ -216,7 +239,7 @@ pub struct InstanceObservation {
     /// Stable first-seen identity material (e.g. the resolved executable
     /// path at first observation). Never a pid.
     pub identity_material: String,
-    pub pid: Option<u32>,
+    pub pids: Vec<u32>,
     pub evidence_grade: String,
     pub seams: Vec<Value>,
 }
@@ -242,7 +265,7 @@ pub fn build_instance_record(
         "instance_ref": format!("instance:{}:{stable_hash}", observation.slug),
         "harness_ref": format!("harness/{}", observation.slug),
         "workcell_ref": workcell_ref.to_string(),
-        "pid": observation.pid,
+        "pids": observation.pids,
         "executable": {
             "path": observation.executable.display().to_string(),
             "sha256": observation.executable_sha256,
@@ -250,6 +273,7 @@ pub fn build_instance_record(
         "seams": observation.seams,
         "evidence_grade": observation.evidence_grade,
         "liveness": liveness,
+        "consecutive_misses": 0,
         "observed_at": observed_now(),
     })
 }
@@ -374,10 +398,26 @@ pub fn validate_instance_record(record: &Value) -> Result<()> {
             "evidence_grade `{grade}` must be one of {EVIDENCE_GRADES:?}"
         )));
     }
-    if grade == EVIDENCE_DECLARED_UNVERIFIED && record.get("pid").and_then(Value::as_u64).is_some()
+    if grade == EVIDENCE_DECLARED_UNVERIFIED {
+        let pids = record
+            .get("pids")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if !pids.is_empty() {
+            return Err(WorkcellError::InvalidDemand(
+                "a `declared-unverified` instance must not claim pids".into(),
+            ));
+        }
+    } else if record
+        .get("pids")
+        .and_then(Value::as_array)
+        .map(|pids| pids.is_empty())
+        .unwrap_or(true)
+        && grade != EVIDENCE_GATEWAY_CONFIRMED
     {
         return Err(WorkcellError::InvalidDemand(
-            "a `declared-unverified` instance must not claim a pid".into(),
+            "a detected instance requires at least one observed pid".into(),
         ));
     }
 
@@ -387,9 +427,17 @@ pub fn validate_instance_record(record: &Value) -> Result<()> {
             "liveness `{liveness}` must be one of {LIVENESS_STATES:?}"
         )));
     }
-    if liveness == LIVENESS_LIVE && record.get("pid").and_then(Value::as_u64).is_none() {
+    if liveness == LIVENESS_LIVE
+        && record
+            .get("pids")
+            .and_then(Value::as_array)
+            .map(|pids| pids.is_empty())
+            .unwrap_or(true)
+        && grade != EVIDENCE_GATEWAY_CONFIRMED
+    {
         return Err(WorkcellError::InvalidDemand(
-            "a `live` instance requires an observed `pid`".into(),
+            "a `live` instance requires at least one observed pid (or a carrier-confirmed grade)"
+                .into(),
         ));
     }
 
@@ -485,7 +533,7 @@ mod tests {
                 executable: executable.clone(),
                 executable_sha256: sha.to_owned(),
                 identity_material: executable.display().to_string(),
-                pid,
+                pids: pid.into_iter().collect(),
                 evidence_grade: if pid.is_some() {
                     EVIDENCE_LIVE_PID.into()
                 } else {
@@ -577,7 +625,7 @@ mod tests {
             RegisterOutcome::Registered
         );
         let shown = registry.show(&reference).unwrap();
-        assert_eq!(shown["pid"], 11);
+        assert_eq!(shown["pids"], json!([11]));
         assert_eq!(shown["instance_ref"].as_str().unwrap(), reference);
     }
 
@@ -586,7 +634,7 @@ mod tests {
         let root = temp_root("declared");
         let registry = InstanceRegistry::new(&root, WorkcellRef::new("workcell:local").unwrap());
         let record = sample_record(&root, "gemini", "ff".repeat(32).as_str(), None);
-        assert_eq!(record["pid"], Value::Null);
+        assert_eq!(record["pids"], json!([]));
         assert_eq!(record["evidence_grade"], EVIDENCE_DECLARED_UNVERIFIED);
         registry.register(record).unwrap();
     }
@@ -609,7 +657,7 @@ mod tests {
             "ab".repeat(32).as_str(),
             Some(3),
         );
-        live_without_pid["pid"] = Value::Null;
+        live_without_pid["pids"] = json!([]);
         let error = validate_instance_record(&live_without_pid)
             .unwrap_err()
             .to_string();
