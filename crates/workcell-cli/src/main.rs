@@ -81,6 +81,7 @@ fn run(args: Vec<String>) -> Result<(), WorkcellError> {
         "collect" => command_collect(&global),
         "release" => command_release(&global),
         "reconcile" => command_reconcile(&global, command_args),
+        "instances" => command_instances(&global, command_args),
         other => Err(WorkcellError::InvalidDemand(format!(
             "unknown command `{other}`; run `workcell help`"
         ))),
@@ -777,6 +778,191 @@ fn safe_filename(value: &str) -> String {
         .collect()
 }
 
+fn command_instances(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    use epilogos_workcell_runtime::{
+        build_instance_record, seam, InstanceRegistry, RegisterOutcome,
+        EVIDENCE_DECLARED_UNVERIFIED, EVIDENCE_LIVE_PID,
+    };
+
+    let workcell_ref = parse_workcell_ref(&global.workcell_ref)?;
+    let registry = InstanceRegistry::new(&global.state_root, workcell_ref.clone());
+    let Some(subcommand) = args.first().map(String::as_str) else {
+        return Err(WorkcellError::InvalidDemand(
+            "usage: workcell instances <list|show|register> [args]".into(),
+        ));
+    };
+
+    match subcommand {
+        "list" => {
+            let records = epilogos_workcell_runtime::sort_by_reference(registry.list()?);
+            if global.json {
+                emit_json(json!({
+                    "ok": true,
+                    "workcell_ref": workcell_ref.as_str(),
+                    "instances": records,
+                }));
+            } else {
+                if records.is_empty() {
+                    println!("no harness instances registered in {}", workcell_ref);
+                }
+                for record in records {
+                    println!(
+                        "{} [{}] {} (pid {})",
+                        record["instance_ref"].as_str().unwrap_or("?"),
+                        record["evidence_grade"].as_str().unwrap_or("?"),
+                        record["harness_ref"].as_str().unwrap_or("?"),
+                        record["pid"].as_u64().map_or("-".to_string(), |pid| pid.to_string()),
+                    );
+                }
+            }
+            Ok(())
+        }
+        "show" => {
+            let Some(reference) = args.get(1) else {
+                return Err(WorkcellError::InvalidDemand(
+                    "usage: workcell instances show <instance_ref>".into(),
+                ));
+            };
+            let record = registry.show(reference)?;
+            if global.json {
+                emit_json(json!({ "ok": true, "instance": record }));
+            } else {
+                println!("{}", serde_json::to_string_pretty(&record).expect("record is json"));
+            }
+            Ok(())
+        }
+        "register" => {
+            let mut harness = None;
+            let mut executable = None;
+            let mut sha256 = None;
+            let mut pid = None;
+            let mut declared = false;
+            let mut seams: Vec<Value> = Vec::new();
+            let mut index = 1;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--harness" => {
+                        index += 1;
+                        harness = args.get(index).cloned();
+                    }
+                    "--executable" => {
+                        index += 1;
+                        executable = args.get(index).map(PathBuf::from);
+                    }
+                    "--sha256" => {
+                        index += 1;
+                        sha256 = args.get(index).cloned();
+                    }
+                    "--pid" => {
+                        index += 1;
+                        pid = args.get(index).and_then(|value| value.parse::<u32>().ok());
+                        if pid.is_none() {
+                            return Err(WorkcellError::InvalidDemand(
+                                "--pid requires a numeric process id".into(),
+                            ));
+                        }
+                    }
+                    "--declared" => declared = true,
+                    "--seam" => {
+                        index += 1;
+                        let Some(spec) = args.get(index) else {
+                            return Err(WorkcellError::InvalidDemand(
+                                "--seam requires kind:path:exists".into(),
+                            ));
+                        };
+                        let mut parts = spec.splitn(3, ':');
+                        let kind = parts.next().unwrap_or_default();
+                        let path = parts.next().unwrap_or_default();
+                        let exists = parts.next() == Some("true");
+                        if kind.is_empty() || path.is_empty() {
+                            return Err(WorkcellError::InvalidDemand(
+                                "--seam requires kind:path:exists".into(),
+                            ));
+                        }
+                        seams.push(seam(kind, path, exists, None));
+                    }
+                    other => {
+                        return Err(WorkcellError::InvalidDemand(format!(
+                            "unknown instances register flag `{other}`"
+                        )))
+                    }
+                }
+                index += 1;
+            }
+            let (Some(harness), Some(executable), Some(sha256)) = (harness, executable, sha256)
+            else {
+                return Err(WorkcellError::InvalidDemand(
+                    "usage: workcell instances register --harness <slug> --executable <path> \
+                     --sha256 <receipt> [--pid <n> | --declared] [--seam kind:path:exists]..."
+                        .into(),
+                ));
+            };
+            if declared && pid.is_some() {
+                return Err(WorkcellError::InvalidDemand(
+                    "--declared and --pid are mutually exclusive".into(),
+                ));
+            }
+            let evidence_grade = if declared {
+                EVIDENCE_DECLARED_UNVERIFIED
+            } else {
+                if pid.is_none() {
+                    return Err(WorkcellError::InvalidDemand(
+                        "a live registration requires --pid (or pass --declared)".into(),
+                    ));
+                }
+                EVIDENCE_LIVE_PID
+            };
+            let record = build_instance_record(
+                &workcell_ref,
+                &harness,
+                Path::new(&executable),
+                &sha256,
+                &executable.to_string_lossy(),
+                pid,
+                evidence_grade,
+                seams,
+            );
+            match registry.register(record)? {
+                RegisterOutcome::Registered => {
+                    if global.json {
+                        emit_json(json!({ "ok": true, "outcome": "registered" }));
+                    } else {
+                        println!("registered");
+                    }
+                }
+                RegisterOutcome::Unchanged => {
+                    if global.json {
+                        emit_json(json!({ "ok": true, "outcome": "unchanged" }));
+                    } else {
+                        println!("unchanged");
+                    }
+                }
+                RegisterOutcome::Conflict { existing, incoming } => {
+                    emit_json(json!({
+                        "ok": false,
+                        "error": {
+                            "kind": "instance_conflict",
+                            "message": format!(
+                                "harness `{}` already holds executable {} (incoming {})",
+                                harness,
+                                existing["executable"]["sha256"].as_str().unwrap_or("?"),
+                                incoming["executable"]["sha256"].as_str().unwrap_or("?"),
+                            ),
+                        }
+                    }));
+                    return Err(WorkcellError::InvalidDemand(format!(
+                        "instance conflict for harness `{harness}`; see --json output"
+                    )));
+                }
+            }
+            Ok(())
+        }
+        other => Err(WorkcellError::InvalidDemand(format!(
+            "unknown instances subcommand `{other}`; expected list|show|register"
+        ))),
+    }
+}
+
 fn write_receipt(
     path: &Path,
     world: &epilogos_workcell_core::MaterialisedExecutionWorld,
@@ -1060,7 +1246,7 @@ fn print_help() {
     println!(
         "Workcell — provider-neutral material execution control\n\n\
 Usage:\n  workcell [global options] <command> [command options]\n\n\
-Commands:\n  status       Summarise this local Workcell\n  discover     Discover material offers\n  plan         Plan an ExecutionDemand\n  prepare      Prepare a material world and persist a receipt\n  observe      Observe a prepared world from its receipt\n  expose       Resolve prepared exposure surfaces\n  collect      Collect prepared output channels\n  release      Release or preserve a prepared world\n  reconcile    Reconcile desired material state\n  providers    List provider inventory\n  doctor       Verify the zero-setup local baseline\n\n\
+Commands:\n  status       Summarise this local Workcell\n  discover     Discover material offers\n  plan         Plan an ExecutionDemand\n  prepare      Prepare a material world and persist a receipt\n  observe      Observe a prepared world from its receipt\n  expose       Resolve prepared exposure surfaces\n  collect      Collect prepared output channels\n  release      Release or preserve a prepared world\n  reconcile    Reconcile desired material state\n  instances    Live harness-instance registry (list|show|register)\n  providers    List provider inventory\n  doctor       Verify the zero-setup local baseline\n\n\
 Global options:\n  --json                     Structured machine/agent output\n  --state-root PATH          Local Workcell state (default: $WORKCELL_HOME or ~/.workcell)\n  --workcell-ref REF         Workcell identity for new local operations\n  --receipt PATH             Material-world receipt for prepare/resume\n  --workspace-source PATH    Physical local source binding; never semantic identity\n\n\
 Demand options for plan/prepare:\n  --demand-ref REF\n  --require VALUE | --prefer VALUE | --optional VALUE\n  --workspace writable|read-only [--workspace-ref REF] [--revision REV]\n  --project-runtime MODE\n  --connect VALUE | --prefer-connect VALUE | --optional-connect VALUE\n  --expose VALUE | --prefer-expose VALUE | --optional-expose VALUE\n  --output VALUE | --prefer-output VALUE | --optional-output VALUE\n  --resource key[=amount[:unit]]\n  --subject role=opaque-ref\n  --persistence SCOPE\n  --isolation VALUE\n  --retention release|preserve|suspend-if-supported|snapshot-if-supported\n  --extension key=value\n\n\
 Reconcile:\n  workcell --receipt WORLD.json reconcile --desired logical-ref=state"
