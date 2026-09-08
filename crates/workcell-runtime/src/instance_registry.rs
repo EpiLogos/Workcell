@@ -467,7 +467,7 @@ fn record_ref(record: &Value) -> Result<String> {
     required_str(record, "instance_ref")
 }
 
-fn harness_slug(record: &Value) -> Result<String> {
+pub(crate) fn harness_slug(record: &Value) -> Result<String> {
     let harness_ref = required_str(record, "harness_ref")?;
     harness_ref
         .strip_prefix("harness/")

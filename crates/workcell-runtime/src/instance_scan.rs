@@ -140,26 +140,26 @@ pub fn scan_live(
     actuation_command: &str,
 ) -> ScanReport {
     let registry = InstanceRegistry::new(state_root, workcell_ref.clone());
+    match scan_inputs_live(actuation_command) {
+        Ok(inputs) => reconcile(registry, workcell_ref, inputs),
+        Err(reason) => ScanReport::unavailable(workcell_ref, reason),
+    }
+}
 
-    let detection = match run_actuation_detection(actuation_command) {
-        Ok(detection) => detection,
-        Err(error) => return ScanReport::unavailable(workcell_ref, error),
-    };
-    let processes = match read_pid_table() {
-        Ok(processes) => processes,
-        Err(error) => return ScanReport::unavailable(workcell_ref, error),
-    };
+/// Gather the live scan inputs (Actuation detection document, pid table,
+/// gateway answer) without reconciling them into any registry. A failure is
+/// named as a plain reason string — the intake law belongs to the caller's
+/// report shape (scan, projection), which never reads a failed run as an
+/// empty set.
+pub fn scan_inputs_live(actuation_command: &str) -> std::result::Result<ScanInputs, String> {
+    let detection = run_actuation_detection(actuation_command)?;
+    let processes = read_pid_table()?;
     let gateway = gateway_answering(&default_gateway_socket());
-
-    reconcile(
-        registry,
-        workcell_ref,
-        ScanInputs {
-            detection,
-            processes,
-            gateway_answering: gateway,
-        },
-    )
+    Ok(ScanInputs {
+        detection,
+        processes,
+        gateway_answering: gateway,
+    })
 }
 
 /// Pure reconciliation core: merge detection + pid evidence into the
