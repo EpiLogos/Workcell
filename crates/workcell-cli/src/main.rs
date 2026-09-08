@@ -82,6 +82,7 @@ fn run(args: Vec<String>) -> Result<(), WorkcellError> {
         "release" => command_release(&global),
         "reconcile" => command_reconcile(&global, command_args),
         "instances" => command_instances(&global, command_args),
+        "sandboxes" => command_sandboxes(&global, command_args),
         other => Err(WorkcellError::InvalidDemand(format!(
             "unknown command `{other}`; run `workcell help`"
         ))),
@@ -1119,6 +1120,194 @@ fn command_instances(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
     }
 }
 
+fn command_sandboxes(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    use epilogos_workcell_opensandbox::{
+        SandboxLease, SandboxServerReconciler, StdHttpOpenSandboxTransport,
+        OPENSANDBOX_DEFAULT_API_KEY_ENV,
+    };
+
+    let Some(subcommand) = args.first().map(String::as_str) else {
+        return Err(WorkcellError::InvalidDemand(
+            "usage: workcell sandboxes <reconcile> [args]".into(),
+        ));
+    };
+    if subcommand != "reconcile" {
+        return Err(WorkcellError::InvalidDemand(format!(
+            "unknown sandboxes subcommand `{subcommand}`; expected reconcile"
+        )));
+    }
+
+    let mut server = None;
+    let mut api_key_env = OPENSANDBOX_DEFAULT_API_KEY_ENV.to_owned();
+    let mut api_key = None;
+    let mut release_orphans = false;
+    let mut include_snapshots = false;
+    let mut operator_releases: Vec<String> = Vec::new();
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--server" => {
+                server = Some(require_value(args, index, "--server")?.to_owned());
+                index += 2;
+            }
+            "--api-key-env" => {
+                api_key_env = require_value(args, index, "--api-key-env")?.to_owned();
+                index += 2;
+            }
+            "--api-key" => {
+                api_key = Some(require_value(args, index, "--api-key")?.to_owned());
+                index += 2;
+            }
+            "--release-orphans" => {
+                release_orphans = true;
+                index += 1;
+            }
+            "--release" => {
+                operator_releases.push(require_value(args, index, "--release")?.to_owned());
+                index += 2;
+            }
+            "--include-snapshots" => {
+                include_snapshots = true;
+                index += 1;
+            }
+            other => {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "unknown sandboxes reconcile flag `{other}`"
+                )));
+            }
+        }
+    }
+    let Some(server) = server else {
+        return Err(WorkcellError::InvalidDemand(
+            "usage: workcell sandboxes reconcile --server <url> [--api-key-env <ENV>] [--api-key <key>] [--release-orphans] [--release <id>...] [--include-snapshots]".into(),
+        ));
+    };
+    // Resolution order: literal key wins; then the named environment variable;
+    // otherwise no key is sent (servers without auth accept that).
+    let api_key = api_key.or_else(|| {
+        std::env::var(&api_key_env)
+            .ok()
+            .filter(|value| !value.is_empty())
+    });
+
+    let reconciler =
+        SandboxServerReconciler::new(server.clone(), api_key, StdHttpOpenSandboxTransport);
+    let mut report = reconciler.reconcile(release_orphans, include_snapshots)?;
+    if !operator_releases.is_empty() {
+        let (released, mut failures) = reconciler.release_asserted(&operator_releases);
+        report.released_sandboxes.extend(released);
+        report.failures.append(&mut failures);
+    }
+
+    if global.json {
+        let sandboxes: Vec<Value> = report
+            .sandboxes
+            .iter()
+            .map(|sandbox| {
+                json!({
+                    "id": sandbox.id,
+                    "state": sandbox.state,
+                    "expires_at": sandbox.expires_at,
+                    "lease": sandbox.lease.as_str(),
+                })
+            })
+            .collect();
+        let snapshots: Vec<Value> = report
+            .snapshots
+            .iter()
+            .map(|snapshot| {
+                json!({
+                    "id": snapshot.id,
+                    "state": snapshot.state,
+                    "created_at": snapshot.created_at,
+                })
+            })
+            .collect();
+        let failures: Vec<Value> = report
+            .failures
+            .iter()
+            .map(|failure| {
+                json!({
+                    "operation": failure.operation,
+                    "target": failure.target,
+                    "reason": failure.reason,
+                })
+            })
+            .collect();
+        emit_json(json!({
+            "ok": true,
+            "server": server,
+            "release_orphans": release_orphans,
+            "include_snapshots": include_snapshots,
+            "sandboxes": sandboxes,
+            "snapshots": snapshots,
+            "unrecognised_sandboxes": report.unrecognised_sandboxes,
+            "unrecognised_snapshots": report.unrecognised_snapshots,
+            "released_sandboxes": report.released_sandboxes,
+            "deleted_snapshots": report.deleted_snapshots,
+            "failures": failures,
+        }));
+    } else {
+        let (live, unknown) = report
+            .sandboxes
+            .iter()
+            .filter(|sandbox| sandbox.lease != SandboxLease::Expired)
+            .fold((0usize, 0usize), |(live, unknown), sandbox| {
+                if sandbox.lease == SandboxLease::Live {
+                    (live + 1, unknown)
+                } else {
+                    (live, unknown + 1)
+                }
+            });
+        println!(
+            "reconcile: {} sandboxes ({} expired-orphans, {} live, {} unknown){}",
+            report.sandboxes.len(),
+            report.orphan_sandboxes().len(),
+            live,
+            unknown,
+            if include_snapshots {
+                format!(", {} snapshots", report.snapshots.len())
+            } else {
+                String::new()
+            },
+        );
+        for sandbox in &report.sandboxes {
+            println!(
+                "  sandbox {} [{}] lease={} ({})",
+                sandbox.id,
+                sandbox.state,
+                sandbox.lease.as_str(),
+                sandbox.expires_at.as_deref().unwrap_or("no lease evidence"),
+            );
+        }
+        for snapshot in &report.snapshots {
+            println!(
+                "  snapshot {} [{}] created={}",
+                snapshot.id,
+                snapshot.state,
+                snapshot.created_at.as_deref().unwrap_or("-"),
+            );
+        }
+        for id in &report.released_sandboxes {
+            let asserted = operator_releases.contains(id);
+            println!(
+                "  released sandbox{}: {id}",
+                if asserted { " (operator-asserted)" } else { " orphan" },
+            );
+        }
+        for id in &report.deleted_snapshots {
+            println!("  deleted snapshot: {id}");
+        }
+        for failure in &report.failures {
+            println!(
+                "  ! failure: {} {}: {}",
+                failure.operation, failure.target, failure.reason
+            );
+        }
+    }
+    Ok(())
+}
+
 fn write_receipt(
     path: &Path,
     world: &epilogos_workcell_core::MaterialisedExecutionWorld,
@@ -1402,7 +1591,8 @@ fn print_help() {
     println!(
         "Workcell — provider-neutral material execution control\n\n\
 Usage:\n  workcell [global options] <command> [command options]\n\n\
-Commands:\n  status       Summarise this local Workcell\n  discover     Discover material offers\n  plan         Plan an ExecutionDemand\n  prepare      Prepare a material world and persist a receipt\n  observe      Observe a prepared world from its receipt\n  expose       Resolve prepared exposure surfaces\n  collect      Collect prepared output channels\n  release      Release or preserve a prepared world\n  reconcile    Reconcile desired material state\n  instances    Live harness-instance registry (list|show|register)\n  providers    List provider inventory\n  doctor       Verify the zero-setup local baseline\n\n\
+Commands:\n  status       Summarise this local Workcell\n  discover     Discover material offers\n  plan         Plan an ExecutionDemand\n  prepare      Prepare a material world and persist a receipt\n  observe      Observe a prepared world from its receipt\n  expose       Resolve prepared exposure surfaces\n  collect      Collect prepared output channels\n  release      Release or preserve a prepared world\n  reconcile    Reconcile desired material state\n  instances    Live harness-instance registry (list|show|register|scan|declare)
+  sandboxes    OpenSandbox server-side material (reconcile)\n  providers    List provider inventory\n  doctor       Verify the zero-setup local baseline\n\n\
 Global options:\n  --json                     Structured machine/agent output\n  --state-root PATH          Local Workcell state (default: $WORKCELL_HOME or ~/.workcell)\n  --workcell-ref REF         Workcell identity for new local operations\n  --receipt PATH             Material-world receipt for prepare/resume\n  --workspace-source PATH    Physical local source binding; never semantic identity\n\n\
 Demand options for plan/prepare:\n  --demand-ref REF\n  --require VALUE | --prefer VALUE | --optional VALUE\n  --workspace writable|read-only [--workspace-ref REF] [--revision REV]\n  --project-runtime MODE\n  --connect VALUE | --prefer-connect VALUE | --optional-connect VALUE\n  --expose VALUE | --prefer-expose VALUE | --optional-expose VALUE\n  --output VALUE | --prefer-output VALUE | --optional-output VALUE\n  --resource key[=amount[:unit]]\n  --subject role=opaque-ref\n  --persistence SCOPE\n  --isolation VALUE\n  --retention release|preserve|suspend-if-supported|snapshot-if-supported\n  --extension key=value\n\n\
 Reconcile:\n  workcell --receipt WORLD.json reconcile --desired logical-ref=state"
