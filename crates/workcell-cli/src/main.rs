@@ -3,6 +3,7 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     process::ExitCode,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use epilogos_workcell_core::{
@@ -78,6 +79,7 @@ fn run(args: Vec<String>) -> Result<(), WorkcellError> {
         "prepare" => command_prepare(&global, command_args),
         "observe" => command_observe(&global),
         "expose" => command_expose(&global),
+        "material" => command_material(&global),
         "collect" => command_collect(&global),
         "release" => command_release(&global),
         "reconcile" => command_reconcile(&global, command_args),
@@ -415,6 +417,60 @@ fn command_expose(global: &GlobalArgs) -> Result<(), WorkcellError> {
         print_degradations(&result.degradations, &result.omissions);
     }
     Ok(())
+}
+
+fn command_material(global: &GlobalArgs) -> Result<(), WorkcellError> {
+    let (workcell, world, _) = resume(global)?;
+    let observed = workcell.observe(&world.world_ref);
+    let exposed = workcell.expose(&world.world_ref);
+    let bodies = exposed.as_ref().ok().map(|bundle| {
+        bundle
+            .surfaces
+            .iter()
+            .map(|surface| {
+                json!({
+                    "logical_ref": surface.logical_ref,
+                    "interaction": surface.interaction,
+                    "material": surface.material,
+                    "provenance": surface.provenance,
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+
+    emit_json(json!({
+        "ok": true,
+        "contract": "workcell.material-reading/v1",
+        "backend": "native-cli",
+        "consistency": "sequential-not-atomic",
+        "receipt_world": world_value(&world)?,
+        "observation": material_outcome(observed.map(|bundle| observation_json(&bundle))),
+        "exposure": material_outcome(exposed.map(|bundle| exposure_json(&bundle))),
+        "bodies": bodies,
+    }));
+    Ok(())
+}
+
+fn material_outcome(result: Result<Value, WorkcellError>) -> Value {
+    let completed_at_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    match result {
+        Ok(reading) => json!({
+            "status": "supplied",
+            "completed_at_unix_ms": completed_at_unix_ms,
+            "reading": reading,
+        }),
+        Err(error) => json!({
+            "status": "error",
+            "completed_at_unix_ms": completed_at_unix_ms,
+            "error": {
+                "kind": error_kind(&error),
+                "message": error.to_string(),
+            },
+        }),
+    }
 }
 
 fn command_collect(global: &GlobalArgs) -> Result<(), WorkcellError> {
