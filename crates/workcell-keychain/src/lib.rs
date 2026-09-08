@@ -91,20 +91,15 @@ impl KeychainCredentialRef {
 /// ACL policy applied when bootstrap material is stored. The policy is a
 /// declaration enforced by the native access-control object on the item;
 /// `resolve` honours whatever the Keychain enforces at read time.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum KeychainAclPolicy {
     /// Item readable while the device is unlocked, this device only. The
     /// default for agent bootstrap material: no cloud sync, no backup.
+    #[default]
     ThisDeviceUnlocked,
     /// Additionally requires user presence (Touch ID / passcode) at access
     /// time. For material whose consumption should be human-gated.
     UserPresenceRequired,
-}
-
-impl Default for KeychainAclPolicy {
-    fn default() -> Self {
-        Self::ThisDeviceUnlocked
-    }
 }
 
 impl KeychainAclPolicy {
