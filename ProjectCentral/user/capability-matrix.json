@@ -1,0 +1,208 @@
+{
+  "protocol": "ql-capability-matrix/1",
+  "matrix_id": "matrix.workcell",
+  "anchor_ref": "workcell:doc:overview",
+  "default_view": "product-field",
+  "views": [
+    {
+      "id": "product-field",
+      "title": "Workcell · seed × field contribution",
+      "semantics": "Each intersection states how this aspect of the product contributes to, depends on, or receives a return from the named member. Empty means unassessed; placements are attributed in the records.",
+      "row_axis": {
+        "id": "product-seeds",
+        "label": "Workcell · six seed questions",
+        "members": [
+          {
+            "id": "q0",
+            "label": "Why?",
+            "source_ref": "workcell:seed:q0"
+          },
+          {
+            "id": "q1",
+            "label": "What?",
+            "source_ref": "workcell:seed:q1"
+          },
+          {
+            "id": "q2",
+            "label": "How?",
+            "source_ref": "workcell:seed:q2"
+          },
+          {
+            "id": "q3",
+            "label": "Who / Whereby?",
+            "source_ref": "workcell:seed:q3"
+          },
+          {
+            "id": "q4",
+            "label": "Where / When?",
+            "source_ref": "workcell:seed:q4"
+          },
+          {
+            "id": "q5",
+            "label": "Why-For?",
+            "source_ref": "workcell:seed:q5"
+          }
+        ]
+      },
+      "column_axis": {
+        "id": "suite-field",
+        "label": "O:I whole and peer products",
+        "members": [
+          {
+            "id": "S",
+            "label": "O:I whole"
+          },
+          {
+            "id": "S0",
+            "label": "Central"
+          },
+          {
+            "id": "S1",
+            "label": "Actuation"
+          },
+          {
+            "id": "S2",
+            "label": "AIKit"
+          },
+          {
+            "id": "S3",
+            "label": "Software Factory"
+          },
+          {
+            "id": "S5",
+            "label": "Quaternal Logic"
+          }
+        ]
+      }
+    },
+    {
+      "id": "suite-relations",
+      "title": "Suite direct and conjugate relational readings",
+      "semantics": "Source-defined H/A product relations, limited to this product’s incident questions. H and A retain the source field identities; they are not the seed axis. Coverage I=self, H=harmonic, S=strong support, L=latent, W=weak/intentionally indirect. Absence means outside this selected scope.",
+      "row_axis": {
+        "id": "source-products",
+        "label": "From",
+        "members": [
+          {
+            "id": "H0",
+            "label": "Central · H0"
+          },
+          {
+            "id": "H1",
+            "label": "Actuation · H1"
+          },
+          {
+            "id": "H2",
+            "label": "AIKit · H2"
+          },
+          {
+            "id": "H3",
+            "label": "Software Factory · H3"
+          },
+          {
+            "id": "H4",
+            "label": "Workcell · H4"
+          },
+          {
+            "id": "H5",
+            "label": "Quaternal Logic · H5"
+          },
+          {
+            "id": "A0",
+            "label": "Central · A0"
+          },
+          {
+            "id": "A1",
+            "label": "Actuation · A1"
+          },
+          {
+            "id": "A2",
+            "label": "AIKit · A2"
+          },
+          {
+            "id": "A3",
+            "label": "Software Factory · A3"
+          },
+          {
+            "id": "A4",
+            "label": "Workcell · A4"
+          },
+          {
+            "id": "A5",
+            "label": "Quaternal Logic · A5"
+          }
+        ]
+      },
+      "column_axis": {
+        "id": "target-products",
+        "label": "To",
+        "members": [
+          {
+            "id": "H0",
+            "label": "Central · H0"
+          },
+          {
+            "id": "H1",
+            "label": "Actuation · H1"
+          },
+          {
+            "id": "H2",
+            "label": "AIKit · H2"
+          },
+          {
+            "id": "H3",
+            "label": "Software Factory · H3"
+          },
+          {
+            "id": "H4",
+            "label": "Workcell · H4"
+          },
+          {
+            "id": "H5",
+            "label": "Quaternal Logic · H5"
+          },
+          {
+            "id": "A0",
+            "label": "Central · A0"
+          },
+          {
+            "id": "A1",
+            "label": "Actuation · A1"
+          },
+          {
+            "id": "A2",
+            "label": "AIKit · A2"
+          },
+          {
+            "id": "A3",
+            "label": "Software Factory · A3"
+          },
+          {
+            "id": "A4",
+            "label": "Workcell · A4"
+          },
+          {
+            "id": "A5",
+            "label": "Quaternal Logic · A5"
+          }
+        ]
+      }
+    }
+  ],
+  "provenance": {
+    "conversion_basis_sha256": "de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e",
+    "standing": "agent-inference",
+    "policy": "One carrier contract for every view. Original relation annotations retained as typed extensions; capability IDs and trace values preserved."
+  },
+  "maintenance": {
+    "cli": {
+      "argv": [
+        "target/debug/workcell"
+      ],
+      "format": "help"
+    },
+    "runtime_paths": [
+      "crates/*/src/**"
+    ]
+  }
+}
