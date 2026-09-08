@@ -264,7 +264,7 @@ fn unmatched_report(
             .list()
             .unwrap_or_default()
             .iter()
-            .filter(|record| harness_slug(*record).map(|s| s == slug).unwrap_or(false))
+            .filter(|record| harness_slug(record).map(|s| s == slug).unwrap_or(false))
             .filter_map(|record| {
                 record["instance_ref"]
                     .as_str()
