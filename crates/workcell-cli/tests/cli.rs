@@ -193,3 +193,80 @@ fn prepared_world_is_observed_and_released_by_fresh_cli_processes() {
     let _ = fs::remove_dir_all(source);
     let _ = fs::remove_dir_all(state);
 }
+
+#[test]
+fn material_reading_composes_receipt_observation_and_exposure_without_rebinding() {
+    let state = temp_path("material-reading");
+    let receipt = state.join("receipt.json");
+    let prepared = run(&[
+        "--state-root",
+        path_arg(&state),
+        "--receipt",
+        path_arg(&receipt),
+        "--json",
+        "prepare",
+        "--require",
+        "shell",
+    ]);
+    assert!(prepared.status.success());
+    let world_ref = json_stdout(&prepared)["world"]["world_ref"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let material = run(&[
+        "--state-root",
+        path_arg(&state),
+        "--receipt",
+        path_arg(&receipt),
+        "--json",
+        "material",
+    ]);
+    assert!(
+        material.status.success(),
+        "{}",
+        String::from_utf8_lossy(&material.stderr)
+    );
+    let reading = json_stdout(&material);
+    assert_eq!(reading["contract"], "workcell.material-reading/v1");
+    assert_eq!(reading["backend"], "native-cli");
+    assert_eq!(reading["consistency"], "sequential-not-atomic");
+    assert_eq!(reading["receipt_world"]["world_ref"], world_ref);
+    assert_eq!(reading["observation"]["status"], "supplied");
+    assert_eq!(reading["exposure"]["status"], "supplied");
+    assert_eq!(reading["bodies"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        reading["observation"]["reading"]["world_ref"],
+        reading["exposure"]["reading"]["world_ref"]
+    );
+
+    let released = run(&[
+        "--state-root",
+        path_arg(&state),
+        "--receipt",
+        path_arg(&receipt),
+        "--json",
+        "release",
+    ]);
+    assert!(released.status.success());
+    let after_release = run(&[
+        "--state-root",
+        path_arg(&state),
+        "--receipt",
+        path_arg(&receipt),
+        "--json",
+        "material",
+    ]);
+    assert!(after_release.status.success());
+    let released_reading = json_stdout(&after_release);
+    assert_eq!(released_reading["receipt_world"]["world_ref"], world_ref);
+    assert_eq!(released_reading["observation"]["status"], "supplied");
+    assert_eq!(
+        released_reading["observation"]["reading"]["observations"][0]["state"],
+        "unavailable"
+    );
+    assert_eq!(released_reading["exposure"]["status"], "supplied");
+    assert_eq!(released_reading["bodies"].as_array().unwrap().len(), 0);
+
+    let _ = fs::remove_dir_all(state);
+}

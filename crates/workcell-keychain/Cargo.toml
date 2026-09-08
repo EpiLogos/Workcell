@@ -1,0 +1,12 @@
+[package]
+name = "epilogos-workcell-keychain"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+epilogos-workcell-core = { path = "../workcell-core" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+security-framework-sys = "2"
