@@ -153,6 +153,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "epilogos-workcell-onepassword"
+version = "0.1.0"
+dependencies = [
+ "epilogos-workcell-core",
+]
+
+[[package]]
 name = "epilogos-workcell-opensandbox"
 version = "0.1.0"
 dependencies = [

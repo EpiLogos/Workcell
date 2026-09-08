@@ -44,7 +44,10 @@ fn git(repository: &Path, args: &[&str]) -> String {
 fn repository() -> (PathBuf, String) {
     let path = temp_path("git-source");
     fs::create_dir_all(&path).unwrap();
-    git(&path, &["init"]);
+    // --template= skips the global template copy; the copy step races under
+    // workspace-wide parallel test runs (observed: "cannot copy .../info/
+    // exclude ... File exists" flakes) and the fixture sets its own config.
+    git(&path, &["init", "--template="]);
     git(&path, &["config", "user.email", "workcell@example.invalid"]);
     git(&path, &["config", "user.name", "Workcell Fixture"]);
     git(&path, &["config", "commit.gpgsign", "false"]);
