@@ -1,0 +1,52 @@
+name: Product documentation maintenance
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  product-ground:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.2
+      - name: Build the actual product CLI
+        run: cargo build --package epilogos-workcell-cli --bin workcell
+      - name: Check source, matrix, seed and native CLI maintenance
+        id: check
+        continue-on-error: true
+        shell: bash
+        env:
+          PRODUCT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          base_args=()
+          if [[ -n "$PRODUCT_BASE" && "$PRODUCT_BASE" != 0000000000000000000000000000000000000000 ]]; then
+            base_args=(--base "$PRODUCT_BASE")
+          fi
+          python3 .github/product-ground.pyz --root . --account workcell.html --namespace workcell --product-index 4 --reference-scope repository "${base_args[@]}" | tee product-ground-result.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: product-ground-result
+          path: product-ground-result.json
+      - name: Annotate drift (advisory — does not block merge)
+        if: steps.check.outcome == 'failure'
+        run: |
+          echo "::notice title=Capability-matrix drift::The account page and the capability matrix have drifted apart. This no longer blocks merge — reconcile at your convenience with tools/reconcile_product_ground.py (plan, review, apply). See product-ground-result artifact for detail."

@@ -1,0 +1,1016 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<meta name="color-scheme" content="light dark" />
+<title>Workcell · Product account</title>
+<meta name="description" content="Workcell: a candidate six-question account of material environments, native operations and lifecycle.">
+<style>
+:root{
+  --left-w:286px;
+  --right-w:326px;
+  --top-h:56px;
+  --paper:#f5f8fb;
+  --sheet:#ffffff;
+  --sheet-2:#eef4f8;
+  --ink:#132235;
+  --muted:#5e6d7f;
+  --faint:#8c98a7;
+  --line:#d8e1e9;
+  --line-strong:#bdcad6;
+  --blue:#1f5f9d;
+  --blue-deep:#184c7c;
+  --blue-soft:#e7f0fa;
+  --teal:#197f82;
+  --teal-soft:#e6f4f3;
+  --orange:#a45c2e;
+  --orange-soft:#f5ece6;
+  --danger:#9b4e50;
+  --success:#477a5e;
+  --focus:#2a78c5;
+  --shadow:0 12px 34px rgba(22,43,68,.08);
+  --radius:14px;
+  --reading:78ch;
+  --wide:1120px;
+  --full:1400px;
+  --ui:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --serif:Georgia,"Times New Roman",Times,serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+}
+html[data-theme="dark"]{
+  --paper:#071320;
+  --sheet:#0c1b2c;
+  --sheet-2:#10243a;
+  --ink:#e7edf5;
+  --muted:#a7b4c4;
+  --faint:#7c8ba0;
+  --line:#21364d;
+  --line-strong:#35536f;
+  --blue:#77abe5;
+  --blue-deep:#9bc5ef;
+  --blue-soft:#102e4d;
+  --teal:#5ab5b3;
+  --teal-soft:#103536;
+  --orange:#c57a45;
+  --orange-soft:#3b281d;
+  --danger:#ce8587;
+  --success:#80ad92;
+  --focus:#8ec3ff;
+  --shadow:0 18px 42px rgba(0,0,0,.3);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:auto;background:var(--paper)}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--serif);font-size:16.5px;line-height:1.7;text-rendering:optimizeLegibility}
+button,input,textarea,select{font:inherit}
+a{color:var(--blue);text-decoration-thickness:.08em;text-underline-offset:.16em}
+a:hover{color:var(--teal)}
+button{color:inherit}
+::selection{background:var(--blue-soft)}
+:focus-visible{outline:3px solid color-mix(in srgb,var(--focus) 65%,transparent);outline-offset:2px}
+.app{min-height:100vh;display:grid;grid-template-columns:var(--left-w) minmax(0,1fr) var(--right-w);grid-template-rows:var(--top-h) 1fr;grid-template-areas:"top top top" "left main right";transition:grid-template-columns .18s ease}
+body.left-closed .app{grid-template-columns:0 minmax(0,1fr) var(--right-w)}
+body.right-closed .app{grid-template-columns:var(--left-w) minmax(0,1fr) 0}
+body.left-closed.right-closed .app{grid-template-columns:0 minmax(0,1fr) 0}
+.topbar{grid-area:top;position:sticky;top:0;z-index:80;height:var(--top-h);display:flex;align-items:center;gap:9px;padding:0 12px;border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--sheet) 94%,transparent);backdrop-filter:blur(14px)}
+.brand{min-width:0;margin-right:auto;display:flex;align-items:baseline;gap:10px;font-family:var(--ui)}
+.brand strong{font-size:12px;letter-spacing:.05em;text-transform:uppercase;white-space:nowrap}
+.brand span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:11.5px}
+.icon-btn{width:34px;height:34px;display:grid;place-items:center;padding:0;border:1px solid var(--line);border-radius:9px;background:var(--sheet);cursor:pointer;font:700 13px/1 var(--ui)}
+.icon-btn:hover{background:var(--blue-soft);border-color:var(--line-strong)}
+.route-chip{max-width:230px;height:32px;display:flex;align-items:center;gap:7px;padding:0 10px;border:1px solid var(--line);border-radius:999px;background:var(--sheet);color:var(--muted);font:600 10.5px/1 var(--ui);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.route-chip code{color:var(--teal);font:800 10px/1 var(--mono)}
+.left-rail,.right-rail{position:sticky;top:var(--top-h);height:calc(100vh - var(--top-h));overflow:auto;background:var(--sheet);z-index:50;transition:transform .18s ease,opacity .18s ease}
+.left-rail{grid-area:left;border-right:1px solid var(--line);padding:18px 13px 34px}
+.right-rail{grid-area:right;border-left:1px solid var(--line);padding:18px 16px 34px}
+body.left-closed .left-rail{transform:translateX(-100%);opacity:0;pointer-events:none}
+body.right-closed .right-rail{transform:translateX(100%);opacity:0;pointer-events:none}
+.main{grid-area:main;min-width:0;background:var(--paper);container-type:inline-size;container-name:account-main}
+.rail-label{margin:4px 7px 10px;color:var(--faint);font:750 9.5px/1.2 var(--ui);letter-spacing:.12em;text-transform:uppercase}
+.surface-nav{display:grid;gap:5px}.nav-group{border-radius:10px}.nav-head{display:grid;grid-template-columns:minmax(0,1fr) 30px;align-items:stretch}.nav-select,.nav-toggle{border:0;background:transparent;cursor:pointer}.nav-select{display:grid;grid-template-columns:36px minmax(0,1fr);gap:7px;text-align:left;padding:9px 7px;border-radius:9px 0 0 9px}.nav-toggle{border-radius:0 9px 9px 0;font:800 11px/1 var(--ui);color:var(--muted)}.nav-head:hover .nav-select,.nav-head:hover .nav-toggle{background:var(--blue-soft)}.nav-group.active>.nav-head .nav-select,.nav-group.active>.nav-head .nav-toggle{background:var(--blue-soft)}.nav-group.active>.nav-head .nav-select{box-shadow:inset 3px 0 0 var(--blue)}.nav-q{font:800 10.5px/1.5 var(--mono);color:var(--blue)}.nav-name{font:700 11.5px/1.3 var(--ui);color:var(--ink)}.nav-gloss{display:block;margin-top:2px;color:var(--muted);font:400 10px/1.35 var(--ui)}.nav-toggle span{display:inline-block;transition:transform .15s ease}.nav-group.expanded .nav-toggle span{transform:rotate(90deg)}.subnav{display:none;margin:2px 0 5px 35px;padding:2px 0 5px 7px;border-left:1px solid var(--line)}.nav-group.expanded .subnav{display:grid;gap:1px}.subnav a{display:grid;grid-template-columns:32px minmax(0,1fr);gap:5px;padding:6px 8px;border-radius:7px;color:var(--muted);text-decoration:none;font:10.5px/1.35 var(--ui)}.subnav a:hover{background:var(--sheet-2);color:var(--ink)}.subnav a.active{background:var(--teal-soft);color:var(--ink)}.subnav code{font:800 9.5px/1.35 var(--mono);color:var(--teal)}
+.context-head{padding-bottom:15px;margin-bottom:14px;border-bottom:1px solid var(--line)}.context-kicker{margin-bottom:7px;color:var(--faint);font:750 9.5px/1 var(--ui);letter-spacing:.11em;text-transform:uppercase}.context-head h3{margin:0 0 5px;font:600 17px/1.25 var(--serif)}.context-head p{margin:0;color:var(--muted);font:11.5px/1.5 var(--ui)}.note-field{margin-top:15px}body[data-notes="false"] .note-field{display:none}.note-field label{display:block;margin-bottom:7px;color:var(--muted);font:700 10.5px/1.35 var(--ui)}.note-field textarea{width:100%;min-height:128px;resize:vertical;padding:10px 11px;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--ink);outline:none;font:12.5px/1.55 var(--ui)}.note-field textarea:focus{border-color:var(--blue)}.save-state{margin-top:5px;color:var(--faint);font:9.5px/1.3 var(--ui)}.context-slot{margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}.context-slot:empty{display:none}.context-slot h4{margin:0 0 8px;font:750 10px/1.3 var(--ui);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}.right-details{margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}.right-details summary{cursor:pointer;color:var(--muted);font:700 10.5px/1.4 var(--ui)}.meta-list{display:grid;gap:7px;margin:10px 0 0}.meta-row{display:grid;grid-template-columns:72px 1fr;gap:8px;font:10px/1.45 var(--ui)}.meta-row dt{color:var(--faint)}.meta-row dd{margin:0;color:var(--muted);overflow-wrap:anywhere}.source-list{display:grid;gap:8px;margin-top:10px}.source-list a{display:block;padding:8px 9px;border:1px solid var(--line);border-radius:9px;background:var(--paper);text-decoration:none;color:var(--ink);font:10.5px/1.4 var(--ui)}.source-list a:hover{border-color:var(--blue)}.source-empty{margin-top:9px;color:var(--faint);font:10px/1.4 var(--ui)}
+.surface{display:none;min-height:calc(100vh - var(--top-h));padding:clamp(34px,4vw,68px) clamp(22px,5vw,84px) 112px}.surface.active{display:block}.surface-inner{width:min(100%,var(--surface-max,var(--full)));margin:0 auto}.hero{margin-bottom:clamp(70px,8vw,118px);padding-bottom:clamp(34px,5vw,58px);border-bottom:1px solid var(--line)}.hero-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:18px;font-family:var(--ui)}.ql-badge{display:inline-flex;align-items:center;height:27px;padding:0 9px;border-radius:999px;background:var(--blue-soft);color:var(--blue);font:800 10.5px/1 var(--mono)}.hero-label{color:var(--muted);font:750 10px/1 var(--ui);letter-spacing:.09em;text-transform:uppercase}h1{max-width:18ch;margin:0;font-family:var(--serif);font-size:clamp(40px,5vw,66px);font-weight:500;line-height:1.02;letter-spacing:-.03em}.hero-deck{max-width:var(--reading);margin:20px 0 0;color:var(--muted);font-size:clamp(18px,1.8vw,22px);line-height:1.5}.hero-meta{display:flex;gap:10px 16px;flex-wrap:wrap;margin-top:22px;color:var(--faint);font:10.5px/1.4 var(--ui)}.ql-node{scroll-margin-top:calc(var(--top-h) + 26px);margin:0 0 clamp(76px,9vw,126px)}.node-head{margin-bottom:clamp(28px,3.4vw,40px)}.node-eyebrow{margin-bottom:10px;color:var(--teal);font:750 9.5px/1.2 var(--ui);letter-spacing:.1em;text-transform:uppercase}.ql-node h2{max-width:25ch;margin:0;font-family:var(--serif);font-size:clamp(26px,3vw,40px);font-weight:500;line-height:1.12;letter-spacing:-.018em}.node-deck{max-width:var(--reading);margin:13px 0 0;color:var(--muted);font-size:17.5px;line-height:1.58}.prose{max-width:var(--reading);font-size:16.5px;line-height:1.72}.prose p{margin:0 0 1em}.prose p:last-child{margin-bottom:0}.prose h3{margin:2.2em 0 .7em;font:600 22px/1.25 var(--serif)}.prose h4{margin:1.8em 0 .55em;font:750 12px/1.35 var(--ui);letter-spacing:.03em}.prose ul,.prose ol{margin:.9em 0 1.2em;padding-left:1.35em}.prose li{margin:.32em 0}.prose blockquote{margin:28px 0;padding:0 0 0 18px;border-left:3px solid var(--teal);color:var(--muted);font-size:18px;line-height:1.6}.prose code{font:90%/1 var(--mono);background:var(--sheet-2);padding:.12em .28em;border-radius:4px}.reading{width:min(100%,var(--reading))}.wide{width:min(100%,var(--wide))}.full{width:min(100%,var(--full))}.centered{margin-left:auto;margin-right:auto}
+.definition,.claim,.note,.warning,.evidence{max-width:var(--reading);margin:28px 0;padding:18px 20px;border-radius:0 12px 12px 0;background:var(--sheet);border:1px solid var(--line);border-left:4px solid var(--blue)}.definition{background:var(--blue-soft)}.claim{border-left-color:var(--teal);background:var(--teal-soft)}.note{border-left-color:var(--line-strong)}.warning{border-left-color:var(--orange);background:var(--orange-soft)}.evidence{border-left-color:var(--success)}.block-label{margin-bottom:7px;color:var(--muted);font:800 9.5px/1.3 var(--ui);letter-spacing:.08em;text-transform:uppercase}.definition p,.claim p,.note p,.warning p,.evidence p{margin:0;font-size:15.5px;line-height:1.6}.figure{margin:34px 0;overflow:hidden;border:1px solid var(--line);border-radius:var(--radius);background:var(--sheet);box-shadow:var(--shadow)}.figure-head{display:flex;justify-content:space-between;gap:14px;align-items:start;padding:14px 16px;border-bottom:1px solid var(--line);font-family:var(--ui)}.figure-head strong{font-size:11.5px;line-height:1.35}.figure-head span{color:var(--muted);font-size:10px;line-height:1.4;text-align:right}.figure-body{padding:clamp(14px,2vw,24px);overflow:auto}.figure figcaption{padding:12px 16px 14px;border-top:1px solid var(--line);color:var(--muted);font:10.8px/1.55 var(--ui)}.svg-wrap svg{display:block;width:100%;height:auto}.svg-wrap.scroll-x svg{min-width:720px}.table-wrap{margin:28px 0;overflow:auto;border:1px solid var(--line);border-radius:12px;background:var(--sheet)}table{width:100%;border-collapse:collapse;font:12.5px/1.5 var(--ui)}th,td{padding:11px 13px;border-bottom:1px solid var(--line);vertical-align:top;text-align:left}th{background:var(--sheet-2);color:var(--muted);font-size:9.5px;letter-spacing:.06em;text-transform:uppercase}tr:last-child td{border-bottom:0}.code-block,.equation{margin:28px 0;border:1px solid var(--line);border-radius:12px;background:var(--sheet);overflow:auto}.code-block pre{margin:0;padding:18px 20px;font:12.5px/1.6 var(--mono)}.equation{padding:20px 22px;font:500 clamp(20px,2.6vw,30px)/1.4 var(--serif)}.source-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:28px 0}.source-card{display:block;padding:14px 15px;border:1px solid var(--line);border-radius:12px;background:var(--sheet);text-decoration:none;color:var(--ink)}.source-card:hover{border-color:var(--blue);box-shadow:var(--shadow)}.source-card strong{display:block;font:700 11.5px/1.4 var(--ui)}.source-card span{display:block;margin-top:4px;color:var(--muted);font:10.5px/1.5 var(--ui)}.two-col{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:clamp(24px,4vw,54px);align-items:start}.three-col{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.mockup-frame{margin:32px 0;border:1px solid var(--line-strong);border-radius:16px;background:var(--sheet);overflow:hidden;box-shadow:var(--shadow)}.mockup-toolbar{height:38px;display:flex;align-items:center;gap:6px;padding:0 12px;border-bottom:1px solid var(--line);background:var(--sheet-2)}.mockup-dot{width:8px;height:8px;border-radius:50%;background:var(--line-strong)}.mockup-body{min-height:260px;padding:20px}.controls{display:grid;gap:18px;padding:18px;border:1px solid var(--line);border-radius:12px;background:var(--sheet)}.control-row{display:grid;grid-template-columns:minmax(150px,.5fr) minmax(0,1fr) auto;gap:14px;align-items:center;font-family:var(--ui)}.control-row label{font-size:11.5px;font-weight:700}.control-row output{min-width:64px;text-align:right;color:var(--teal);font:800 11px/1 var(--mono)}input[type="range"]{width:100%;accent-color:var(--teal)}.toggle-row{display:flex;gap:7px;flex-wrap:wrap}.toggle-row button{padding:8px 11px;border:1px solid var(--line);border-radius:9px;background:var(--paper);cursor:pointer;font:700 10.5px/1.2 var(--ui)}.toggle-row button[aria-pressed="true"]{border-color:var(--blue);background:var(--blue);color:#fff}.timeline{position:relative;display:grid;gap:18px;margin:28px 0;padding-left:26px}.timeline:before{content:"";position:absolute;left:7px;top:5px;bottom:5px;width:1px;background:var(--line-strong)}.timeline-item{position:relative}.timeline-item:before{content:"";position:absolute;left:-23px;top:.55em;width:8px;height:8px;border-radius:50%;background:var(--teal);box-shadow:0 0 0 4px var(--paper)}.timeline-item time{display:block;margin-bottom:3px;color:var(--faint);font:700 9.5px/1.3 var(--ui)}.timeline-item h4{margin:0 0 4px;font:650 16px/1.3 var(--serif)}.timeline-item p{margin:0;color:var(--muted);font:11.5px/1.5 var(--ui)}
+@media (max-width:1319px){.app{grid-template-columns:var(--left-w) minmax(0,1fr);grid-template-areas:"top top" "left main"}body.left-closed .app,body.left-closed.right-closed .app{grid-template-columns:0 minmax(0,1fr)}body.right-closed .app{grid-template-columns:var(--left-w) minmax(0,1fr)}.right-rail{position:fixed;top:var(--top-h);right:0;width:var(--right-w);height:calc(100vh - var(--top-h));border-left:1px solid var(--line);box-shadow:-18px 0 40px rgba(16,35,56,.14)}body.right-closed .right-rail{transform:translateX(100%);opacity:0;pointer-events:none}}
+@media (max-width:979px){.app{grid-template-columns:minmax(0,1fr);grid-template-areas:"top" "main"}body.left-closed .app,body.right-closed .app,body.left-closed.right-closed .app{grid-template-columns:minmax(0,1fr)}.left-rail{position:fixed;top:var(--top-h);left:0;width:min(var(--left-w),88vw);height:calc(100vh - var(--top-h));box-shadow:18px 0 40px rgba(16,35,56,.14)}.right-rail{width:min(var(--right-w),90vw)}.route-chip{display:none}.surface{padding-left:clamp(18px,5vw,42px);padding-right:clamp(18px,5vw,42px)}}
+@container account-main (max-width:880px){.two-col,.three-col,.source-grid{grid-template-columns:1fr}.control-row{grid-template-columns:1fr}.control-row output{text-align:left}}
+@container account-main (max-width:620px){.hero{margin-bottom:66px}.ql-node{margin-bottom:78px}.node-head{margin-bottom:26px}.figure-head{display:block}.figure-head span{display:block;margin-top:4px;text-align:left}}
+@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+@media print{:root{--paper:#fff;--sheet:#fff;--ink:#000;--muted:#444;--line:#bbb;--line-strong:#888}.topbar,.left-rail,.right-rail{display:none!important}.app{display:block}.main{display:block}.surface{display:block!important;padding:24mm 18mm;min-height:auto;break-before:page}.surface:first-child{break-before:auto}.hero{margin-bottom:18mm}.ql-node{break-inside:avoid-page}.figure,.table-wrap,.code-block,.equation{box-shadow:none;break-inside:avoid}a{color:#000;text-decoration:none}a[href^="http"]:after{content:" (" attr(href) ")";font-size:8pt;overflow-wrap:anywhere}}
+
+.right-closed .right-rail,.left-closed .left-rail{display:none}
+.svg-wrap{overflow-x:auto}.svg-wrap svg{min-width:640px}
+.unit-sources{display:flex;flex-wrap:wrap;gap:8px 20px;margin-top:22px;padding-top:14px;border-top:1px solid var(--line);font-size:12px}.unit-sources a{color:var(--muted)}
+.prose a[data-resource]{text-decoration:underline;text-underline-offset:3px}.source-unresolved{color:#a02d22}.surface-inner{max-width:1120px}.prose li{margin-bottom:.65em}
+@media print{.surface{display:block!important} .left-rail,.right-rail,.topbar{display:none!important} .main{margin:0!important}}
+.prose pre{max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere;overflow-x:auto}.capability-links{font-size:.9em;color:var(--muted)}
+[data-surface="whole"] .hero{margin-bottom:40px;padding-bottom:30px}[data-surface="whole"] .ql-node{margin-bottom:42px}[data-surface="whole"] .node-head{margin-bottom:16px}[data-surface="whole"] .ql-node h2{max-width:36ch;font-size:clamp(25px,2.3vw,31px)}
+</style>
+</head>
+<body class="right-closed" data-notes="true">
+<script type="application/json" id="account-provenance">{
+  "uid": "workcell-product-ground",
+  "kind": "html-account",
+  "title": "Workcell product account",
+  "project": "project:workcell",
+  "status": "draft-for-review",
+  "provenance": "generated-suggestion",
+  "standing": "agent-inference",
+  "ql": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "created": "2026-09-06",
+  "updated": "2026-09-06",
+  "source_basis": [
+    {
+      "path": "../O-I/docs/HUMAN-AGENT-COVENANT.md",
+      "sha256": "79dccdffee7cb340fddaf049a9d898cea3b99bfb577cbeec8b988cfc79c01ef5",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "../O-I/docs/positions/FOUNDING-POSITIONS.md",
+      "sha256": "f41ed11c377133a579d1284d2366167298050c955dedbc61fb5971e3d523e490",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "../Quaternal-Logic/README.md",
+      "sha256": "f2dc1a54506bc5affc0fb0ffa79ee1854574145f36325858b15bdb81938ab078",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "../Software-Factory/docs/canon/QL-SOFTWARE-FACTORY-PRIMITIVE-RELATIONS.md",
+      "sha256": "171fc11e1fecc1ce20e9bcbef036fbce2aaa606208ab2ba6636707908358b773",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "../github-recovery-mirror/mirror/Workcell/issues/1.comments.json",
+      "sha256": "3da01a8e2af45a4be4b475caa8adb71d5462f041fa5dec4d640947ef015890eb",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "../github-recovery-mirror/mirror/Workcell/issues/1.json",
+      "sha256": "8c2b58ec53c730b54691cd4c052aee92618de5ec5f3d87a76201dd5dcb77a758",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "../github-recovery-mirror/mirror/Workcell/issues/20.comments.json",
+      "sha256": "3228967ccfa46daad77c1f92ccf429497cb8db38b6ee2c2cc967359adf9ec067",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "../github-recovery-mirror/mirror/Workcell/issues/20.json",
+      "sha256": "d4d73b809faf36c8e498adfe609b177be90800cbe26577f2a5a18c9ce31f0c09",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "../github-recovery-mirror/mirror/Workcell/issues/21.comments.json",
+      "sha256": "a37793bb5e2df435056135aaf7f28030a1f013905a66aedd5d4e97960f6bf840",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "../github-recovery-mirror/mirror/Workcell/issues/21.json",
+      "sha256": "c34f5f4d2f3b294150ee8dba2c6ea515ea3e320945bdd045d16f08fb69b672b1",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "../github-recovery-mirror/mirror/Workcell/issues/22.comments.json",
+      "sha256": "dde7070e8cf494cbef69968b8211416fbda684228fc474508fd791feab2e179d",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "../github-recovery-mirror/mirror/Workcell/issues/22.json",
+      "sha256": "b231317c1984f569643697d87af1e101b7e57f0db555483bc25f6331b5d26078",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "../github-recovery-mirror/mirror/Workcell/issues/26.comments.json",
+      "sha256": "7f326b62b59570ac31a3ca0ab3b6ee6b72a740230ad124753256bd894be36f7d",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "../github-recovery-mirror/mirror/Workcell/issues/26.json",
+      "sha256": "74119d0247ec3015ec8ca2951aaaa13a5519bf76db8872eb5557da09ba0c968b",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "../github-recovery-mirror/mirror/Workcell/issues/29.comments.json",
+      "sha256": "a987eab0a94f1095bc6af97fd7f9cf5eb74bc0056b2b4a81933d68515050ffd3",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "../github-recovery-mirror/mirror/Workcell/issues/29.json",
+      "sha256": "765e228d139bb5ae93c3ff51becceb34fee7f0b772f09cb78914eb9612b3d343",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "../github-recovery-mirror/mirror/Workcell/issues/43.comments.json",
+      "sha256": "8ee099f4f6bfb2e97716b4da02453de5ae9052ca387768e92722ecf1abbce7f2",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "../github-recovery-mirror/mirror/Workcell/issues/43.json",
+      "sha256": "efa27729f2aa2f72acdefa650409ed190188a50c4ddffa8cac8a13d202a7ee31",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "README.md",
+      "sha256": "78f41176b1060754837114166295d2ec36b686945dd241312e982b41acf47829",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-artifact/src/directory.rs",
+      "sha256": "2fead2a2a47fc096ec6db5ef445a15878567a198724699857fca4cf50c4b33a6",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-candidate/src/lib.rs",
+      "sha256": "9288041a634b6d609829228326499b7a3401594304b236ff1e51b9f72c4ed377",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-cli/src/bin/workcell.rs",
+      "sha256": "67c762429b371bf66bd699631517e22ad2db6341753d74c0fb0150cc26e43a5a",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-cli/src/bin/workcell_entry.rs",
+      "sha256": "20c1a9d755a8db5730f2847845ed7cd690ed32e9ece8ce9795cf888ab4c626e8",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-cli/tests/cli.rs",
+      "sha256": "e2f4a79c799025f33f8aaa6b95feca03ef221a9051d51f7d5992074bc6be7455",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-cli/tests/remote_cli.rs",
+      "sha256": "837e8608a86f4abf868b455b3d887785b49fb3796aaae07d3026a035576e1de1",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-control/src/network.rs",
+      "sha256": "9e093acb560a851a73354189bf01ee7ab008edab3aef12b4618cde363866671e",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-control/src/service.rs",
+      "sha256": "3d6100feeda385de10310e2903f149b41998b20298d1c9ecda48c02fb61f09ae",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-control/tests/tcp.rs",
+      "sha256": "6a1c2371a17eb1fe698ffd649b3d21f0f8c02a8bfe30e8f6e897a14568838837",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-core/src/contract/material.rs",
+      "sha256": "71d6431c8ac5642e79814af0dae7daa5ffa76fc49b7ee063035e53702c324fb1",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-core/src/contract/planning.rs",
+      "sha256": "543746d47369b0cf8ce27d40e186318524461acdbe01d7c34b1648c50d15006f",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-core/src/secret.rs",
+      "sha256": "d584f1cd980b7bc0318ed51effdb9cb2df86840fec0d4c1288a6287d966adf51",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-core/src/world/compose.rs",
+      "sha256": "eb24ef29ffb9739d526f2903ff23e91ca8bba1f919d6fc63ddacf3a9e1a14129",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-core/src/world/mod.rs",
+      "sha256": "8ada2c91cf95ac10bb9003740ab11f8cece99a75163da8256faa10c30176ea7c",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-core/tests/lifecycle_reconciliation.rs",
+      "sha256": "2ac837f014e7eb9bb19c328ba2cccd2f7d2fac29126772cdc1bdbc031f0570c8",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-core/tests/material_world.rs",
+      "sha256": "f63188f8dfde612a49b881a0caaae60294e041245419c842404383722a79ffd2",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-core/tests/planning_degradation.rs",
+      "sha256": "9969e4a3d18937fb81d3f62b6135ce5ba14e11da5077ef1ad9060c44a7a4009a",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-fabric/src/lib.rs",
+      "sha256": "d4f68d4f1184b39185218e257eed90052bbc752ad17b81971e8368573fc9d8ce",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-opensandbox/src/composition.rs",
+      "sha256": "5a945f9c935741508d72da20eda675c19351863fb017780d0689a2f27a3efc13",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-opensandbox/src/credential.rs",
+      "sha256": "bbd61b0e230169edd460e247839428fe22bbe5e45350722215485e3fc3ef9fcb",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-opensandbox/src/project_world.rs",
+      "sha256": "377c0c3c0d5b7051c7389f0db244bf637925d7d8a2f56976db5193ac0592a8e1",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-opensandbox/src/root.rs",
+      "sha256": "f755b97726431f073ac0eab482e272350032c67dac2d54e7ec130b9db6bd6438",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-opensandbox/tests/opensandbox_conformance.rs",
+      "sha256": "b1a8d4b92a85e4119648846f12c8fa5cde8f17964e9633ec109d13a05c9fcb8e",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-placement/src/lib.rs",
+      "sha256": "da3215691e70358d81e6de4cc690abfc63d25b4e2e74583343e2241e5248b455",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-placement/tests/multi_workcell.rs",
+      "sha256": "c0fd664b8c1f32e309538f1435ebaf7712573d924bce41696da27d3a5e74185b",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-runtime/src/host.rs",
+      "sha256": "b01293184aa8cde3e84cb3f2e70500ea5699bb17677d261e2e84335bd88715df",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-runtime/src/local.rs",
+      "sha256": "aaf9c45b35b345e0d6ba1147fcfabb596a657666dee656a70aefbc13f4c3d0aa",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-runtime/src/service.rs",
+      "sha256": "9055c902827d54a3b0b90703b7358ee7cdd1429264ab24774a272c2e4a2c99c3",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-runtime/tests/collapsed_local.rs",
+      "sha256": "04986b2ae5c72953322fa68eac20e08f30c7e52ca69619ddfa7154aaad9c9b56",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-runtime/tests/expose_collect.rs",
+      "sha256": "869883899437c51c9dc3cf47519c01120254f3e1bb1611f27093b3ff9425e441",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-runtime/tests/hosting_conformance.rs",
+      "sha256": "7480e370ed6d2e46e249fa3238cffe1a6565e7c3f1ea5a58b3fe8ac6c9a18671",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-runtime/tests/managed_host_service.rs",
+      "sha256": "fc7c0f86067a7a72df2c0d113256986b636bf4a43b1cec447f23b10bbad6034f",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-runtime/tests/model_serving_conformance.rs",
+      "sha256": "345dcc3f397fc3866dd4b1777ae2b2586a5100ad5e63405a00e52c059474354d",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-sdk/README.md",
+      "sha256": "f050c690e702b54cdbc2a6a6e6821a2de5933b0ba4cb0ee2ebf3cc249a4a0ddc",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-sdk/src/lib.rs",
+      "sha256": "fb968235760e31271ee7f09679adbc58358929ec4144ed5dc00f1a506f99a9d8",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-sdk/tests/sdk_conformance.rs",
+      "sha256": "753b0ed551845c33d0ec78edd9a8b49bb8014f650f04088ef0457856589e5d6f",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-tailscale/src/lib.rs",
+      "sha256": "ddb2b8deed2b61f24b73c6c7129786175f98bf808e1ecff26567c4db3b7ed65d",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-tailscale/tests/aikit_gateway_fabric.rs",
+      "sha256": "a3550c9add64c4d1019a17a0072e7c4938179cff253b492843b8ad9f4b4405ab",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-workspace/src/lib.rs",
+      "sha256": "7dac059378256629975290ee4f6fcc87acec89bc385fabb6a313580162473c05",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-workspace/tests/directory_provider.rs",
+      "sha256": "c265c7cded3f89f591a9a45c1dcc35fe14c46a60c56e336b9f28f8bcab919173",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-workspace/tests/git_worktree_provider.rs",
+      "sha256": "1b69a9bd2a9b9838a3d9b19aace22c73a8d4f8295cdc12b07e8622f9170beff3",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-workspace/tests/restart_recovery.rs",
+      "sha256": "36e8626fdd0e2ffc8388c325c718ba0300d6910f4f6dde58e73de8a0ad27e819",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "docs/ARCHITECTURE.md",
+      "sha256": "3cee6b3031221fd8f9ee9f54470e2667d6ddfb673df264cac848289c27f62ab8",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "docs/CANDIDATE-MATERIALISATION.md",
+      "sha256": "b090c18fea868ae783abffc2c72f0a768d10a68c35626e11c569e3e0ede5f446",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "docs/CONNECTIVITY-FABRIC.md",
+      "sha256": "1ff4561fdedb012523da25d27e718fbdd65793a06628f9b48fb5839a6c397762",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "docs/CONTROL-SERVICE-AND-AGENT-HOSTING.md",
+      "sha256": "57e1bfbc4f8d5ce835d16c4238f0a8b7194ffefb0626d80eb86714b3b634e62e",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "docs/DEPLOYMENT-PROFILES.md",
+      "sha256": "820cb43f1400a28dce297ba7a0356521fe7ff6470c7aa0c9a27f5b2774bd38e5",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "docs/LIFECYCLE-RECONCILIATION.md",
+      "sha256": "db60f6a0706d732ec993db8d91df89038c776d53ae45da7cbe6d9596506839c1",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "docs/MODEL-SERVING-CONFORMANCE.md",
+      "sha256": "eab149e3c4d3ce537668b89259a86db0e38eac5654ee1c07c2ebf5faa9d056c2",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "docs/MULTI-WORKCELL-PLACEMENT.md",
+      "sha256": "172238734374520711fb02482a9c54c242a27ede8f1761837bc6456efeb02e55",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "docs/OPENSANDBOX-SOURCE-INTEGRATION.md",
+      "sha256": "8e698afe805d625deebca8dee8222abbc481e048056af487b06785212a43f4f5",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "docs/WAYFINDER.md",
+      "sha256": "fe9464679cef701e9af211b0bbdb6478d3bb4d80dfd76dec8d464175a91591bc",
+      "role": "native source or local mirrored ticket; consulted as bounded evidence"
+    },
+    {
+      "path": "crates/workcell-candidate/tests/candidate_materialisation.rs",
+      "sha256": "9b627800e124d551b2552e62b03599a911f5fd52465ec9c6e1733cca413bcffc",
+      "role": "Native functional case or implementation; source-inspected"
+    },
+    {
+      "path": "crates/workcell-opensandbox/src/lib.rs",
+      "sha256": "b73adaff650ed308ddeba354d04887ec58ca6180572bb17fd2740cbbc388208a",
+      "role": "Native functional case or implementation; source-inspected"
+    }
+  ],
+  "relations": [
+    {
+      "relation": "informed-by",
+      "target": "source:foundations"
+    },
+    {
+      "relation": "references",
+      "target": "workcell:matrix:md"
+    }
+  ],
+  "generator": "Agent source recovery using native Workcell documentation, mirrored ticket refinements and bounded functional verification",
+  "seed_basis": {
+    "origin": "Agent recovery from native Workcell sources and local issue snapshots",
+    "standing": "agent-inference",
+    "whole_anchor": "0/1",
+    "question_labels": [
+      "Why?",
+      "What?",
+      "How?",
+      "Who / Whereby?",
+      "Where / When?",
+      "Why-For?"
+    ],
+    "editorial_treatment": "Candidate synthesis for human review; no supplied Workcell human seed or ratification asserted"
+  },
+  "verification": {
+    "date": "2026-09-06",
+    "checkout": "dc076fdf0c3e12835c17ded95ef199e200f7f8e1",
+    "command": "cargo test -p epilogos-workcell-runtime --test collapsed_local -p epilogos-workcell-workspace --test directory_provider --test git_worktree_provider --test restart_recovery -p epilogos-workcell-cli --test cli --test remote_cli",
+    "passed": 13,
+    "failed": 0,
+    "scope": "Selected real temporary filesystem, Git and local process/service tests; no external physical provider acceptance"
+  },
+  "source_policy": "Editable candidate source; recognition is a separate human event.",
+  "source_basis_path_base": "repository-root",
+  "matrix_basis": {
+    "protocol": "ql-capability-matrix/1",
+    "csv_sha256": "54aa00be0da17dc18176e76c61323564df167ac33b7e5dfbeab8270938a6354f",
+    "manifest_sha256": "002afaef8d37a31ceffd8edc2e4e7f074e830f406a437281ad1e6252aa5b5c20",
+    "record_sha256": {
+      "cap.workcell.discovery": "53eafc08d021ab51ad6d6fec4bd80c4074dd90b94cdcdeaa6363276f34d80398",
+      "cap.workcell.planning": "04d1791271e23c5cbf9384ebee29089d5dfb07c71acff900670eeb91e3609567",
+      "cap.workcell.cli": "a069af554698765fcdb361c731efeab26d5b6ae646c2a2dc5325895af0be50e5",
+      "cap.workcell.local-world": "1d48b48e7a9ac1bc9cce2c9a4800f7a0f0549a67606d97aa61a0b043cc960005",
+      "cap.workcell.workspace": "6bbec103ef4067508ff12c99c2d83b346aaa1f29b32ef9a3e95a7d629a7f7999",
+      "cap.workcell.bindings": "d51f15ea8570fa93f50bcc573726865de07a7b00c10ed91074143de6477786ca",
+      "cap.workcell.services": "e419980e1c5d6be8ebfbb9935b53b91bd120184649ad4d003d94d815a4955750",
+      "cap.workcell.observation": "218066e28bd6b04a7d7cbb16daffd0993b74b76c54584517cd521948b49d1991",
+      "cap.workcell.collection": "bb10bf3693e9cf1113b2e5fd414dc7d7d9b7a2bae838061890fb1cfbe0ea8871",
+      "cap.workcell.release": "5fc5057684aa5a388063db6962173862237e5bcf313af2a0a8cec1c2756400b7",
+      "cap.workcell.reconciliation": "d35a67d7562ba5f4ee7a5ab149147e5767a60030e5951d2265fe6176a96fca9f",
+      "cap.workcell.remote-control": "fd8612c849e173934620846ea4fde30ad06681396e00fd39c871859595a73896",
+      "cap.workcell.placement": "854df7346e33e11e81edc8eee96c8a98ec8cd641786d136e6e99bda5bc9aad57",
+      "cap.workcell.connectivity": "6adf3470c196155a91e03b5657e10b1d6b7ec9d4a4deab6c828a7dbe6dd1b32f",
+      "cap.workcell.candidates": "cdd334f1cd37b2c2d18f0613ceff03910a48e42cb1f273eb91e63f3df3035f19",
+      "cap.workcell.provider-extension": "df4d47e24fa5d0d2069116a05c8a58777fe4cde8e9b1bd9d157ccf94a3981257",
+      "cap.workcell.rich-provider": "825d856d5ee94c2913a213e6ff706118b34c8e3b78c1d8a39536d1e4cfdfe001",
+      "cap.workcell.checkpoints": "a09ee185c8213bf33d99bddf535eb53e6443b6d227e88cb909146b86d726a9a9",
+      "cap.workcell.credentials": "e4c25d98f623f05efef01a0779233d722019d1c3306cacfd4219dc127cd0a072",
+      "cap.workcell.instance-registry": "ff9cc68330bc7ce3884adcef0fd70d160e9cf5da3fb2dd8bd828cf58e217f4cd",
+      "cap.workcell.sandbox-reconciliation": "7236d5e78747a19c778fd224096af193d40921468d2c4d2c42e12a3cfec47bcf",
+      "cap.workcell.model-hosting": "17fb386032e6499543d034bb7a5430ca454a61172422e004f8f2c0abbe60713b",
+      "cap.workcell.exposure": "21a18e605c9e470be2675d18b04a6408e6fdaecd6990348f5ce517aa267e3ee1",
+      "H0->H4": "8077d2dee96e769919b2380de894b1b0e269a30f64572678430b290ecbe60722",
+      "H0->A4": "96eae68b4f1423b44311483516df6864aed11196dacddc91449145e5bfacfecb",
+      "H1->H4": "2f06d2e84ea59966b801d3b01586c16516b7d3370d57df4ee1eca03758f7801f",
+      "H1->A4": "c17b0327d68f881f542314619ba2f3e151f8fe4102c1330ee29eb82f152c907a",
+      "H2->H4": "7b54186eac9d11724c3098c63472507cef3cc7f595bbaec3665d377ce1929efc",
+      "H2->A4": "40f50b433009b9c2555fb9bec9a7f009c22a08f7ec09acdd01a641bab44aa838",
+      "H3->H4": "3759eea20c041c4495eda1ff40c0182f071ae9359a60adac3a6cfe5e5793bfa9",
+      "H3->A4": "635ce3baf2d750ed5d145d95781868f40b230b603e24f7e1bfb4a6565b5598aa",
+      "H4->H0": "a12053e55e5a098684bea73a9d38e27e08c5c855c55c20f8504d8bf7fedd414e",
+      "H4->H1": "df80940a0a62ee6f790826fedff5de9e59d4891c0bb493f123b887fdd3b2a13a",
+      "H4->H2": "3ed07c0d958a8f1d7a58ddbaab70fb7a2866aceca4e8ac7d1d02bb9d9a0f0a0a",
+      "H4->H3": "088df318c0361cb60fecbf11a2eb0107c2629a835f2d7ad3b63afdb2e65c2a51",
+      "H4->H4": "6bc9c059993b9f77490c4ed4f39ca1ee2890daac9fd558d06363c60b480a4e2c",
+      "H4->H5": "3c51734e645480ed82bdb123654f0454d7d5dc50582e280626a074b6ae8e7412",
+      "H4->A0": "fa2f59ca4e75ab83b1e573ae16e8f0d2a26b46fe8ff06f58a488352db566e937",
+      "H4->A1": "a5d1f2f5721938183ebe81a3449d3210573aa6258c439fbe0db001d5ff10c150",
+      "H4->A2": "8f3e1bedbe22bfd67d38c0c1c02c00f719da73d1bb4db06bfb44f63c5b6ef2f5",
+      "H4->A3": "4e41d8c75862a161447276337e858738d7cede085733e61df59c0ef7bb9f61b9",
+      "H4->A4": "b417555e9804d026fab815816a6c863b5877c4a6d80c9b0ddfc4821414f7e6d8",
+      "H4->A5": "a3da0359f5385485c061905fea506835226a9c0fd4722b926d58139845337706",
+      "H5->H4": "cd8d612e0c05be2f1ea978b31c00484ed879ebdab531259664d0fa13eb4fba4a",
+      "H5->A4": "6bb85770b41f0bbedf2eeaaefca50c77dcc9cc1fa7f70897e559173cf2257007",
+      "A0->H4": "5924d2da30244f96f87a62f8a84f2dbd5a0c427089563a3c5728e4cc264054a0",
+      "A0->A4": "a87bf1d5eda7a8cd909866f1965faa0278a64fc9d70ff0d935f88741780fce1f",
+      "A1->H4": "a2c0f32070db309e7579e9346aa66d4e93065b0ab509b6a53c9ae21bb14a985f",
+      "A1->A4": "f0d1de8424df416da02b54463c953ff0f09be7812a77df9b5b79192eec9f5609",
+      "A2->H4": "acd9180f2b26bbfd46b63e89af21e77f5f856f4222ba13c467c0c89980041abf",
+      "A2->A4": "5c618507efdac922176d7fa2402a2dd3a2eea0fa29588f18b3cb4982b48ac229",
+      "A3->H4": "a6de4d8a00cb78ba55688c51d44aacd2ae5f8dafa4673eccea4117406744bc45",
+      "A3->A4": "233bf4e5bbf7293fe530b2c95a5bdbfafb6fc0f0b1feb40b54b644a76f9ea796",
+      "A4->H0": "976500d6ada16af435fd4a779e95699a83fbbbec25c1856e00342083f76c77f3",
+      "A4->H1": "8e809151b456f900170ae2d5de3c314ccfdd05207ee066dff923a10484a87920",
+      "A4->H2": "ed99c0fd39756f11d112d289c2ab878d62da83d1089c3b54ff4a47bf8ce86a77",
+      "A4->H3": "9cea91dbc0e0db98bf62079557e1181b919fce59c4322e59dc9c05f79d710b66",
+      "A4->H4": "7bc0909251068666708a8fe26cc85e13055019f4b1438cfdfc6b61cfff231d3f",
+      "A4->H5": "89ae1b36519876fb5363423498d198b3d6235f721b620fe157070787bbc16ab0",
+      "A4->A0": "9ce1c1067d4166dcb7018e077611e65905411c4e158ee7e6848d13c643054d65",
+      "A4->A1": "c51d00d29047d485af34dd459b78a49ddab148ddbc25980a4e2a656b7091762d",
+      "A4->A2": "0fd942dd7fc1435f21c9e42d9e1c7098c0189c5da8eb12394d503be16d272b83",
+      "A4->A3": "894059ebc4bfce6cbe7daf4d525ca8ca17e0ee370f9d378607128f4442773ca9",
+      "A4->A4": "36f39eb62565f50773fa174ac3862463c53a7e1c4e1c8c01a52202ae2507bd85",
+      "A4->A5": "0448e028b0f357951cff3ec4ab6143d03bea87effd95dc16cd9e71fac16b7dbd",
+      "A5->H4": "ca6b1a29b9e5a845908a9b3ff77243974c0007a5754f6927f705de1221db10ef",
+      "A5->A4": "36b3678605d41bf11b778a7075c7d581f6bcfc9bdcd1e9e4b8ff4319082ef505",
+      "rel.workcell.q0.S": "45946a6b8f77cfb473bc8486adb00019ea16fd2e839179d89c0265c6ac9c2d71",
+      "rel.workcell.q1.S": "917563271491f9dfc472f53b993649801e811f1cb8c5eb6efbc290a05fa05c24",
+      "rel.workcell.q2.S": "31f567b28412a4167b858bbc162500a273dfd3c7a8a2f240a28f7fc84d06fa3f",
+      "rel.workcell.q3.S": "64fc7d9e8702538b6193bc4ac5b5dd2bbe7cedb06de3144b72c66e3a8db5c319",
+      "rel.workcell.q4.S": "e72480f1cc46e3d5c4af602d21098280e9a793f0f8ba69276fc1a02f1d9ef9ad",
+      "rel.workcell.q5.S": "d9c75862541f3ac05899d6665ee3b90bfe7f544864629eb7f6e233226601cd3d",
+      "rel.workcell.q3.S0": "3516d1fed5d2967150d1771048c797f1e94a411f18675d77854882c851605536",
+      "rel.workcell.q3.S2": "d0e53a1562d39b27446614346a5a4a5dab22cf76e3a7cdfdbeea57f144cfa80b",
+      "rel.workcell.q3.S3": "38b4b68b4ead9ce5ca48871c86f8a64c1b2ce5a47038d6162a9bb57c93dfda6e"
+    },
+    "change_ref": "suite-change:git-lifecycle-and-product-ground-2026-09-08",
+    "reviewed_at": "2026-09-08T10:47:08.311183+00:00",
+    "reviewed_sections": [
+      "q0",
+      "q2"
+    ]
+  }
+}</script>
+<script type="application/json" id="ground-resources">
+{
+  "source:readme": {
+    "title": "Readme",
+    "href": "../../README.md"
+  },
+  "source:wayfinder": {
+    "title": "Wayfinder",
+    "href": "../../docs/WAYFINDER.md"
+  },
+  "source:architecture": {
+    "title": "Architecture",
+    "href": "../../docs/ARCHITECTURE.md"
+  },
+  "source:lifecycle": {
+    "title": "Lifecycle",
+    "href": "../../docs/LIFECYCLE-RECONCILIATION.md"
+  },
+  "source:fabric": {
+    "title": "Fabric",
+    "href": "../../docs/CONNECTIVITY-FABRIC.md"
+  },
+  "source:hosting": {
+    "title": "Hosting",
+    "href": "../../docs/CONTROL-SERVICE-AND-AGENT-HOSTING.md"
+  },
+  "source:opensandbox": {
+    "title": "Opensandbox",
+    "href": "../../docs/OPENSANDBOX-SOURCE-INTEGRATION.md"
+  },
+  "source:model": {
+    "title": "Model",
+    "href": "../../docs/MODEL-SERVING-CONFORMANCE.md"
+  },
+  "source:sdk": {
+    "title": "Sdk",
+    "href": "../../crates/workcell-sdk/README.md"
+  },
+  "source:foundations": {
+    "title": "Foundations",
+    "href": "../../../O-I/docs/positions/FOUNDING-POSITIONS.md"
+  },
+  "source:covenant": {
+    "title": "Covenant",
+    "href": "../../../O-I/docs/HUMAN-AGENT-COVENANT.md"
+  },
+  "source:primitives": {
+    "title": "Primitives",
+    "href": "../../../Software-Factory/docs/canon/QL-SOFTWARE-FACTORY-PRIMITIVE-RELATIONS.md"
+  },
+  "source:ql": {
+    "title": "Ql",
+    "href": "../../../Quaternal-Logic/README.md"
+  },
+  "ticket:1": {
+    "title": "Workcell #1 local issue snapshot",
+    "href": "../../../github-recovery-mirror/mirror/Workcell/issues/1.json"
+  },
+  "ticket:20": {
+    "title": "Workcell #20 local issue snapshot",
+    "href": "../../../github-recovery-mirror/mirror/Workcell/issues/20.json"
+  },
+  "ticket:21": {
+    "title": "Workcell #21 local issue snapshot",
+    "href": "../../../github-recovery-mirror/mirror/Workcell/issues/21.json"
+  },
+  "ticket:22": {
+    "title": "Workcell #22 local issue snapshot",
+    "href": "../../../github-recovery-mirror/mirror/Workcell/issues/22.json"
+  },
+  "ticket:26": {
+    "title": "Workcell #26 local issue snapshot",
+    "href": "../../../github-recovery-mirror/mirror/Workcell/issues/26.json"
+  },
+  "ticket:29": {
+    "title": "Workcell #29 local issue snapshot",
+    "href": "../../../github-recovery-mirror/mirror/Workcell/issues/29.json"
+  },
+  "ticket:43": {
+    "title": "Workcell #43 local issue snapshot",
+    "href": "../../../github-recovery-mirror/mirror/Workcell/issues/43.json"
+  },
+  "workcell:matrix:md": {
+    "title": "Workcell capabilities and relational field",
+    "href": "capability-matrix.md"
+  },
+  "workcell:matrix:csv": {
+    "title": "Workcell matrix CSV",
+    "href": "capability-matrix.csv"
+  },
+  "workcell:doc:overview": {
+    "title": "Workcell whole overview",
+    "href": "#whole"
+  },
+  "workcell:seed:q0": {
+    "title": "A place where intended work can actually happen",
+    "href": "#whole/why"
+  },
+  "workcell:seed:q1": {
+    "title": "A Rust product for making computational environments",
+    "href": "#whole/what"
+  },
+  "workcell:seed:q2": {
+    "title": "Requirements become bindings and observed state",
+    "href": "#whole/how"
+  },
+  "workcell:seed:q3": {
+    "title": "One material account for people and clients",
+    "href": "#whole/whereby"
+  },
+  "workcell:seed:q4": {
+    "title": "From an ordinary computer to persistent remote work",
+    "href": "#whole/context"
+  },
+  "workcell:seed:q5": {
+    "title": "Less infrastructure tending, clearer consequences",
+    "href": "#whole/purpose"
+  },
+  "workcell:doc:need": {
+    "title": "Work needs conditions as well as instructions",
+    "href": "#q0/need"
+  },
+  "workcell:doc:continuity": {
+    "title": "Keep the work intelligible when its machinery changes",
+    "href": "#q0/continuity"
+  },
+  "workcell:doc:experience": {
+    "title": "Make infrastructure understandable at the point of consequence",
+    "href": "#q0/experience"
+  },
+  "workcell:doc:product": {
+    "title": "A CLI, core library and optional service",
+    "href": "#q1/product"
+  },
+  "workcell:doc:requirements": {
+    "title": "Describe the environment in terms of useful requirements",
+    "href": "#q1/requirements"
+  },
+  "workcell:doc:world": {
+    "title": "A world is a record of composed material bindings",
+    "href": "#q1/world"
+  },
+  "workcell:doc:local-journey": {
+    "title": "Prepare a local workspace and return to it",
+    "href": "#q2/local-journey"
+  },
+  "workcell:doc:service-journey": {
+    "title": "Keep a useful service reachable",
+    "href": "#q2/service-journey"
+  },
+  "workcell:doc:recovery-journey": {
+    "title": "Inspect interruption before deciding recovery",
+    "href": "#q2/recovery-journey"
+  },
+  "workcell:doc:ownership": {
+    "title": "People and clients retain the purpose of the work",
+    "href": "#q3/ownership"
+  },
+  "workcell:doc:providers": {
+    "title": "Replaceable ports keep the environment adaptable",
+    "href": "#q3/providers"
+  },
+  "workcell:doc:access": {
+    "title": "Make scope and connectivity part of the material arrangement",
+    "href": "#q3/access"
+  },
+  "workcell:doc:deployment": {
+    "title": "Begin locally and choose richer material conditions when needed",
+    "href": "#q4/deployment"
+  },
+  "workcell:doc:network": {
+    "title": "Separate obtaining a host, controlling it and connecting work",
+    "href": "#q4/network"
+  },
+  "workcell:doc:frontier": {
+    "title": "Current evidence and the remaining material frontier",
+    "href": "#q4/frontier"
+  },
+  "workcell:doc:suite": {
+    "title": "Give other products a material environment they can understand",
+    "href": "#q5/suite"
+  },
+  "workcell:doc:return": {
+    "title": "Return material facts to the owner of the next decision",
+    "href": "#q5/return"
+  },
+  "workcell:doc:account": {
+    "title": "Keep the small account connected to its capabilities",
+    "href": "#q5/account"
+  },
+  "cap.workcell.discovery": {
+    "title": "Know which material capabilities are available here",
+    "href": "capability-matrix.md#cap-workcell-discovery"
+  },
+  "cap.workcell.planning": {
+    "title": "Determine whether requested conditions can be met before allocation",
+    "href": "capability-matrix.md#cap-workcell-planning"
+  },
+  "cap.workcell.cli": {
+    "title": "Operate material worlds from human and Agent tools",
+    "href": "capability-matrix.md#cap-workcell-cli"
+  },
+  "cap.workcell.local-world": {
+    "title": "Begin work on an ordinary computer",
+    "href": "capability-matrix.md#cap-workcell-local-world"
+  },
+  "cap.workcell.workspace": {
+    "title": "Work with source at the intended revision and access mode",
+    "href": "capability-matrix.md#cap-workcell-workspace"
+  },
+  "cap.workcell.bindings": {
+    "title": "Inspect which resources jointly realise a demand",
+    "href": "capability-matrix.md#cap-workcell-bindings"
+  },
+  "cap.workcell.services": {
+    "title": "Keep a process-backed service reachable and inspectable",
+    "href": "capability-matrix.md#cap-workcell-services"
+  },
+  "cap.workcell.observation": {
+    "title": "Know what remains usable in a prepared environment",
+    "href": "capability-matrix.md#cap-workcell-observation"
+  },
+  "cap.workcell.collection": {
+    "title": "Retain useful material outputs of an activity",
+    "href": "capability-matrix.md#cap-workcell-collection"
+  },
+  "cap.workcell.release": {
+    "title": "End or retain an environment with visible consequences",
+    "href": "capability-matrix.md#cap-workcell-release"
+  },
+  "cap.workcell.reconciliation": {
+    "title": "Compare persisted expectations with current material state",
+    "href": "capability-matrix.md#cap-workcell-reconciliation"
+  },
+  "cap.workcell.remote-control": {
+    "title": "Use the same material operations on a remote Workcell",
+    "href": "capability-matrix.md#cap-workcell-remote-control"
+  },
+  "cap.workcell.placement": {
+    "title": "Choose material location without changing client identity",
+    "href": "capability-matrix.md#cap-workcell-placement"
+  },
+  "cap.workcell.connectivity": {
+    "title": "Make logical service relationships materially feasible",
+    "href": "capability-matrix.md#cap-workcell-connectivity"
+  },
+  "cap.workcell.candidates": {
+    "title": "Replace a candidate environment while retaining developmental identity",
+    "href": "capability-matrix.md#cap-workcell-candidates"
+  },
+  "cap.workcell.provider-extension": {
+    "title": "Add material capabilities through a public contract",
+    "href": "capability-matrix.md#cap-workcell-provider-extension"
+  },
+  "cap.workcell.rich-provider": {
+    "title": "Compose isolated execution, storage and endpoints for a working world",
+    "href": "capability-matrix.md#cap-workcell-rich-provider"
+  },
+  "cap.workcell.instance-registry": {
+    "title": "Know which harness processes are materially present and whether they remain live",
+    "href": "capability-matrix.md#cap-workcell-instance-registry"
+  },
+  "cap.workcell.sandbox-reconciliation": {
+    "title": "Keep provider-owned sandboxes aligned with Workcell lease records",
+    "href": "capability-matrix.md#cap-workcell-sandbox-reconciliation"
+  },
+  "cap.workcell.checkpoints": {
+    "title": "Handle provider lifetime separately from durable retention",
+    "href": "capability-matrix.md#cap-workcell-checkpoints"
+  },
+  "cap.workcell.credentials": {
+    "title": "Make a credential usable within bounded material access",
+    "href": "capability-matrix.md#cap-workcell-credentials"
+  },
+  "cap.workcell.model-hosting": {
+    "title": "Supply material conditions for an inference service",
+    "href": "capability-matrix.md#cap-workcell-model-hosting"
+  },
+  "cap.workcell.exposure": {
+    "title": "Expose a prepared endpoint",
+    "href": "capability-matrix.md#cap-workcell-exposure"
+  }
+}
+</script>
+<div class="app">
+  <header class="topbar">
+    <button class="icon-btn" id="leftToggle" aria-label="Toggle contents" aria-controls="leftRail" aria-expanded="true">☰</button>
+    <div class="brand"><strong>Workcell</strong><span>Product ground · review draft</span></div>
+    <div class="route-chip" id="routeChip"><code>#0</code><span>Ground</span></div>
+    <button class="icon-btn" id="themeToggle" aria-label="Switch theme">◐</button>
+    <button class="icon-btn" id="rightToggle" aria-label="Toggle context" aria-controls="rightRail" aria-expanded="false">✎</button>
+  </header>
+  <nav class="left-rail" id="leftRail" aria-label="Account contents"><div class="rail-label">Account</div><div class="surface-nav" id="surfaceNav"></div></nav>
+  <main class="main" id="mainContent">
+<article class="surface active" data-surface="whole" data-whole-anchor="0/1" data-title="Workcell · overview" data-gloss="0/1 · The whole in six questions"><div class="surface-inner"><header class="hero"><div class="hero-line"><span class="ql-badge">0/1</span><span class="hero-label">Whole-account overview</span></div><h1>Workcell</h1><p class="hero-deck">A Rust product that prepares and manages the computational environments in which work happens.</p><div class="hero-meta"><span>Source-recovered candidate · Agent inference</span><span>6 September 2026</span></div></header>
+<section class="ql-node" id="whole-why" data-node=".0" data-route="why" data-nav="Why?" data-context="founding-position · agent-inference · candidate for review" data-vessel="founding-position" data-standing="agent-inference" data-tags="workcell whole why" data-resource="workcell:seed:q0"><header class="node-head"><div class="node-eyebrow">#0 · <span data-seed-question="workcell:seed:q0">Why?</span></div><h2>A place where intended work can actually happen</h2></header><div class="prose"><div data-seed-content="workcell:seed:q0"><p>An Agent can understand a task and still lack the material conditions to carry it out: a writable workspace, a running service, a reachable endpoint or enough resources. Workcell closes that gap. It gives human and Agent work an inspectable computational home, so the purpose of an activity can survive changes in the machinery that makes it possible.</p></div><p><a href="#q0" data-expansion-link="q0">Read the expanded #0 — Why?</a></p></div></section>
+<section class="ql-node" id="whole-what" data-node=".1" data-route="what" data-nav="What?" data-context="founding-position · agent-inference · candidate for review" data-vessel="founding-position" data-standing="agent-inference" data-tags="workcell whole what" data-resource="workcell:seed:q1"><header class="node-head"><div class="node-eyebrow">#1 · <span data-seed-question="workcell:seed:q1">What?</span></div><h2>A Rust product for making computational environments</h2></header><div class="prose"><div data-seed-content="workcell:seed:q1"><p>Workcell is a Rust CLI, library and optional control service that prepares and manages computational environments. It turns requirements for workspaces, processes, services, storage and connectivity into provider-backed resources, records how they are bound together, and provides operations to inspect, expose, collect from and release them.</p></div><p><a href="#q1" data-expansion-link="q1">Read the expanded #1 — What?</a></p></div></section>
+<section class="ql-node" id="whole-how" data-node=".2" data-route="how" data-nav="How?" data-context="founding-position · agent-inference · candidate for review" data-vessel="founding-position" data-standing="agent-inference" data-tags="workcell whole how" data-resource="workcell:seed:q2"><header class="node-head"><div class="node-eyebrow">#2 · <span data-seed-question="workcell:seed:q2">How?</span></div><h2>Requirements become bindings and observed state</h2></header><div class="prose"><div data-seed-content="workcell:seed:q2"><p>A client describes the material conditions it needs. Workcell discovers available providers, plans a feasible composition and prepares the resulting environment. It returns durable references and bindings through which the client can use native processes and services. Observation and reconciliation show what remains available, what changed and what needs recovery.</p></div><p><a href="#q2" data-expansion-link="q2">Read the expanded #2 — How?</a></p></div></section>
+<section class="ql-node" id="whole-whereby" data-node=".3" data-route="whereby" data-nav="Who / Whereby?" data-context="founding-position · agent-inference · candidate for review" data-vessel="founding-position" data-standing="agent-inference" data-tags="workcell whole whereby" data-resource="workcell:seed:q3"><header class="node-head"><div class="node-eyebrow">#3 · <span data-seed-question="workcell:seed:q3">Who / Whereby?</span></div><h2>One material account for people and clients</h2></header><div class="prose"><div data-seed-content="workcell:seed:q3"><p>Workcell serves people who need understandable infrastructure and clients that need reliable material operations. A person can inspect a plan or a running environment; an Agent can use the same operations through structured interfaces. Replaceable providers supply the physical capabilities while the calling product retains the purpose and identity of its work.</p></div><p><a href="#q3" data-expansion-link="q3">Read the expanded #3 — Who / Whereby?</a></p></div></section>
+<section class="ql-node" id="whole-context" data-node=".4" data-route="context" data-nav="Where / When?" data-context="founding-position · agent-inference · candidate for review" data-vessel="founding-position" data-standing="agent-inference" data-tags="workcell whole context" data-resource="workcell:seed:q4"><header class="node-head"><div class="node-eyebrow">#4 · <span data-seed-question="workcell:seed:q4">Where / When?</span></div><h2>From an ordinary computer to persistent remote work</h2></header><div class="prose"><div data-seed-content="workcell:seed:q4"><p>Workcell begins on an ordinary computer with filesystem and host-process facilities. Richer deployments can supply containers, persistent services, remote control, private connectivity and isolated execution. The same material questions apply before work begins, while it runs, after interruption and when resources are retained or released.</p></div><p><a href="#q4" data-expansion-link="q4">Read the expanded #4 — Where / When?</a></p></div></section>
+<section class="ql-node" id="whole-purpose" data-node=".5" data-route="purpose" data-nav="Why-For?" data-context="founding-position · agent-inference · candidate for review" data-vessel="founding-position" data-standing="agent-inference" data-tags="workcell whole purpose" data-resource="workcell:seed:q5"><header class="node-head"><div class="node-eyebrow">#5 · <span data-seed-question="workcell:seed:q5">Why-For?</span></div><h2>Less infrastructure tending, clearer consequences</h2></header><div class="prose"><div data-seed-content="workcell:seed:q5"><p>Workcell lets the O:I products make their intended activities real without rebuilding infrastructure management inside each product. Central provides durable source and placement intention; AIKit resolves operative requirements; Factory relates environments to developmental work. Workcell returns the material facts of what was prepared and what happened, helping people maintain continuity, inspect consequences and improve the next arrangement.</p></div><p><a href="#q5" data-expansion-link="q5">Read the expanded #5 — Why-For?</a></p></div></section>
+</div></article>
+<article class="surface" data-surface="q0" data-title="Why? A place where intended work can actually happen" data-gloss="Why?" data-seed-ref="workcell:seed:q0" data-seed-sha256="55ba602c6410bd60dfc79b3b7717d56e19e1bccb72647a96112dae72181c2423"><div class="surface-inner"><header class="hero"><div class="hero-line"><span class="ql-badge">#0</span><span class="hero-label">Why?</span></div><h1>A place where intended work can actually happen</h1><div class="hero-meta"><a href="#whole/why">0/1 · Return to the Why? seed</a><span>Expanded candidate · Agent inference</span></div></header>
+<section class="ql-node" id="q0-need" data-node=".0" data-route="need" data-nav="Work needs conditions as well as instructions" data-context="vision · agent-inference · candidate for review" data-vessel="vision" data-standing="agent-inference" data-tags="workcell q0 need" data-resource="workcell:doc:need"><header class="node-head"><div class="node-eyebrow">vision</div><h2>Work needs conditions as well as instructions</h2></header><div class="prose"><p>A person asks an Agent to change a project, investigate a result or keep a service available. The request presupposes somewhere to work: source files at the right revision, permission to change a workspace, tools that can run, and somewhere to keep the result. Those conditions often become a pile of remembered paths, installation steps and machine-specific commands. When the machine or session changes, the person reconstructs them before useful work can resume.</p><p>Workcell makes those conditions an explicit part of the activity. The intended experience is that a person can ask for a suitable working environment, understand the proposed resources, and return to an inspectable record of what was actually made. The environment has an identity and lifecycle that can be discussed directly. Its files, processes and service bindings are concrete things a person or client can inspect.</p><p>The native README describes this as reducing infrastructure tending while retaining material intelligibility. The [[source:wayfinder|development wayfinder]] makes the corresponding demand precise: discovery, planning, preparation, observation, exposure, collection, release and reconciliation must form one usable product. [[cap.workcell.discovery|Discovery]] and [[cap.workcell.planning|planning]] begin that encounter.</p></div></section>
+<section class="ql-node" id="q0-continuity" data-node=".1" data-route="continuity" data-nav="Keep the work intelligible when its machinery changes" data-context="vision · agent-inference · candidate for review" data-vessel="vision" data-standing="agent-inference" data-tags="workcell q0 continuity" data-resource="workcell:doc:continuity"><header class="node-head"><div class="node-eyebrow">vision</div><h2>Keep the work intelligible when its machinery changes</h2></header><div class="prose"><p>A project may begin on a laptop and later need a service on a home server. A candidate may need a disposable execution environment while its source and review history remain durable. A process may stop while its workspace is still valuable. Each case asks which part of the arrangement should continue and which part may be replaced.</p><p>Workcell treats the client's references as stable provenance. It records the material bindings that realise the requested environment separately. This lets a client continue to recognise the same Project, Run or Agent through a changed process, provider allocation or host. Workcell's own material-world record makes the change inspectable.</p><p>The useful result is continuity with an explanation. A missing workspace should appear as missing; a suspended execution should retain its recorded condition; a released allocation should leave enough history for the client to decide what follows. [[cap.workcell.reconciliation|Reconciliation]] returns those differences, and [[cap.workcell.candidates|candidate materialisation]] relates replaceable resources to a continuing developmental subject.</p></div></section>
+<section class="ql-node" id="q0-experience" data-node=".2" data-route="experience" data-nav="Make infrastructure understandable at the point of consequence" data-context="constitution-design-commitment · agent-inference · candidate for review" data-vessel="constitution-design-commitment" data-standing="agent-inference" data-tags="workcell q0 experience" data-resource="workcell:doc:experience"><header class="node-head"><div class="node-eyebrow">constitution design commitment</div><h2>Make infrastructure understandable at the point of consequence</h2></header><div class="prose"><p>Most work should proceed through a small set of understandable questions: what is available, what is needed, what will be prepared, where is it now, and what should happen when the activity ends? A plan should identify an unmet requirement before the person invests in an unusable environment. A returned binding should show how to reach the resource. An observation should distinguish a live process from a usable service.</p><p>The experience becomes deeper when consequence demands it. Someone investigating a failed run may need the workspace revision, provider provenance, service health and retained outputs. Someone keeping an Agent service alive may need readiness, storage and recovery details. The account should support that inspection without forcing every ordinary activity through a provider configuration tour.</p><p>This is the reason for [[cap.workcell.observation|live observation]], [[cap.workcell.collection|output collection]] and explicit [[cap.workcell.services|service bindings]]. Their value is the usable result and its trace, rather than the amount of infrastructure vocabulary shown to the user.</p></div></section>
+</div></article>
+<article class="surface" data-surface="q1" data-title="What? A Rust product for making computational environments" data-gloss="What?" data-seed-ref="workcell:seed:q1" data-seed-sha256="0287b28cc09bf4940cb6dcb75ddd963379027f65295a19d005801e5fa08267a0"><div class="surface-inner"><header class="hero"><div class="hero-line"><span class="ql-badge">#1</span><span class="hero-label">What?</span></div><h1>A Rust product for making computational environments</h1><div class="hero-meta"><a href="#whole/what">0/1 · Return to the What? seed</a><span>Expanded candidate · Agent inference</span></div></header>
+<section class="ql-node" id="q1-product" data-node=".0" data-route="product" data-nav="A CLI, core library and optional service" data-context="readme · agent-inference · candidate for review" data-vessel="readme" data-standing="agent-inference" data-tags="workcell q1 product" data-resource="workcell:doc:product"><header class="node-head"><div class="node-eyebrow">readme</div><h2>A CLI, core library and optional service</h2></header><div class="prose"><p>Workcell is a Rust product for preparing and managing computational environments. Its CLI offers human-readable and structured operations. Its public library contracts let another application make the same material requests. An optional authenticated control service carries those operations to a remote Workcell.</p><p>The local baseline composes real host-process execution, a directory workspace and filesystem artifact channels. A client can discover offers, plan a shell-and-workspace requirement, prepare a world and save its receipt. Later CLI processes can observe and release that world from durable state. Selected native tests exercised this path in this documentation pass.</p><p>The wider library provides replaceable ports for workspaces, execution, project runtimes, services, artifacts/storage and additional material capabilities. Docker, Arrakis and OpenSandbox adapters provide richer provider shapes. Their presence in the source tree establishes adapter implementation, while an actual deployment still requires its own physical evidence. The [[cap.workcell.cli|native CLI]], [[cap.workcell.local-world|local world]] and [[cap.workcell.remote-control|remote control]] entries distinguish these levels.</p></div></section>
+<section class="ql-node" id="q1-requirements" data-node=".1" data-route="requirements" data-nav="Describe the environment in terms of useful requirements" data-context="architecture-contract · agent-inference · candidate for review" data-vessel="architecture-contract" data-standing="agent-inference" data-tags="workcell q1 requirements" data-resource="workcell:doc:requirements"><header class="node-head"><div class="node-eyebrow">architecture contract</div><h2>Describe the environment in terms of useful requirements</h2></header><div class="prose"><p>An ExecutionDemand is the client's description of the material environment it needs. It can include affordances, source workspace and revision, resource requirements, runtime or service requirements, logical connectivity, exposure and output requirements, and persistence or retention expectations. Caller-owned references accompany the demand so the result can be related back to the activity that requested it.</p><p>Requirements express necessity. A required property must be available for the plan to satisfy the request. A preferred property may produce an explicit degradation when unavailable. An optional property may be omitted. A caller can therefore say that writable source is essential while richer isolation is preferred, and receive an honest local plan.</p><p>Provider offers describe capabilities available from the current deployment. Planning connects requirements to offers and records reasons for an unmet or degraded request. This is where a client learns whether the intended environment is possible here. [[cap.workcell.planning|Planning]] and [[cap.workcell.workspace|workspace materialisation]] supply the concrete bridge from the request to the environment.</p></div></section>
+<section class="ql-node" id="q1-world" data-node=".2" data-route="world" data-nav="A world is a record of composed material bindings" data-context="architecture-contract · agent-inference · candidate for review" data-vessel="architecture-contract" data-standing="agent-inference" data-tags="workcell q1 world" data-resource="workcell:doc:world"><header class="node-head"><div class="node-eyebrow">architecture contract</div><h2>A world is a record of composed material bindings</h2></header><div class="prose"><p>The MaterialisedExecutionWorld records the resources prepared for a demand and the BindingGraph that relates them. A workspace binding can point to a directory or Git worktree; an execution binding to a process or isolated provider allocation; a service binding to a logical service and material endpoint. Provider-native identifiers stay attached as material provenance.</p><p>Several bindings may share a physical parent. The OpenSandbox integration, for example, can compose execution, storage, service endpoints and policy relations around one sandbox allocation. Their separate identities and lifetimes remain useful even when the provider shares machinery underneath them.</p><p>The client uses the resolved native data plane to do its work: an application endpoint, filesystem, execution facility or provider service. Workcell's control plane prepares and observes the arrangement. This gives the client both something usable and a record it can inspect later. See [[cap.workcell.exposure|endpoint exposure]], [[cap.workcell.bindings|binding composition]], [[cap.workcell.services|services]] and [[cap.workcell.rich-provider|rich provider composition]] for the corresponding native seams.</p></div></section>
+</div></article>
+<article class="surface" data-surface="q2" data-title="How? Requirements become bindings and observed state" data-gloss="How?" data-seed-ref="workcell:seed:q2" data-seed-sha256="1fd223c6c0b6b2ea68e8dd04a346a0dfb938f7155d6d4996b58169bf782db6e0"><div class="surface-inner"><header class="hero"><div class="hero-line"><span class="ql-badge">#2</span><span class="hero-label">How?</span></div><h1>Requirements become bindings and observed state</h1><div class="hero-meta"><a href="#whole/how">0/1 · Return to the How? seed</a><span>Expanded candidate · Agent inference</span></div></header>
+<section class="ql-node" id="q2-local-journey" data-node=".0" data-route="local-journey" data-nav="Prepare a local workspace and return to it" data-context="implementation-guide · agent-inference · candidate for review" data-vessel="implementation-guide" data-standing="agent-inference" data-tags="workcell q2 local-journey" data-resource="workcell:doc:local-journey"><header class="node-head"><div class="node-eyebrow">implementation guide</div><h2>Prepare a local workspace and return to it</h2></header><div class="prose"><p>A person wants an Agent to work with project files while retaining a clear account of the environment. The client starts by discovering available offers and planning a shell-and-writable-workspace demand. If a requested capability is unavailable, the plan explains the result before preparation. The person can revise the request or choose another deployment.</p><p>Preparation creates the material world and returns a receipt that identifies its bindings. The client uses the workspace and execution facility for the authorised activity, then collects the relevant outputs. A fresh client process can load the durable world record and ask providers for current state. When the activity ends, release follows the specified retention expectation.</p><p>The selected CLI and collapsed-local tests use real temporary directories and native processes. They cover structured discovery, required-versus-preferred isolation, preparation, fresh-process observation and release. They establish this bounded local path. The governing capabilities are [[cap.workcell.local-world|local preparation]], [[cap.workcell.workspace|workspace access]], [[cap.workcell.collection|collection]] and [[cap.workcell.release|release]].</p></div></section>
+<section class="ql-node" id="q2-service-journey" data-node=".1" data-route="service-journey" data-nav="Keep a useful service reachable" data-context="implementation-guide · agent-inference · candidate for review" data-vessel="implementation-guide" data-standing="agent-inference" data-tags="workcell q2 service-journey" data-resource="workcell:doc:service-journey"><header class="node-head"><div class="node-eyebrow">implementation guide</div><h2>Keep a useful service reachable</h2></header><div class="prose"><p>A project needs a long-running API, model server or Agent-hosting process. The client expresses the required material service, storage, endpoint and lifecycle properties. Workcell binds the service and returns the connection information the consuming application needs. The application then communicates through its native protocol.</p><p>For an ordinary managed host service, the provider starts the executable with explicit arguments and can wait for declared TCP readiness. Observation separates process availability from endpoint readiness. Release terminates and reaps the managed process. These details matter because a launched process may still be unable to serve requests.</p><p>Model-serving and gateway-shaped workloads exercise this general service contract. Their model, conversation and Agent meaning remains with the client that understands it. The returned material record concerns process, endpoint, storage, resources and health. [[cap.workcell.services|Service management]] and [[cap.workcell.model-hosting|model hosting]] anchor this journey. Real provider installations and long-lived owner-machine behaviour require their own observed acceptance beyond source-level conformance.</p></div></section>
+<section class="ql-node" id="q2-recovery-journey" data-node=".2" data-route="recovery-journey" data-nav="Inspect interruption before deciding recovery" data-context="implementation-guide · agent-inference · candidate for review" data-vessel="implementation-guide" data-standing="agent-inference" data-tags="workcell q2 recovery-journey" data-resource="workcell:doc:recovery-journey"><header class="node-head"><div class="node-eyebrow">implementation guide</div><h2>Inspect interruption before deciding recovery</h2></header><div class="prose"><p>A server restarts or a provider disappears while the client still has a world receipt. The client re-enters the durable world record and asks Workcell to observe the current bindings. Successful provider observation can recover stale provenance to present state. A missing resource appears as missing; a withdrawn provider offer appears as stale.</p><p>Reconciliation compares that observed condition with the requested material state. The result can say that ephemeral material was lost, retained material needs recovery, released material needs rematerialisation, or a suspended resource needs resumption. The caller can then make a consequential choice with the difference visible.</p><p>Lifecycle operations apply through the provider that owns each binding. If release succeeds for one binding and fails for another, the resulting record retains both facts. Repeating convergence preserves already-completed work. [[cap.workcell.reconciliation|Reconciliation]], [[cap.workcell.release|retention and release]] and [[cap.workcell.checkpoints|checkpoints and leases]] describe these powers at their current source-backed scope.</p></div></section>
+</div></article>
+<article class="surface" data-surface="q3" data-title="Who / Whereby? One material account for people and clients" data-gloss="Who / Whereby?" data-seed-ref="workcell:seed:q3" data-seed-sha256="d82818aae51fbb3b839dc27c9532412271994b8a8c0295e68405deb64b4a0c4c"><div class="surface-inner"><header class="hero"><div class="hero-line"><span class="ql-badge">#3</span><span class="hero-label">Who / Whereby?</span></div><h1>One material account for people and clients</h1><div class="hero-meta"><a href="#whole/whereby">0/1 · Return to the Who / Whereby? seed</a><span>Expanded candidate · Agent inference</span></div></header>
+<section class="ql-node" id="q3-ownership" data-node=".0" data-route="ownership" data-nav="People and clients retain the purpose of the work" data-context="architecture-contract · agent-inference · candidate for review" data-vessel="architecture-contract" data-standing="agent-inference" data-tags="workcell q3 ownership" data-resource="workcell:doc:ownership"><header class="node-head"><div class="node-eyebrow">architecture contract</div><h2>People and clients retain the purpose of the work</h2></header><div class="prose"><p>The human wants to recognise the activity across changes in its environment. The client needs to preserve Project, Run, Candidate or Agent references while Workcell manages material resources. The public boundary therefore accepts opaque external references and provider-neutral material requirements. The resulting world returns those references with the material account.</p><p>The [[source:foundations|O:I founding positions]] provide the upstream purpose of an inspectable World for agency. The [[source:covenant|shared Covenant]] and [[source:primitives|experienced ontology source]] locate the broader primitives. Workcell consumes those relations through client requirements rather than creating a second suite ontology in its core.</p><p>This ownership has a practical effect. Factory can destroy a candidate environment and retain the candidate's developmental history. AIKit can alter its operative deployment choice and keep the Agent relation intact. Central can preserve source and placement intention while a Workcell reports changed material availability. [[cap.workcell.candidates|Candidate materialisation]] and [[cap.workcell.bindings|binding provenance]] make this separation actionable.</p></div></section>
+<section class="ql-node" id="q3-providers" data-node=".1" data-route="providers" data-nav="Replaceable ports keep the environment adaptable" data-context="architecture-contract · agent-inference · candidate for review" data-vessel="architecture-contract" data-standing="agent-inference" data-tags="workcell q3 providers" data-resource="workcell:doc:providers"><header class="node-head"><div class="node-eyebrow">architecture contract</div><h2>Replaceable ports keep the environment adaptable</h2></header><div class="prose"><p>One environment can require different providers for different resources. A Git worktree can supply source, a host or container provider can supply execution, and a service provider can supply an endpoint. The planner composes the relevant offers; each provider owns the lifecycle of its allocation. This allows provider replacement to remain an extension of the material arrangement.</p><p>The public SDK exposes the native client and provider contracts and conformance support. A provider author implements the relevant port and proves useful results, failure behaviour and recovery from persisted allocation state. Source-pinned integration records explain which external provider behaviour an adapter expects.</p><p>The design should learn from rich providers. OpenSandbox returned pressure for explicit storage, leases, reusable checkpoints, external egress and credential brokerage. Those distinctions strengthen the existing material contract when they prove useful across provider shapes. [[cap.workcell.provider-extension|Provider extension]], [[cap.workcell.rich-provider|compound hosting]] and [[cap.workcell.credentials|credential materialisation]] expose this work for review.</p></div></section>
+<section class="ql-node" id="q3-access" data-node=".2" data-route="access" data-nav="Make scope and connectivity part of the material arrangement" data-context="constitution-design-commitment · agent-inference · candidate for review" data-vessel="constitution-design-commitment" data-standing="agent-inference" data-tags="workcell q3 access" data-resource="workcell:doc:access"><header class="node-head"><div class="node-eyebrow">constitution design commitment</div><h2>Make scope and connectivity part of the material arrangement</h2></header><div class="prose"><p>A full Central tree may exist on a host while a particular Agent receives only a project workspace and selected propagated source. Two Agents may share a machine and still have distinct execution, workspace, credential and network bindings. The later corrections in [[ticket:43|Workcell #43]] make this an explicit acceptance case for a Central Computer arrangement.</p><p>The intended journey begins with source and access intention from the owning products. Workcell receives the resulting material requirements and prepares the relevant bindings. The record should make shared physical provenance visible while retaining the distinct scopes and lifetimes of each resource.</p><p>Connectivity likewise has several questions: can the workload reach a destination, what path provides reachability, and which policy is enforced? Credential use can be brokered without disclosing raw credential material to the workload. [[cap.workcell.connectivity|Fabric planning]], [[cap.workcell.credentials|credential brokerage]] and [[cap.workcell.rich-provider|scoped provider composition]] link the account to the concrete implementation frontier.</p></div></section>
+</div></article>
+<article class="surface" data-surface="q4" data-title="Where / When? From an ordinary computer to persistent remote work" data-gloss="Where / When?" data-seed-ref="workcell:seed:q4" data-seed-sha256="63cc211dff1f5f956a35cddb45e72a0bde54bd76f0adcdf96d8e1720579ff7e1"><div class="surface-inner"><header class="hero"><div class="hero-line"><span class="ql-badge">#4</span><span class="hero-label">Where / When?</span></div><h1>From an ordinary computer to persistent remote work</h1><div class="hero-meta"><a href="#whole/context">0/1 · Return to the Where / When? seed</a><span>Expanded candidate · Agent inference</span></div></header>
+<section class="ql-node" id="q4-deployment" data-node=".0" data-route="deployment" data-nav="Begin locally and choose richer material conditions when needed" data-context="surface-discovery · agent-inference · candidate for review" data-vessel="surface-discovery" data-standing="agent-inference" data-tags="workcell q4 deployment" data-resource="workcell:doc:deployment"><header class="node-head"><div class="node-eyebrow">surface discovery</div><h2>Begin locally and choose richer material conditions when needed</h2></header><div class="prose"><p>The collapsed-local profile makes an ordinary computer a useful starting point. It supplies host execution and filesystem facilities without a continuously running control daemon. Richer isolation, accelerator capacity, snapshots or remote persistence enter through additional offers and providers when available.</p><p>For a remotely controlled server, the client uses an authenticated Workcell Control Service that hosts the same operation contract. Transport failures, authentication failures and material-operation failures remain distinct so the caller can respond appropriately. The selected remote CLI tests exercise a real local service path and preserve caller/world identity through that path.</p><p>A deployment profile describes a specimen of the material arrangement. A physical Ubuntu server, Docker engine, Arrakis/KVM host or private fabric still needs a receipt from the actual installation for claims about that installation. [[cap.workcell.remote-control|Remote control]], [[cap.workcell.placement|placement]] and [[cap.workcell.local-world|the local floor]] connect these choices to the capabilities they require.</p></div></section>
+<section class="ql-node" id="q4-network" data-node=".1" data-route="network" data-nav="Separate obtaining a host, controlling it and connecting work" data-context="architecture-contract · agent-inference · candidate for review" data-vessel="architecture-contract" data-standing="agent-inference" data-tags="workcell q4 network" data-resource="workcell:doc:network"><header class="node-head"><div class="node-eyebrow">architecture contract</div><h2>Separate obtaining a host, controlling it and connecting work</h2></header><div class="prose"><p>A remote activity raises three different problems. First, someone obtains or bootstraps the machine. Second, a client reaches that machine's Workcell control service. Third, workloads and services reach one another through the material network. The same technology can participate in more than one problem, but the resulting responsibilities stay separately inspectable.</p><p>The source programme uses exe.dev as a remote-bootstrap specimen and Tailscale as a rich private-fabric specimen. Their brand-specific commands and addressing belong to adapters and deployment tooling. Workcell's client-facing account concerns material requirements, relationship feasibility, bindings and observed reachability.</p><p>This distinction matters during change. A host may remain available while the control path fails. The control service may remain reachable while a workload loses its required service path. A useful observation identifies the affected relation. [[cap.workcell.connectivity|Connectivity]] and [[cap.workcell.placement|multi-Workcell placement]] hold these relationships alongside the [[source:fabric|native Fabric contract]].</p></div></section>
+<section class="ql-node" id="q4-frontier" data-node=".2" data-route="frontier" data-nav="Current evidence and the remaining material frontier" data-context="temporal-working-state · agent-inference · candidate for review" data-vessel="temporal-working-state" data-standing="agent-inference" data-tags="workcell q4 frontier" data-resource="workcell:doc:frontier"><header class="node-head"><div class="node-eyebrow">temporal working state</div><h2>Current evidence and the remaining material frontier</h2></header><div class="prose"><p>This account was recovered from native documentation, the local mirrored wayfinder and later ticket comments, then checked against the current source tree on 6 September 2026. The prose and six-question seed are Agent-generated candidates for human review. Several older README document links and wayfinder status passages lag the implemented native surface; current code and bounded observations determine implementation claims here.</p><p>Thirteen selected native tests passed in this pass. They cover directory and Git workspace behaviour, restart reconstruction, collapsed-local preparation and required failure, local CLI operation and remote CLI/service selection. They use actual temporary filesystem, Git and native process/service paths. The selection does not establish complete product or physical-provider acceptance.</p><p>OpenSandbox source includes protocol adapters and conformance transports; those fixtures establish protocol behaviour within their scope. Docker, Arrakis, Tailscale, Ubuntu, model-serving deployments and full Central Computer inhabitation need their actual physical observations for deployment claims. The [[workcell:matrix:md|capability matrix]] keeps these limits beside the corresponding functional entries rather than treating every implemented seam as equally observed.</p></div></section>
+</div></article>
+<article class="surface" data-surface="q5" data-title="Why-For? Less infrastructure tending, clearer consequences" data-gloss="Why-For?" data-seed-ref="workcell:seed:q5" data-seed-sha256="1d1c14281caf5dcec9244f6685ebf9a3ecaffd67194e1874c9a76ad1db8d41a9"><div class="surface-inner"><header class="hero"><div class="hero-line"><span class="ql-badge">#5</span><span class="hero-label">Why-For?</span></div><h1>Less infrastructure tending, clearer consequences</h1><div class="hero-meta"><a href="#whole/purpose">0/1 · Return to the Why-For? seed</a><span>Expanded candidate · Agent inference</span></div></header>
+<section class="ql-node" id="q5-suite" data-node=".0" data-route="suite" data-nav="Give other products a material environment they can understand" data-context="vision · agent-inference · candidate for review" data-vessel="vision" data-standing="agent-inference" data-tags="workcell q5 suite" data-resource="workcell:doc:suite"><header class="node-head"><div class="node-eyebrow">vision</div><h2>Give other products a material environment they can understand</h2></header><div class="prose"><p>Central gives durable human and project source a home. AIKit resolves the operative horizon through which an Agent can act. Factory relates development to Projects, Runs, Candidates and evidence. Workcell supplies the material conditions those activities require and returns what was actually prepared, observed, collected and released.</p><p>The successful composition is ordinary enough to use and detailed enough to inspect. A person can begin locally, ask for richer conditions when the work demands them, and retain the relationship between source intention and material consequence. The client gets stable references and native bindings instead of rebuilding provider management for every activity.</p><p>The [[cap.workcell.candidates|candidate]], [[cap.workcell.local-world|local world]] and [[cap.workcell.rich-provider|rich hosting]] capabilities illustrate different scales of this same purpose. The companion matrix’s declared views place Workcell’s capabilities against its six seed questions and the O:I field. They provide a relational field for inquiry; concrete capability entries carry the functional claims and their traces.</p></div></section>
+<section class="ql-node" id="q5-return" data-node=".1" data-route="return" data-nav="Return material facts to the owner of the next decision" data-context="protocol-method · agent-inference · candidate for review" data-vessel="protocol-method" data-standing="agent-inference" data-tags="workcell q5 return" data-resource="workcell:doc:return"><header class="node-head"><div class="node-eyebrow">protocol method</div><h2>Return material facts to the owner of the next decision</h2></header><div class="prose"><p>A completed material operation should leave the client able to answer what changed. Which workspace revision was used? Which endpoint became available? What was collected? Which allocation was retained or lost? What remains to recover? The returned observation and provenance give the owning product a basis for its next decision.</p><p>A failed expectation is also useful return. If a provider cannot preserve the requested state, the capability and contract need review. If a client discovers that a requirement was too weak, it can revise the next demand. If the provider arrangement reveals a missing reusable distinction, Workcell can strengthen its native contract and conformance programme.</p><p>This is how [[cap.workcell.observation|observation]], [[cap.workcell.collection|collection]] and [[cap.workcell.reconciliation|reconciliation]] support development beyond one execution. The material facts remain attributable. Human recognition and the meaning of the result stay with the products and people responsible for them.</p></div></section>
+<section class="ql-node" id="q5-account" data-node=".2" data-route="account" data-nav="Keep the small account connected to its capabilities" data-context="protocol-method · agent-inference · candidate for review" data-vessel="protocol-method" data-standing="agent-inference" data-tags="workcell q5 account" data-resource="workcell:doc:account"><header class="node-head"><div class="node-eyebrow">protocol method</div><h2>Keep the small account connected to its capabilities</h2></header><div class="prose"><p>The [[workcell:doc:overview|0/1 overview]] is the compact candidate account. Each question opens into the corresponding expanded layer, and each layer records the normalised seed revision it was reconciled against. When a seed answer changes, review that expansion and then follow the capability and contract links affected by the change.</p><p>The [[workcell:matrix:md|capability matrix]] holds stable capability identities, needs, native operations, results, implementation status and source/code/test traces. Each entry returns to a relevant unit in this account. Capability identities and their relational placements use one CSV contract with explicit view declarations. This gives both the account and an individual capability an addressable home.</p><p>Future wiki disclosure should preserve these sources, revisions, standing and explicit links alongside ordinary notes. AIKit's current authored-relation reader handles Markdown; semantic extraction of these HTML units and CSV rows remains a known integration frontier. The account stays editable source while that work proceeds. Review should refine these three documents before introducing additional descriptions of the same product.</p><p>The <a href="capability-matrix.md#seed--field-contribution">seed × field grid</a> opens the <a href="capability-matrix.json">declared matrix views</a>. Edit its <a href="capability-matrix.csv">CSV records</a> under the <a href="../../../Central/docs/CAPABILITY-MATRIX-PROTOCOL.md">shared capability protocol</a>, then reconcile affected passages in this account. Central owns retirement’s filesystem structure; AIKit owns its operations and the wiki population procedure.</p></div></section>
+</div></article>
+</main>
+  <aside class="right-rail" id="rightRail" aria-label="Section context"><div class="context-head"><div class="context-kicker" id="contextCoord">#0 · .0</div><h3 id="contextTitle">Source context</h3><p id="contextSummary">Select a section to inspect its source and standing.</p></div><div class="note-field" id="noteField"><label for="sectionNote">Section notes</label><textarea id="sectionNote" placeholder="Write a note for this section…"></textarea><div class="save-state" id="saveState">Saved locally when available.</div></div><div class="context-slot" id="contextSlot"></div><details class="right-details" open><summary>Sources in this section</summary><div class="source-list" id="sectionSources"></div><div class="source-empty" id="sourceEmpty">No section sources listed.</div></details><details class="right-details"><summary>Provenance</summary><dl class="meta-list" id="metaList"></dl></details></aside>
+</div>
+
+<script>
+(() => {
+  const resources=JSON.parse(document.getElementById('ground-resources').textContent);
+  const walker=document.createTreeWalker(document.getElementById('mainContent'),NodeFilter.SHOW_TEXT,{acceptNode(node){return node.parentElement.closest('script,style,code,pre,a')?NodeFilter.FILTER_REJECT:NodeFilter.FILTER_ACCEPT;}});
+  const nodes=[];while(walker.nextNode())nodes.push(walker.currentNode);
+  for(const node of nodes){const raw=node.textContent;const pattern=/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;let match,last=0,changed=false;const fragment=document.createDocumentFragment();
+    while((match=pattern.exec(raw))){changed=true;fragment.append(document.createTextNode(raw.slice(last,match.index)));const ref=match[1].trim(),entry=resources[ref];const el=document.createElement(entry?'a':'span');el.textContent=match[2]||entry?.title||ref;if(entry){el.href=entry.href;el.dataset.resource=ref;}else{el.className='source-unresolved';el.title='Unresolved authored source: '+ref;}fragment.append(el);last=pattern.lastIndex;}
+    if(changed){fragment.append(document.createTextNode(raw.slice(last)));node.replaceWith(fragment);}
+  }
+})();
+</script>
+<script>
+(() => {
+  'use strict';
+  const body = document.body;
+  const root = document.documentElement;
+  const surfaces = [...document.querySelectorAll('.surface')];
+  const surfaceNav = document.getElementById('surfaceNav');
+  const leftToggle = document.getElementById('leftToggle');
+  const rightToggle = document.getElementById('rightToggle');
+  const themeToggle = document.getElementById('themeToggle');
+  const routeChip = document.getElementById('routeChip');
+  const contextCoord = document.getElementById('contextCoord');
+  const contextTitle = document.getElementById('contextTitle');
+  const contextSummary = document.getElementById('contextSummary');
+  const contextSlot = document.getElementById('contextSlot');
+  const sectionSources = document.getElementById('sectionSources');
+  const sourceEmpty = document.getElementById('sourceEmpty');
+  const sectionNote = document.getElementById('sectionNote');
+  const saveState = document.getElementById('saveState');
+  const metaList = document.getElementById('metaList');
+  const provenance = readProvenance();
+  let activeSurface = surfaces[0];
+  let activeNode = activeSurface.querySelector('.ql-node');
+  let scrollFrame = 0;
+  function safeGet(key){try{return localStorage.getItem(key)}catch(_){return null}}
+  function safeSet(key,value){try{localStorage.setItem(key,value);return true}catch(_){return false}}
+  function readProvenance(){try{return JSON.parse(document.getElementById('account-provenance').textContent)}catch(_){return {}}}
+  function buildMetadata(){const fields=[['UID',provenance.uid],['Project',provenance.project],['Session',provenance.session],['Status',provenance.status],['Created',provenance.created],['Updated',provenance.updated],['Generator',provenance.generator]];metaList.innerHTML='';for(const [label,value] of fields){if(!value)continue;const row=document.createElement('div');row.className='meta-row';row.innerHTML=`<dt>${escapeHTML(label)}</dt><dd>${escapeHTML(String(value))}</dd>`;metaList.appendChild(row)}}
+  function escapeHTML(value){return value.replace(/[&<>'"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]))}
+  function buildNav(){surfaceNav.innerHTML='';surfaces.forEach(surface=>{const q=surface.dataset.surface;const qNumber=q==='whole'?'0/1':q.replace(/^q/,'');const title=surface.dataset.title||q;const gloss=surface.dataset.gloss||'';const group=document.createElement('div');group.className='nav-group';group.dataset.surface=q;const head=document.createElement('div');head.className='nav-head';const select=document.createElement('button');select.type='button';select.className='nav-select';select.innerHTML=`<span class="nav-q">${q==='whole'?'':'#'}${qNumber}</span><span class="nav-name">${escapeHTML(title)}<span class="nav-gloss">${escapeHTML(gloss)}</span></span>`;select.addEventListener('click',()=>navigate(q,null,true));const toggle=document.createElement('button');toggle.type='button';toggle.className='nav-toggle';toggle.setAttribute('aria-label',`Toggle sections for ${title}`);toggle.setAttribute('aria-expanded','false');toggle.innerHTML='<span>›</span>';toggle.addEventListener('click',()=>{const open=group.classList.toggle('expanded');toggle.setAttribute('aria-expanded',String(open))});head.append(select,toggle);group.appendChild(head);const subnav=document.createElement('div');subnav.className='subnav';[...surface.querySelectorAll('.ql-node')].forEach(node=>{const a=document.createElement('a');const route=node.dataset.route||node.id;a.href=`#${q}/${encodeURIComponent(route)}`;a.dataset.nodeId=node.id;a.innerHTML=`<code>${escapeHTML(node.dataset.node||'')}</code><span>${escapeHTML(node.dataset.nav||node.querySelector('h2')?.textContent||route)}</span>`;a.addEventListener('click',event=>{event.preventDefault();navigate(q,route,true)});subnav.appendChild(a)});group.appendChild(subnav);surfaceNav.appendChild(group)})}
+  function parseHash(){let raw=location.hash.slice(1).trim();try{raw=decodeURIComponent(raw)}catch{}if(!raw)return{surface:surfaces[0]?.dataset.surface||'q0',route:null};const[surface,route]=raw.split('/');return{surface:surfaces.some(s=>s.dataset.surface===surface)?surface:(surfaces[0]?.dataset.surface||'q0'),route:route||null}}
+  function findNode(surface,route){const nodes=[...surface.querySelectorAll('.ql-node')];if(!route)return nodes[0]||null;return nodes.find(node=>node.dataset.route===route||node.id===route)||nodes[0]||null}
+  function navigate(surfaceId,route,push){const surface=surfaces.find(item=>item.dataset.surface===surfaceId)||surfaces[0];const node=findNode(surface,route);activateSurface(surface);activeNode=node;updateActiveUI();if(push){const hash=`#${surface.dataset.surface}${route?'/'+encodeURIComponent(route):''}`;history.pushState(null,'',hash)}requestAnimationFrame(()=>{if(route&&node)node.scrollIntoView({behavior:prefersReducedMotion()?'auto':'smooth',block:'start'});else window.scrollTo({top:0,behavior:'auto'})})}
+  function activateSurface(surface){if(activeSurface!==surface){activeSurface.classList.remove('active');surface.classList.add('active');activeSurface=surface;window.scrollTo({top:0,behavior:'auto'})}document.querySelectorAll('.nav-group').forEach(group=>{const isActive=group.dataset.surface===surface.dataset.surface;group.classList.toggle('active',isActive);if(isActive){group.classList.add('expanded');const toggle=group.querySelector('.nav-toggle');if(toggle)toggle.setAttribute('aria-expanded','true')}})}
+  function updateActiveUI(){if(!activeNode)return;document.querySelectorAll('.subnav a').forEach(a=>a.classList.toggle('active',a.dataset.nodeId===activeNode.id));const qNumber=activeSurface.dataset.surface==='whole'?'0/1':activeSurface.dataset.surface.replace(/^q/,'');routeChip.innerHTML=`<code>${qNumber==='0/1'?'':'#'}${qNumber} · ${escapeHTML(activeNode.dataset.node||'')}</code><span>${escapeHTML(activeNode.dataset.nav||'')}</span>`;updateContext(qNumber,activeNode)}
+  function updateContext(qNumber,node){contextCoord.textContent=`${qNumber==='0/1'?'':'#'}${qNumber} · ${node.dataset.node||''}`;contextTitle.textContent=node.dataset.nav||node.querySelector('h2')?.textContent||'Section';contextSummary.textContent=node.dataset.context||'Section-relative context.';const panel=node.querySelector('template[data-context-panel]');contextSlot.innerHTML='';if(panel)contextSlot.appendChild(panel.content.cloneNode(true));const sources=[...node.querySelectorAll('a[data-source]')];sectionSources.innerHTML='';sourceEmpty.hidden=sources.length>0;sources.forEach(source=>{const clone=document.createElement('a');clone.href=source.href;clone.target='_blank';clone.rel='noopener noreferrer';clone.textContent=source.textContent.trim()||source.href;sectionSources.appendChild(clone)});const noteKey=noteStorageKey(activeSurface.dataset.surface,node.dataset.route||node.id);sectionNote.value=safeGet(noteKey)||'';sectionNote.dataset.storageKey=noteKey}
+  function noteStorageKey(surface,route){return`ql-html-account:${provenance.uid||'anonymous'}:${surface}:${route}:note`}
+  function updateFromScroll(){scrollFrame=0;if(!activeSurface)return;const nodes=[...activeSurface.querySelectorAll('.ql-node')];if(!nodes.length)return;let current=nodes[0];const offset=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--top-h'))+34;const atBottom=window.innerHeight+window.scrollY>=document.documentElement.scrollHeight-4;if(atBottom){current=nodes[nodes.length-1]}else{for(const node of nodes){if(node.getBoundingClientRect().top<=offset)current=node;else break}}if(current!==activeNode){activeNode=current;updateActiveUI();const route=current.dataset.route||current.id;const nextHash=`#${activeSurface.dataset.surface}/${encodeURIComponent(route)}`;history.replaceState(null,'',nextHash)}}
+  function scheduleScrollUpdate(){if(scrollFrame)return;scrollFrame=requestAnimationFrame(updateFromScroll)}
+  function routeFromLocation(){const{surface,route}=parseHash();const targetSurface=surfaces.find(s=>s.dataset.surface===surface)||surfaces[0];const node=findNode(targetSurface,route);activateSurface(targetSurface);activeNode=node;updateActiveUI();requestAnimationFrame(()=>{if(route&&node)node.scrollIntoView({behavior:'auto',block:'start'});else window.scrollTo({top:0,behavior:'auto'})})}
+  function prefersReducedMotion(){return window.matchMedia('(prefers-reduced-motion: reduce)').matches}
+  function setTheme(theme){root.dataset.theme=theme;safeSet('ql-html-account:theme',theme)}
+  function applyResponsiveRailDefaults(){const width=window.innerWidth;if(width<980){body.classList.add('left-closed','right-closed')}else if(width<1320){if(!body.dataset.userLeft)body.classList.remove('left-closed');if(!body.dataset.userRight)body.classList.add('right-closed')}syncRailAria()}
+  function syncRailAria(){leftToggle.setAttribute('aria-expanded',String(!body.classList.contains('left-closed')));rightToggle.setAttribute('aria-expanded',String(!body.classList.contains('right-closed')))}
+  leftToggle.addEventListener('click',()=>{body.dataset.userLeft='1';body.classList.toggle('left-closed');syncRailAria()});rightToggle.addEventListener('click',()=>{body.dataset.userRight='1';body.classList.toggle('right-closed');syncRailAria()});themeToggle.addEventListener('click',()=>{setTheme(root.dataset.theme==='dark'?'light':'dark')});sectionNote.addEventListener('input',()=>{const ok=safeSet(sectionNote.dataset.storageKey||'',sectionNote.value);saveState.textContent=ok?'Saved locally.':'Local persistence is unavailable. The note remains in this page until it closes.'});window.addEventListener('scroll',scheduleScrollUpdate,{passive:true});window.addEventListener('popstate',routeFromLocation);window.addEventListener('hashchange',routeFromLocation);window.addEventListener('resize',applyResponsiveRailDefaults,{passive:true});buildMetadata();buildNav();setTheme(safeGet('ql-html-account:theme')||'light');applyResponsiveRailDefaults();routeFromLocation();
+})();
+</script>
+</body>
+</html>

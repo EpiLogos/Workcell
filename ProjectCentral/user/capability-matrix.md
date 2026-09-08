@@ -1,0 +1,663 @@
+# Workcell capability matrix
+
+Status: source-recovered candidate · Agent inference · 6 September 2026.
+
+[[workcell.html#whole|The six-question account]] develops why Workcell exists and how it should be encountered. These 21 capability families give its journeys stable functional addresses.
+
+The selected native verification passed 13 real local filesystem/Git/CLI tests. Status in each row distinguishes that observation from source inspection and physical-provider work not run here. Test references identify the relevant native cases; a reference alone does not claim execution.
+
+
+## Native CLI catalog
+
+Built and inspected on 6 September 2026 with `cargo build -p epilogos-workcell-cli --bin workcell` and `target/debug/workcell --help`. The exact top-level command names below link to the capability IDs they currently expose. “Composed” means the command operates the capability as part of a prepared world; “library” and “gap” mean no dedicated CLI implementation is claimed.
+
+<!-- cli-catalog:start -->
+| CLI identity | Capability |
+| --- | --- |
+| `collect` | [cap.workcell.cli](#cap-workcell-cli) · [cap.workcell.collection](#cap-workcell-collection) · [cap.workcell.remote-control](#cap-workcell-remote-control) · [cap.workcell.rich-provider](#cap-workcell-rich-provider) |
+| `discover` | [cap.workcell.cli](#cap-workcell-cli) · [cap.workcell.discovery](#cap-workcell-discovery) · [cap.workcell.remote-control](#cap-workcell-remote-control) |
+| `doctor` | [cap.workcell.cli](#cap-workcell-cli) · [cap.workcell.discovery](#cap-workcell-discovery) · [cap.workcell.remote-control](#cap-workcell-remote-control) |
+| `expose` | [cap.workcell.cli](#cap-workcell-cli) · [cap.workcell.exposure](#cap-workcell-exposure) · [cap.workcell.model-hosting](#cap-workcell-model-hosting) · [cap.workcell.remote-control](#cap-workcell-remote-control) · [cap.workcell.rich-provider](#cap-workcell-rich-provider) |
+| `instances` | [cap.workcell.instance-registry](#cap-workcell-instance-registry) |
+| `observe` | [cap.workcell.bindings](#cap-workcell-bindings) · [cap.workcell.cli](#cap-workcell-cli) · [cap.workcell.model-hosting](#cap-workcell-model-hosting) · [cap.workcell.observation](#cap-workcell-observation) · [cap.workcell.remote-control](#cap-workcell-remote-control) · [cap.workcell.rich-provider](#cap-workcell-rich-provider) · [cap.workcell.services](#cap-workcell-services) · [cap.workcell.workspace](#cap-workcell-workspace) |
+| `plan` | [cap.workcell.cli](#cap-workcell-cli) · [cap.workcell.planning](#cap-workcell-planning) · [cap.workcell.remote-control](#cap-workcell-remote-control) |
+| `prepare` | [cap.workcell.bindings](#cap-workcell-bindings) · [cap.workcell.cli](#cap-workcell-cli) · [cap.workcell.local-world](#cap-workcell-local-world) · [cap.workcell.model-hosting](#cap-workcell-model-hosting) · [cap.workcell.remote-control](#cap-workcell-remote-control) · [cap.workcell.rich-provider](#cap-workcell-rich-provider) · [cap.workcell.services](#cap-workcell-services) · [cap.workcell.workspace](#cap-workcell-workspace) |
+| `providers` | [cap.workcell.cli](#cap-workcell-cli) · [cap.workcell.discovery](#cap-workcell-discovery) · [cap.workcell.provider-extension](#cap-workcell-provider-extension) · [cap.workcell.remote-control](#cap-workcell-remote-control) |
+| `reconcile` | [cap.workcell.cli](#cap-workcell-cli) · [cap.workcell.reconciliation](#cap-workcell-reconciliation) · [cap.workcell.remote-control](#cap-workcell-remote-control) |
+| `release` | [cap.workcell.cli](#cap-workcell-cli) · [cap.workcell.model-hosting](#cap-workcell-model-hosting) · [cap.workcell.release](#cap-workcell-release) · [cap.workcell.remote-control](#cap-workcell-remote-control) · [cap.workcell.rich-provider](#cap-workcell-rich-provider) · [cap.workcell.services](#cap-workcell-services) · [cap.workcell.workspace](#cap-workcell-workspace) |
+| `sandboxes` | [cap.workcell.sandbox-reconciliation](#cap-workcell-sandbox-reconciliation) |
+| `status` | [cap.workcell.cli](#cap-workcell-cli) · [cap.workcell.discovery](#cap-workcell-discovery) · [cap.workcell.remote-control](#cap-workcell-remote-control) |
+<!-- cli-catalog:end -->
+
+
+## Seed × field contribution
+
+[View declarations](capability-matrix.json) · [Editable CSV](capability-matrix.csv). Select a populated cell for its source and capability links. Unassessed cells carry no assertion.
+
+| Seed | O:I whole | Central | Actuation | AIKit | Software Factory | Quaternal Logic |
+| --- | --- | --- | --- | --- | --- | --- |
+| [Why?](workcell.html#whole/why) | [3 capabilities](#field-q0-S) | Unassessed | Unassessed | Unassessed | Unassessed | Unassessed |
+| [What?](workcell.html#whole/what) | [4 capabilities](#field-q1-S) | Unassessed | Unassessed | Unassessed | Unassessed | Unassessed |
+| [How?](workcell.html#whole/how) | [7 capabilities](#field-q2-S) | Unassessed | Unassessed | Unassessed | Unassessed | Unassessed |
+| [Who / Whereby?](workcell.html#whole/whereby) | [4 capabilities](#field-q3-S) | [2 capabilities](#field-q3-S0) | Unassessed | [2 capabilities](#field-q3-S2) | [2 capabilities](#field-q3-S3) | Unassessed |
+| [Where / When?](workcell.html#whole/context) | [2 capabilities](#field-q4-S) | Unassessed | Unassessed | Unassessed | Unassessed | Unassessed |
+| [Why-For?](workcell.html#whole/purpose) | [1 capabilities](#field-q5-S) | Unassessed | Unassessed | Unassessed | Unassessed | Unassessed |
+
+<details>
+<summary>Read the field contributions and their capability links</summary>
+
+<a id="field-q0-S"></a>
+
+### Why? → O:I whole
+
+An Agent can understand a task and still lack the material conditions to carry it out: a writable workspace, a running service, a reachable endpoint or enough resources. Workcell closes that gap. It gives human and Agent work an inspectable computational home, so the purpose of an activity can survive changes in the machinery that makes it possible.
+
+[discovery](#cap-workcell-discovery) · [observation](#cap-workcell-observation) · [candidates](#cap-workcell-candidates)
+
+[Source account passage](workcell.html#whole/why) · placement: agent-inference.
+
+<a id="field-q1-S"></a>
+
+### What? → O:I whole
+
+Workcell is a Rust CLI, library and optional control service that prepares and manages computational environments. It turns requirements for workspaces, processes, services, storage and connectivity into provider-backed resources, records how they are bound together, and provides operations to inspect, expose, collect from and release them.
+
+[planning](#cap-workcell-planning) · [cli](#cap-workcell-cli) · [bindings](#cap-workcell-bindings) · [exposure](#cap-workcell-exposure)
+
+[Source account passage](workcell.html#whole/what) · placement: agent-inference.
+
+<a id="field-q2-S"></a>
+
+### How? → O:I whole
+
+A client describes the material conditions it needs. Workcell discovers available providers, plans a feasible composition and prepares the resulting environment. It returns durable references and bindings through which the client can use native processes and services. Observation and reconciliation show what remains available, what changed and what needs recovery.
+
+[local world](#cap-workcell-local-world) · [workspace](#cap-workcell-workspace) · [services](#cap-workcell-services) · [release](#cap-workcell-release) · [reconciliation](#cap-workcell-reconciliation) · [checkpoints](#cap-workcell-checkpoints) · [model hosting](#cap-workcell-model-hosting)
+
+[Source account passage](workcell.html#whole/how) · placement: agent-inference.
+
+<a id="field-q3-S"></a>
+
+### Who / Whereby? → O:I whole
+
+Workcell serves people who need understandable infrastructure and clients that need reliable material operations. A person can inspect a plan or a running environment; an Agent can use the same operations through structured interfaces. Replaceable providers supply the physical capabilities while the calling product retains the purpose and identity of its work.
+
+[connectivity](#cap-workcell-connectivity) · [provider extension](#cap-workcell-provider-extension) · [rich provider](#cap-workcell-rich-provider) · [credentials](#cap-workcell-credentials)
+
+[Source account passage](workcell.html#whole/whereby) · placement: agent-inference.
+
+<a id="field-q3-S0"></a>
+
+### Who / Whereby? → Central
+
+Central can preserve source and placement intention while a Workcell reports changed material availability.
+
+[bindings](#cap-workcell-bindings) · [candidates](#cap-workcell-candidates)
+
+[Source account passage](workcell.html#q3/ownership) · placement: agent-inference.
+
+<a id="field-q3-S2"></a>
+
+### Who / Whereby? → AIKit
+
+AIKit can alter its operative deployment choice and keep the Agent relation intact.
+
+[bindings](#cap-workcell-bindings) · [candidates](#cap-workcell-candidates)
+
+[Source account passage](workcell.html#q3/ownership) · placement: agent-inference.
+
+<a id="field-q3-S3"></a>
+
+### Who / Whereby? → Software Factory
+
+Factory can destroy a candidate environment and retain the candidate's developmental history.
+
+[bindings](#cap-workcell-bindings) · [candidates](#cap-workcell-candidates)
+
+[Source account passage](workcell.html#q3/ownership) · placement: agent-inference.
+
+<a id="field-q4-S"></a>
+
+### Where / When? → O:I whole
+
+Workcell begins on an ordinary computer with filesystem and host-process facilities. Richer deployments can supply containers, persistent services, remote control, private connectivity and isolated execution. The same material questions apply before work begins, while it runs, after interruption and when resources are retained or released.
+
+[remote control](#cap-workcell-remote-control) · [placement](#cap-workcell-placement)
+
+[Source account passage](workcell.html#whole/context) · placement: agent-inference.
+
+<a id="field-q5-S"></a>
+
+### Why-For? → O:I whole
+
+Workcell lets the O:I products make their intended activities real without rebuilding infrastructure management inside each product. Central provides durable source and placement intention; AIKit resolves operative requirements; Factory relates environments to developmental work. Workcell returns the material facts of what was prepared and what happened, helping people maintain continuity, inspect consequences and improve the next arrangement.
+
+[collection](#cap-workcell-collection)
+
+[Source account passage](workcell.html#whole/purpose) · placement: agent-inference.
+
+</details>
+
+
+| Capability | Useful result | Status |
+|---|---|---|
+| [cap.workcell.discovery](#cap-workcell-discovery) | Structured provider offers and local readiness | Observed in selected native CLI tests |
+| [cap.workcell.planning](#cap-workcell-planning) | Feasible allocation or explicit required failure, degradation and omission | Observed required/preferred local planning; broader composition source-inspected |
+| [cap.workcell.cli](#cap-workcell-cli) | Usable material operations across process boundaries | Observed local and remote CLI tests |
+| [cap.workcell.local-world](#cap-workcell-local-world) | A usable local material world and durable receipt | Observed in collapsed_local and CLI tests |
+| [cap.workcell.workspace](#cap-workcell-workspace) | Material source workspace with revision, access and dirty-state account | Observed real directory, Git and restart tests |
+| [cap.workcell.bindings](#cap-workcell-bindings) | Stable material-world relation with caller and provider provenance | Source-inspected; local world construction exercised in selected tests |
+| [cap.workcell.services](#cap-workcell-services) | Logical service endpoint with material process and health information | Source-inspected; service-specific test suite not run in this pass |
+| [cap.workcell.observation](#cap-workcell-observation) | Live binding observations and unavailable or degraded conditions | Observed local workspace/world paths; wider health cases source-inspected |
+| [cap.workcell.collection](#cap-workcell-collection) | Collection bundle pointing to outputs and provenance | Source-inspected; full expose_collect suite not run in this pass |
+| [cap.workcell.release](#cap-workcell-release) | Released or preserved material with explicit partial outcomes | Observed local and workspace release; extended lifecycle source-inspected |
+| [cap.workcell.reconciliation](#cap-workcell-reconciliation) | Explicit missing, stale, recover, resume or rematerialise differences | Source-inspected; workspace restart reconstruction observed |
+| [cap.workcell.remote-control](#cap-workcell-remote-control) | Native operation results with distinct transport and authentication failures | Observed real local remote-CLI/service tests; physical remote host unrun |
+| [cap.workcell.placement](#cap-workcell-placement) | Placement provenance and provider-neutral demand continuity | Source-inspected; physical multi-host acceptance unrun |
+| [cap.workcell.connectivity](#cap-workcell-connectivity) | Inspectable reachability, path and policy relations | Source-inspected; live Tailscale and private workstation-server path unrun |
+| [cap.workcell.candidates](#cap-workcell-candidates) | Disposable or retained material bindings related to a stable candidate | Source-inspected; candidate conformance not executed here |
+| [cap.workcell.provider-extension](#cap-workcell-provider-extension) | Replaceable provider implementations and attributable failures | Source-inspected; SDK conformance not executed here |
+| [cap.workcell.rich-provider](#cap-workcell-rich-provider) | Separate bindings with shared physical provenance and native endpoint access | Protocol adapter source-inspected; fixture conformance is not live provider proof |
+| [cap.workcell.checkpoints](#cap-workcell-checkpoints) | Explicit expiry and provider-local restore reference | Source-inspected OpenSandbox protocol implementation; physical restore unrun |
+| [cap.workcell.credentials](#cap-workcell-credentials) | Use-only credential relation with redacted material receipts | Source-inspected; live credential broker acceptance unrun |
+| [cap.workcell.model-hosting](#cap-workcell-model-hosting) | A reachable service with client-owned model meaning and explicit lifecycle | Source-inspected; real Ollama/llama.cpp/vLLM physical acceptance unrun |
+
+| [cap.workcell.exposure](#cap-workcell-exposure) | Material endpoint and exposure information | Source-inspected; native cases not run here |
+
+
+
+## cap-workcell-discovery
+
+Know which material capabilities are available here.
+
+**Operation:** discover; providers; status; doctor.
+
+**Result:** Structured provider offers and local readiness.
+
+**Current standing:** Observed in selected native CLI tests.
+
+**Account:** [[workcell.html#q0/need|Governing journey or contract]].
+
+**Intention/source:** [docs/WAYFINDER.md](../../docs/WAYFINDER.md).
+
+**Native implementation:** [crates/workcell-cli/src/bin/workcell.rs](../../crates/workcell-cli/src/bin/workcell.rs).
+
+**Functional verification cases:** [crates/workcell-cli/tests/cli.rs](../../crates/workcell-cli/tests/cli.rs).
+
+## cap-workcell-planning
+
+Determine whether requested conditions can be met before allocation.
+
+**Operation:** plan ExecutionDemand against offers and necessity.
+
+**Result:** Feasible allocation or explicit required failure, degradation and omission.
+
+**Current standing:** Observed required/preferred local planning; broader composition source-inspected.
+
+**Account:** [[workcell.html#q1/requirements|Governing journey or contract]].
+
+**Intention/source:** [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md).
+
+**Native implementation:** [crates/workcell-core/src/contract/planning.rs](../../crates/workcell-core/src/contract/planning.rs).
+
+**Functional verification cases:** [crates/workcell-core/tests/planning_degradation.rs](../../crates/workcell-core/tests/planning_degradation.rs), [crates/workcell-cli/tests/cli.rs](../../crates/workcell-cli/tests/cli.rs).
+
+## cap-workcell-cli
+
+Operate material worlds from human and Agent tools.
+
+**Operation:** Native local and remote CLI operations with structured output.
+
+**Result:** Usable material operations across process boundaries.
+
+**Current standing:** Observed local and remote CLI tests.
+
+**Account:** [[workcell.html#q1/product|Governing journey or contract]].
+
+**Intention/source:** [docs/WAYFINDER.md](../../docs/WAYFINDER.md).
+
+**Native implementation:** [crates/workcell-cli/src/bin/workcell_entry.rs](../../crates/workcell-cli/src/bin/workcell_entry.rs), [crates/workcell-cli/src/bin/workcell.rs](../../crates/workcell-cli/src/bin/workcell.rs).
+
+**Functional verification cases:** [crates/workcell-cli/tests/cli.rs](../../crates/workcell-cli/tests/cli.rs), [crates/workcell-cli/tests/remote_cli.rs](../../crates/workcell-cli/tests/remote_cli.rs).
+
+## cap-workcell-local-world
+
+Begin work on an ordinary computer.
+
+**Operation:** CollapsedLocalWorkcell prepares host execution, directory workspace and artifact channels.
+
+**Result:** A usable local material world and durable receipt.
+
+**Current standing:** Observed in collapsed_local and CLI tests.
+
+**Account:** [[workcell.html#q2/local-journey|Governing journey or contract]].
+
+**Intention/source:** [docs/DEPLOYMENT-PROFILES.md](../../docs/DEPLOYMENT-PROFILES.md).
+
+**Native implementation:** [crates/workcell-runtime/src/local.rs](../../crates/workcell-runtime/src/local.rs).
+
+**Functional verification cases:** [crates/workcell-runtime/tests/collapsed_local.rs](../../crates/workcell-runtime/tests/collapsed_local.rs).
+
+## cap-workcell-workspace
+
+Work with source at the intended revision and access mode.
+
+**Operation:** Directory or Git worktree workspace prepare, observe and release.
+
+**Result:** Material source workspace with revision, access and dirty-state account.
+
+**Current standing:** Observed real directory, Git and restart tests.
+
+**Account:** [[workcell.html#q2/local-journey|Governing journey or contract]].
+
+**Intention/source:** [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md).
+
+**Native implementation:** [crates/workcell-workspace/src/lib.rs](../../crates/workcell-workspace/src/lib.rs).
+
+**Functional verification cases:** [crates/workcell-workspace/tests/directory_provider.rs](../../crates/workcell-workspace/tests/directory_provider.rs), [crates/workcell-workspace/tests/git_worktree_provider.rs](../../crates/workcell-workspace/tests/git_worktree_provider.rs), [crates/workcell-workspace/tests/restart_recovery.rs](../../crates/workcell-workspace/tests/restart_recovery.rs).
+
+## cap-workcell-bindings
+
+Inspect which resources jointly realise a demand.
+
+**Operation:** compose_world and BindingGraph construction.
+
+**Result:** Stable material-world relation with caller and provider provenance.
+
+**Current standing:** Source-inspected; local world construction exercised in selected tests.
+
+**Account:** [[workcell.html#q1/world|Governing journey or contract]].
+
+**Intention/source:** [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md).
+
+**Native implementation:** [crates/workcell-core/src/world/compose.rs](../../crates/workcell-core/src/world/compose.rs).
+
+**Functional verification cases:** [crates/workcell-core/tests/material_world.rs](../../crates/workcell-core/tests/material_world.rs).
+
+## cap-workcell-services
+
+Keep a process-backed service reachable and inspectable.
+
+**Operation:** ServiceProvider and ManagedHostServiceProvider lifecycle/readiness.
+
+**Result:** Logical service endpoint with material process and health information.
+
+**Current standing:** Source-inspected; service-specific test suite not run in this pass.
+
+**Account:** [[workcell.html#q2/service-journey|Governing journey or contract]].
+
+**Intention/source:** [docs/CONTROL-SERVICE-AND-AGENT-HOSTING.md](../../docs/CONTROL-SERVICE-AND-AGENT-HOSTING.md).
+
+**Native implementation:** [crates/workcell-runtime/src/service.rs](../../crates/workcell-runtime/src/service.rs), [crates/workcell-runtime/src/host.rs](../../crates/workcell-runtime/src/host.rs).
+
+**Functional verification cases:** [crates/workcell-runtime/tests/managed_host_service.rs](../../crates/workcell-runtime/tests/managed_host_service.rs), [crates/workcell-runtime/tests/hosting_conformance.rs](../../crates/workcell-runtime/tests/hosting_conformance.rs).
+
+## cap-workcell-observation
+
+Know what remains usable in a prepared environment.
+
+**Operation:** observe existing world and provider allocations.
+
+**Result:** Live binding observations and unavailable or degraded conditions.
+
+**Current standing:** Observed local workspace/world paths; wider health cases source-inspected.
+
+**Account:** [[workcell.html#q0/experience|Governing journey or contract]].
+
+**Intention/source:** [docs/LIFECYCLE-RECONCILIATION.md](../../docs/LIFECYCLE-RECONCILIATION.md).
+
+**Native implementation:** [crates/workcell-core/src/world/mod.rs](../../crates/workcell-core/src/world/mod.rs).
+
+**Functional verification cases:** [crates/workcell-core/tests/lifecycle_reconciliation.rs](../../crates/workcell-core/tests/lifecycle_reconciliation.rs), [crates/workcell-runtime/tests/collapsed_local.rs](../../crates/workcell-runtime/tests/collapsed_local.rs).
+
+## cap-workcell-collection
+
+Retain useful material outputs of an activity.
+
+**Operation:** collect via artifact/storage provider.
+
+**Result:** Collection bundle pointing to outputs and provenance.
+
+**Current standing:** Source-inspected; full expose_collect suite not run in this pass.
+
+**Account:** [[workcell.html#q5/return|Governing journey or contract]].
+
+**Intention/source:** [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md).
+
+**Native implementation:** [crates/workcell-artifact/src/directory.rs](../../crates/workcell-artifact/src/directory.rs).
+
+**Functional verification cases:** [crates/workcell-runtime/tests/expose_collect.rs](../../crates/workcell-runtime/tests/expose_collect.rs).
+
+## cap-workcell-release
+
+End or retain an environment with visible consequences.
+
+**Operation:** release and retention disposition per binding.
+
+**Result:** Released or preserved material with explicit partial outcomes.
+
+**Current standing:** Observed local and workspace release; extended lifecycle source-inspected.
+
+**Account:** [[workcell.html#q2/recovery-journey|Governing journey or contract]].
+
+**Intention/source:** [docs/LIFECYCLE-RECONCILIATION.md](../../docs/LIFECYCLE-RECONCILIATION.md).
+
+**Native implementation:** [crates/workcell-core/src/world/mod.rs](../../crates/workcell-core/src/world/mod.rs).
+
+**Functional verification cases:** [crates/workcell-core/tests/lifecycle_reconciliation.rs](../../crates/workcell-core/tests/lifecycle_reconciliation.rs), [crates/workcell-runtime/tests/collapsed_local.rs](../../crates/workcell-runtime/tests/collapsed_local.rs).
+
+## cap-workcell-reconciliation
+
+Compare persisted expectations with current material state.
+
+**Operation:** Register durable world and reconcile desired material state.
+
+**Result:** Explicit missing, stale, recover, resume or rematerialise differences.
+
+**Current standing:** Source-inspected; workspace restart reconstruction observed.
+
+**Account:** [[workcell.html#q2/recovery-journey|Governing journey or contract]].
+
+**Intention/source:** [docs/LIFECYCLE-RECONCILIATION.md](../../docs/LIFECYCLE-RECONCILIATION.md).
+
+**Native implementation:** [crates/workcell-core/src/world/mod.rs](../../crates/workcell-core/src/world/mod.rs).
+
+**Functional verification cases:** [crates/workcell-core/tests/lifecycle_reconciliation.rs](../../crates/workcell-core/tests/lifecycle_reconciliation.rs), [crates/workcell-workspace/tests/restart_recovery.rs](../../crates/workcell-workspace/tests/restart_recovery.rs).
+
+## cap-workcell-remote-control
+
+Use the same material operations on a remote Workcell.
+
+**Operation:** Authenticated control service and client transport.
+
+**Result:** Native operation results with distinct transport and authentication failures.
+
+**Current standing:** Observed real local remote-CLI/service tests; physical remote host unrun.
+
+**Account:** [[workcell.html#q4/deployment|Governing journey or contract]].
+
+**Intention/source:** [docs/CONTROL-SERVICE-AND-AGENT-HOSTING.md](../../docs/CONTROL-SERVICE-AND-AGENT-HOSTING.md).
+
+**Native implementation:** [crates/workcell-control/src/service.rs](../../crates/workcell-control/src/service.rs), [crates/workcell-control/src/network.rs](../../crates/workcell-control/src/network.rs).
+
+**Functional verification cases:** [crates/workcell-cli/tests/remote_cli.rs](../../crates/workcell-cli/tests/remote_cli.rs), [crates/workcell-control/tests/tcp.rs](../../crates/workcell-control/tests/tcp.rs).
+
+## cap-workcell-placement
+
+Choose material location without changing client identity.
+
+**Operation:** Multi-Workcell offer and placement seam.
+
+**Result:** Placement provenance and provider-neutral demand continuity.
+
+**Current standing:** Source-inspected; physical multi-host acceptance unrun.
+
+**Account:** [[workcell.html#q4/deployment|Governing journey or contract]].
+
+**Intention/source:** [docs/MULTI-WORKCELL-PLACEMENT.md](../../docs/MULTI-WORKCELL-PLACEMENT.md).
+
+**Native implementation:** [crates/workcell-placement/src/lib.rs](../../crates/workcell-placement/src/lib.rs).
+
+**Functional verification cases:** [crates/workcell-placement/tests/multi_workcell.rs](../../crates/workcell-placement/tests/multi_workcell.rs).
+
+## cap-workcell-connectivity
+
+Make logical service relationships materially feasible.
+
+**Operation:** Fabric relationship planning and Tailscale reference bindings.
+
+**Result:** Inspectable reachability, path and policy relations.
+
+**Current standing:** Source-inspected; live Tailscale and private workstation-server path unrun.
+
+**Account:** [[workcell.html#q3/access|Governing journey or contract]].
+
+**Intention/source:** [docs/CONNECTIVITY-FABRIC.md](../../docs/CONNECTIVITY-FABRIC.md).
+
+**Native implementation:** [crates/workcell-fabric/src/lib.rs](../../crates/workcell-fabric/src/lib.rs), [crates/workcell-tailscale/src/lib.rs](../../crates/workcell-tailscale/src/lib.rs).
+
+**Functional verification cases:** [crates/workcell-tailscale/tests/aikit_gateway_fabric.rs](../../crates/workcell-tailscale/tests/aikit_gateway_fabric.rs).
+
+## cap-workcell-candidates
+
+Replace a candidate environment while retaining developmental identity.
+
+**Operation:** Candidate materialisation adapter using opaque client references.
+
+**Result:** Disposable or retained material bindings related to a stable candidate.
+
+**Current standing:** Source-inspected; candidate conformance not executed here.
+
+**Account:** [[workcell.html#q0/continuity|Governing journey or contract]].
+
+**Intention/source:** [docs/CANDIDATE-MATERIALISATION.md](../../docs/CANDIDATE-MATERIALISATION.md).
+
+**Native implementation:** [crates/workcell-candidate/src/lib.rs](../../crates/workcell-candidate/src/lib.rs).
+
+**Functional verification cases:** [candidate materialisation tests](../../crates/workcell-candidate/tests/candidate_materialisation.rs).
+
+## cap-workcell-provider-extension
+
+Add material capabilities through a public contract.
+
+**Operation:** Client/provider SDK contracts and conformance support.
+
+**Result:** Replaceable provider implementations and attributable failures.
+
+**Current standing:** Source-inspected; SDK conformance not executed here.
+
+**Account:** [[workcell.html#q3/providers|Governing journey or contract]].
+
+**Intention/source:** [crates/workcell-sdk/README.md](../../crates/workcell-sdk/README.md).
+
+**Native implementation:** [crates/workcell-sdk/src/lib.rs](../../crates/workcell-sdk/src/lib.rs).
+
+**Functional verification cases:** [crates/workcell-sdk/tests/sdk_conformance.rs](../../crates/workcell-sdk/tests/sdk_conformance.rs).
+
+## cap-workcell-rich-provider
+
+Compose isolated execution, storage and endpoints for a working world.
+
+**Operation:** OpenSandbox lifecycle adapter and material composition.
+
+**Result:** Separate bindings with shared physical provenance and native endpoint access.
+
+**Current standing:** Protocol adapter source-inspected; fixture conformance is not live provider proof.
+
+**Account:** [[workcell.html#q3/access|Governing journey or contract]].
+
+**Intention/source:** [docs/OPENSANDBOX-SOURCE-INTEGRATION.md](../../docs/OPENSANDBOX-SOURCE-INTEGRATION.md), [../github-recovery-mirror/mirror/Workcell/issues/43.comments.json](../../../github-recovery-mirror/mirror/Workcell/issues/43.comments.json).
+
+**Native implementation:** [crates/workcell-opensandbox/src/composition.rs](../../crates/workcell-opensandbox/src/composition.rs), [crates/workcell-opensandbox/src/project_world.rs](../../crates/workcell-opensandbox/src/project_world.rs).
+
+**Functional verification cases:** [crates/workcell-opensandbox/tests/opensandbox_conformance.rs](../../crates/workcell-opensandbox/tests/opensandbox_conformance.rs).
+
+## cap-workcell-checkpoints
+
+Handle provider lifetime separately from durable retention.
+
+**Operation:** Observe or renew lease and request reusable material checkpoint.
+
+**Result:** Explicit expiry and provider-local restore reference.
+
+**Current standing:** Source-inspected OpenSandbox protocol implementation; physical restore unrun.
+
+**Account:** [[workcell.html#q2/recovery-journey|Governing journey or contract]].
+
+**Intention/source:** [docs/OPENSANDBOX-SOURCE-INTEGRATION.md](../../docs/OPENSANDBOX-SOURCE-INTEGRATION.md).
+
+**Native implementation:** [crates/workcell-opensandbox/src/lib.rs](../../crates/workcell-opensandbox/src/lib.rs), [crates/workcell-core/src/contract/material.rs](../../crates/workcell-core/src/contract/material.rs).
+
+**Functional verification cases:** [crates/workcell-opensandbox/tests/opensandbox_conformance.rs](../../crates/workcell-opensandbox/tests/opensandbox_conformance.rs).
+
+## cap-workcell-credentials
+
+Make a credential usable within bounded material access.
+
+**Operation:** Secret materialisation and OpenSandbox credential broker adapter.
+
+**Result:** Use-only credential relation with redacted material receipts.
+
+**Current standing:** Source-inspected; live credential broker acceptance unrun.
+
+**Account:** [[workcell.html#q3/access|Governing journey or contract]].
+
+**Intention/source:** [docs/OPENSANDBOX-SOURCE-INTEGRATION.md](../../docs/OPENSANDBOX-SOURCE-INTEGRATION.md).
+
+**Native implementation:** [crates/workcell-opensandbox/src/credential.rs](../../crates/workcell-opensandbox/src/credential.rs), [crates/workcell-core/src/secret.rs](../../crates/workcell-core/src/secret.rs).
+
+**Functional verification cases:** [crates/workcell-opensandbox/src/credential.rs](../../crates/workcell-opensandbox/src/credential.rs).
+
+## cap-workcell-instance-registry
+
+Know which harness processes are materially present and whether they remain live.
+
+**Operation:** Persist, scan, declare and adopt harness-instance records.
+
+**Result:** A conflict-safe registry distinguishing observed live/stale instances from declared-unverified intent.
+
+**Current standing:** Observed in native registry and real-process scanner tests.
+
+**Account:** [[workcell.html#q0/continuity|Continuity when machinery changes]].
+
+**Intention/source:** [README](../../README.md).
+
+**Native implementation:** [instance registry](../../crates/workcell-runtime/src/instance_registry.rs), [live scanner](../../crates/workcell-runtime/src/instance_scan.rs).
+
+**Functional verification cases:** Native tests in the registry and scanner modules include real child-process discovery and durable registry behavior.
+
+## cap-workcell-sandbox-reconciliation
+
+Keep provider-owned sandboxes aligned with Workcell lease records.
+
+**Operation:** List and classify server-side OpenSandbox material; optionally release expired or explicitly selected orphans.
+
+**Result:** An inspectable reconciliation report with idempotent cleanup outcomes.
+
+**Current standing:** Observed in native reconciliation transport tests; live provider acceptance remains unrun.
+
+**Account:** [[workcell.html#q2/recovery-journey|Recovery and reconciliation journey]].
+
+**Intention/source:** [OpenSandbox source integration](../../docs/OPENSANDBOX-SOURCE-INTEGRATION.md).
+
+**Native implementation:** [server-side reconciler](../../crates/workcell-opensandbox/src/reconcile.rs).
+
+**Functional verification cases:** Native tests in the reconciliation module cover pagination, lease classification, explicit deletion, orphan release and idempotent absence.
+
+## cap-workcell-model-hosting
+
+Supply material conditions for an inference service.
+
+**Operation:** Managed host process/service with readiness, endpoint and resource requirements.
+
+**Result:** A reachable service with client-owned model meaning and explicit lifecycle.
+
+**Current standing:** Source-inspected; real Ollama/llama.cpp/vLLM physical acceptance unrun.
+
+**Account:** [[workcell.html#q2/service-journey|Governing journey or contract]].
+
+**Intention/source:** [docs/MODEL-SERVING-CONFORMANCE.md](../../docs/MODEL-SERVING-CONFORMANCE.md).
+
+**Native implementation:** [managed service implementation](../../crates/workcell-runtime/src/service.rs), [crates/workcell-runtime/src/host.rs](../../crates/workcell-runtime/src/host.rs).
+
+**Functional verification cases:** [crates/workcell-runtime/tests/model_serving_conformance.rs](../../crates/workcell-runtime/tests/model_serving_conformance.rs).
+
+## cap-workcell-exposure
+
+Reach a prepared application through an appropriate material endpoint.
+
+**Operation:** expose through prepared-world provider bindings.
+
+**Result:** Exposure bundle with endpoint and policy-relevant material information.
+
+**Current standing:** Source-inspected; expose_collect suite not run in this pass.
+
+**Account:** [[workcell.html#q1/world|Material bindings and native endpoint access]].
+
+**Sources:** [Architecture](../../docs/ARCHITECTURE.md), [native world operations](../../crates/workcell-core/src/world/mod.rs), [expose/collect cases](../../crates/workcell-runtime/tests/expose_collect.rs).
+
+## Preserved relational field
+
+The `suite-relations` view uses the same CSV contract as `product-field`. Its H/A identifiers retain the human-facing and agent-facing orientations of the six products. Source-defined relation readings and annotations remain attached to each determination in `extensions`; coverage is independent of implementation status. The manifest declares the selected scope and axis meaning.
+
+## Lossless CSV carrier
+
+```csv
+id,record_type,view_id,row_id,column_id,capability_refs,need,operation,outcome,implementation_status,standing,source_refs,code_refs,test_refs,account_ref,relation,coverage,extensions,question
+cap.workcell.discovery,capability,,,,[],Know which material capabilities are available here,discover; providers; status; doctor,Structured provider offers and local readiness,Observed in selected native CLI tests,agent-inference,docs/WAYFINDER.md,crates/workcell-cli/src/bin/workcell.rs,crates/workcell-cli/tests/cli.rs,workcell.html#q0/need,,,"{""basis"": ""Source-recovered capability account; original verification limits retained in Markdown."", ""cli_commands"": [""status"", ""discover"", ""providers"", ""doctor""], ""cli_exposure"": {""kind"": ""direct"", ""reason"": ""The top-level commands directly return local readiness, offers, provider inventory, and baseline diagnostics.""}, ""converted_from_sha256"": ""de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e"", ""maintenance"": {""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5"", ""docs/WAYFINDER.md"", ""ticket:43""], ""code_basis"": {""crates/workcell-cli/src/bin/workcell.rs"": ""67c762429b371bf66bd699631517e22ad2db6341753d74c0fb0150cc26e43a5a""}, ""updated_at"": ""2026-09-06""}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+cap.workcell.planning,capability,,,,[],Determine whether requested conditions can be met before allocation,plan ExecutionDemand against offers and necessity,"Feasible allocation or explicit required failure, degradation and omission",Observed required/preferred local planning; broader composition source-inspected,agent-inference,docs/ARCHITECTURE.md,crates/workcell-core/src/contract/planning.rs,crates/workcell-core/tests/planning_degradation.rs;crates/workcell-cli/tests/cli.rs,workcell.html#q1/requirements,,,"{""basis"": ""Source-recovered capability account; original verification limits retained in Markdown."", ""cli_commands"": [""plan""], ""cli_exposure"": {""kind"": ""direct"", ""reason"": ""The top-level plan command parses an ExecutionDemand and returns a materialisation plan.""}, ""converted_from_sha256"": ""de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e"", ""maintenance"": {""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5"", ""docs/WAYFINDER.md"", ""ticket:43""], ""code_basis"": {""crates/workcell-core/src/contract/planning.rs"": ""543746d47369b0cf8ce27d40e186318524461acdbe01d7c34b1648c50d15006f""}, ""updated_at"": ""2026-09-06""}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+cap.workcell.cli,capability,,,,[],Operate material worlds from human and Agent tools,Native local and remote CLI operations with structured output,Usable material operations across process boundaries,Observed local and remote CLI tests,agent-inference,docs/WAYFINDER.md,crates/workcell-cli/src/bin/workcell_entry.rs;crates/workcell-cli/src/bin/workcell.rs,crates/workcell-cli/tests/cli.rs;crates/workcell-cli/tests/remote_cli.rs,workcell.html#q1/product,,,"{""basis"": ""Source-recovered capability account; original verification limits retained in Markdown."", ""cli_commands"": [""status"", ""discover"", ""plan"", ""prepare"", ""observe"", ""expose"", ""collect"", ""release"", ""reconcile"", ""providers"", ""doctor""], ""cli_exposure"": {""kind"": ""direct"", ""reason"": ""This capability is the native command surface itself.""}, ""converted_from_sha256"": ""de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e"", ""maintenance"": {""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5"", ""docs/WAYFINDER.md"", ""ticket:43""], ""code_basis"": {""crates/workcell-cli/src/bin/workcell.rs"": ""67c762429b371bf66bd699631517e22ad2db6341753d74c0fb0150cc26e43a5a"", ""crates/workcell-cli/src/bin/workcell_entry.rs"": ""20c1a9d755a8db5730f2847845ed7cd690ed32e9ece8ce9795cf888ab4c626e8""}, ""updated_at"": ""2026-09-06""}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+cap.workcell.local-world,capability,,,,[],Begin work on an ordinary computer,"CollapsedLocalWorkcell prepares host execution, directory workspace and artifact channels",A usable local material world and durable receipt,Observed in collapsed_local and CLI tests,agent-inference,docs/DEPLOYMENT-PROFILES.md,crates/workcell-runtime/src/local.rs,crates/workcell-runtime/tests/collapsed_local.rs,workcell.html#q2/local-journey,,,"{""basis"": ""Source-recovered capability account; original verification limits retained in Markdown."", ""cli_commands"": [""prepare""], ""cli_exposure"": {""kind"": ""direct"", ""reason"": ""The collapsed-local prepare path materialises the local world and persists its receipt.""}, ""converted_from_sha256"": ""de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e"", ""maintenance"": {""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5"", ""docs/WAYFINDER.md"", ""ticket:43""], ""code_basis"": {""crates/workcell-runtime/src/local.rs"": ""aaf9c45b35b345e0d6ba1147fcfabb596a657666dee656a70aefbc13f4c3d0aa""}, ""updated_at"": ""2026-09-06""}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+cap.workcell.workspace,capability,,,,[],Work with source at the intended revision and access mode,"Directory or Git worktree workspace prepare, observe and release","Material source workspace with revision, access and dirty-state account","Observed real directory, Git and restart tests",agent-inference,docs/ARCHITECTURE.md,crates/workcell-workspace/src/lib.rs,crates/workcell-workspace/tests/directory_provider.rs;crates/workcell-workspace/tests/git_worktree_provider.rs;crates/workcell-workspace/tests/restart_recovery.rs,workcell.html#q2/local-journey,,,"{""basis"": ""Source-recovered capability account; original verification limits retained in Markdown."", ""cli_commands"": [""prepare"", ""observe"", ""release""], ""cli_exposure"": {""kind"": ""composed"", ""reason"": ""These commands operate the workspace as one binding in a material world; no workspace-only leaf command exists.""}, ""converted_from_sha256"": ""de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e"", ""maintenance"": {""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5"", ""docs/WAYFINDER.md"", ""ticket:43""], ""code_basis"": {""crates/workcell-workspace/src/lib.rs"": ""7dac059378256629975290ee4f6fcc87acec89bc385fabb6a313580162473c05""}, ""updated_at"": ""2026-09-06""}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+cap.workcell.bindings,capability,,,,[],Inspect which resources jointly realise a demand,compose_world and BindingGraph construction,Stable material-world relation with caller and provider provenance,Source-inspected; local world construction exercised in selected tests,agent-inference,docs/ARCHITECTURE.md,crates/workcell-core/src/world/compose.rs,crates/workcell-core/tests/material_world.rs,workcell.html#q1/world,,,"{""basis"": ""Source-recovered capability account; original verification limits retained in Markdown."", ""cli_commands"": [""prepare"", ""observe""], ""cli_exposure"": {""kind"": ""composed"", ""reason"": ""Preparation returns composed bindings and observation reads them; the CLI has no BindingGraph-only leaf command.""}, ""converted_from_sha256"": ""de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e"", ""maintenance"": {""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5"", ""docs/WAYFINDER.md"", ""ticket:43""], ""code_basis"": {""crates/workcell-core/src/world/compose.rs"": ""eb24ef29ffb9739d526f2903ff23e91ca8bba1f919d6fc63ddacf3a9e1a14129""}, ""updated_at"": ""2026-09-06""}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+cap.workcell.services,capability,,,,[],Keep a process-backed service reachable and inspectable,ServiceProvider and ManagedHostServiceProvider lifecycle/readiness,Logical service endpoint with material process and health information,Source-inspected; service-specific test suite not run in this pass,agent-inference,docs/CONTROL-SERVICE-AND-AGENT-HOSTING.md,crates/workcell-runtime/src/service.rs;crates/workcell-runtime/src/host.rs,crates/workcell-runtime/tests/managed_host_service.rs;crates/workcell-runtime/tests/hosting_conformance.rs,workcell.html#q2/service-journey,,,"{""basis"": ""Source-recovered capability account; original verification limits retained in Markdown."", ""cli_commands"": [""prepare"", ""observe"", ""release""], ""cli_exposure"": {""kind"": ""composed"", ""reason"": ""Service lifecycle is provider-composed through world operations rather than a service-only leaf command.""}, ""converted_from_sha256"": ""de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e"", ""maintenance"": {""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5"", ""docs/WAYFINDER.md"", ""ticket:43""], ""code_basis"": {""crates/workcell-runtime/src/host.rs"": ""b01293184aa8cde3e84cb3f2e70500ea5699bb17677d261e2e84335bd88715df"", ""crates/workcell-runtime/src/service.rs"": ""9055c902827d54a3b0b90703b7358ee7cdd1429264ab24774a272c2e4a2c99c3""}, ""updated_at"": ""2026-09-06""}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+cap.workcell.observation,capability,,,,[],Know what remains usable in a prepared environment,observe existing world and provider allocations,Live binding observations and unavailable or degraded conditions,Observed local workspace/world paths; wider health cases source-inspected,agent-inference,docs/LIFECYCLE-RECONCILIATION.md,crates/workcell-core/src/world/mod.rs,crates/workcell-core/tests/lifecycle_reconciliation.rs;crates/workcell-runtime/tests/collapsed_local.rs,workcell.html#q0/experience,,,"{""basis"": ""Source-recovered capability account; original verification limits retained in Markdown."", ""cli_commands"": [""observe""], ""cli_exposure"": {""kind"": ""direct"", ""reason"": ""The top-level observe command reads a prepared world from its receipt.""}, ""converted_from_sha256"": ""de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e"", ""maintenance"": {""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5"", ""docs/WAYFINDER.md"", ""ticket:43""], ""code_basis"": {""crates/workcell-core/src/world/mod.rs"": ""8ada2c91cf95ac10bb9003740ab11f8cece99a75163da8256faa10c30176ea7c""}, ""updated_at"": ""2026-09-06""}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+cap.workcell.collection,capability,,,,[],Retain useful material outputs of an activity,collect via artifact/storage provider,Collection bundle pointing to outputs and provenance,Source-inspected; full expose_collect suite not run in this pass,agent-inference,docs/ARCHITECTURE.md,crates/workcell-artifact/src/directory.rs,crates/workcell-runtime/tests/expose_collect.rs,workcell.html#q5/return,,,"{""basis"": ""Source-recovered capability account; original verification limits retained in Markdown."", ""cli_commands"": [""collect""], ""cli_exposure"": {""kind"": ""direct"", ""reason"": ""The top-level collect command collects prepared output channels.""}, ""converted_from_sha256"": ""de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e"", ""maintenance"": {""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5"", ""docs/WAYFINDER.md"", ""ticket:43""], ""code_basis"": {""crates/workcell-artifact/src/directory.rs"": ""2fead2a2a47fc096ec6db5ef445a15878567a198724699857fca4cf50c4b33a6""}, ""updated_at"": ""2026-09-06""}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+cap.workcell.release,capability,,,,[],End or retain an environment with visible consequences,release and retention disposition per binding,Released or preserved material with explicit partial outcomes,Observed local and workspace release; extended lifecycle source-inspected,agent-inference,docs/LIFECYCLE-RECONCILIATION.md,crates/workcell-core/src/world/mod.rs,crates/workcell-core/tests/lifecycle_reconciliation.rs;crates/workcell-runtime/tests/collapsed_local.rs,workcell.html#q2/recovery-journey,,,"{""basis"": ""Source-recovered capability account; original verification limits retained in Markdown."", ""cli_commands"": [""release""], ""cli_exposure"": {""kind"": ""direct"", ""reason"": ""The top-level release command releases or preserves a prepared world.""}, ""converted_from_sha256"": ""de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e"", ""maintenance"": {""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5"", ""docs/WAYFINDER.md"", ""ticket:43""], ""code_basis"": {""crates/workcell-core/src/world/mod.rs"": ""8ada2c91cf95ac10bb9003740ab11f8cece99a75163da8256faa10c30176ea7c""}, ""updated_at"": ""2026-09-06""}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+cap.workcell.reconciliation,capability,,,,[],Compare persisted expectations with current material state,Register durable world and reconcile desired material state,"Explicit missing, stale, recover, resume or rematerialise differences",Source-inspected; workspace restart reconstruction observed,agent-inference,docs/LIFECYCLE-RECONCILIATION.md,crates/workcell-core/src/world/mod.rs,crates/workcell-core/tests/lifecycle_reconciliation.rs;crates/workcell-workspace/tests/restart_recovery.rs,workcell.html#q2/recovery-journey,,,"{""basis"": ""Source-recovered capability account; original verification limits retained in Markdown."", ""cli_commands"": [""reconcile""], ""cli_exposure"": {""kind"": ""direct"", ""reason"": ""The top-level reconcile command compares desired material state with a receipt-backed world.""}, ""converted_from_sha256"": ""de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e"", ""maintenance"": {""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5"", ""docs/WAYFINDER.md"", ""ticket:43""], ""code_basis"": {""crates/workcell-core/src/world/mod.rs"": ""8ada2c91cf95ac10bb9003740ab11f8cece99a75163da8256faa10c30176ea7c""}, ""updated_at"": ""2026-09-06""}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+cap.workcell.remote-control,capability,,,,[],Use the same material operations on a remote Workcell,Authenticated control service and client transport,Native operation results with distinct transport and authentication failures,Observed real local remote-CLI/service tests; physical remote host unrun,agent-inference,docs/CONTROL-SERVICE-AND-AGENT-HOSTING.md,crates/workcell-control/src/service.rs;crates/workcell-control/src/network.rs,crates/workcell-cli/tests/remote_cli.rs;crates/workcell-control/tests/tcp.rs,workcell.html#q4/deployment,,,"{""basis"": ""Source-recovered capability account; original verification limits retained in Markdown."", ""cli_commands"": [""status"", ""discover"", ""plan"", ""prepare"", ""observe"", ""expose"", ""collect"", ""release"", ""reconcile"", ""providers"", ""doctor""], ""cli_exposure"": {""kind"": ""composed"", ""reason"": ""Each listed command is routed through the control service only when --endpoint or its environment default selects a remote backend.""}, ""converted_from_sha256"": ""de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e"", ""maintenance"": {""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5"", ""docs/WAYFINDER.md"", ""ticket:43""], ""code_basis"": {""crates/workcell-control/src/network.rs"": ""9e093acb560a851a73354189bf01ee7ab008edab3aef12b4618cde363866671e"", ""crates/workcell-control/src/service.rs"": ""3d6100feeda385de10310e2903f149b41998b20298d1c9ecda48c02fb61f09ae""}, ""updated_at"": ""2026-09-06""}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+cap.workcell.placement,capability,,,,[],Choose material location without changing client identity,Multi-Workcell offer and placement seam,Placement provenance and provider-neutral demand continuity,Source-inspected; physical multi-host acceptance unrun,agent-inference,docs/MULTI-WORKCELL-PLACEMENT.md,crates/workcell-placement/src/lib.rs,crates/workcell-placement/tests/multi_workcell.rs,workcell.html#q4/deployment,,,"{""basis"": ""Source-recovered capability account; original verification limits retained in Markdown."", ""cli_commands"": [], ""cli_exposure"": {""kind"": ""library"", ""reason"": ""Placement is a library seam; this CLI does not expose a placement-selection leaf command.""}, ""converted_from_sha256"": ""de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e"", ""maintenance"": {""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5"", ""docs/WAYFINDER.md"", ""ticket:43""], ""code_basis"": {""crates/workcell-placement/src/lib.rs"": ""da3215691e70358d81e6de4cc690abfc63d25b4e2e74583343e2241e5248b455""}, ""updated_at"": ""2026-09-06""}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+cap.workcell.connectivity,capability,,,,[],Make logical service relationships materially feasible,Fabric relationship planning and Tailscale reference bindings,"Inspectable reachability, path and policy relations",Source-inspected; live Tailscale and private workstation-server path unrun,agent-inference,docs/CONNECTIVITY-FABRIC.md,crates/workcell-fabric/src/lib.rs;crates/workcell-tailscale/src/lib.rs,crates/workcell-tailscale/tests/aikit_gateway_fabric.rs,workcell.html#q3/access,,,"{""basis"": ""Source-recovered capability account; original verification limits retained in Markdown."", ""cli_commands"": [], ""cli_exposure"": {""kind"": ""library"", ""reason"": ""Fabric and Tailscale bindings are provider/library capabilities without a dedicated current CLI leaf command.""}, ""converted_from_sha256"": ""de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e"", ""maintenance"": {""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5"", ""docs/WAYFINDER.md"", ""ticket:43""], ""code_basis"": {""crates/workcell-fabric/src/lib.rs"": ""d4f68d4f1184b39185218e257eed90052bbc752ad17b81971e8368573fc9d8ce"", ""crates/workcell-tailscale/src/lib.rs"": ""ddb2b8deed2b61f24b73c6c7129786175f98bf808e1ecff26567c4db3b7ed65d""}, ""updated_at"": ""2026-09-06""}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+cap.workcell.candidates,capability,,,,[],Replace a candidate environment while retaining developmental identity,Candidate materialisation adapter using opaque client references,Disposable or retained material bindings related to a stable candidate,Source-inspected; candidate conformance not executed here,agent-inference,docs/CANDIDATE-MATERIALISATION.md,crates/workcell-candidate/src/lib.rs,crates/workcell-candidate/tests/candidate_materialisation.rs,workcell.html#q0/continuity,,,"{""basis"": ""Source-recovered capability account; original verification limits retained in Markdown."", ""cli_commands"": [], ""cli_exposure"": {""kind"": ""library"", ""reason"": ""Candidate materialisation is an adapter/library capability without a dedicated current CLI leaf command.""}, ""converted_from_sha256"": ""de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e"", ""maintenance"": {""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5"", ""docs/WAYFINDER.md"", ""ticket:43""], ""code_basis"": {""crates/workcell-candidate/src/lib.rs"": ""9288041a634b6d609829228326499b7a3401594304b236ff1e51b9f72c4ed377""}, ""updated_at"": ""2026-09-06""}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+cap.workcell.provider-extension,capability,,,,[],Add material capabilities through a public contract,Client/provider SDK contracts and conformance support,Replaceable provider implementations and attributable failures,Source-inspected; SDK conformance not executed here,agent-inference,crates/workcell-sdk/README.md,crates/workcell-sdk/src/lib.rs,crates/workcell-sdk/tests/sdk_conformance.rs,workcell.html#q3/providers,,,"{""basis"": ""Source-recovered capability account; original verification limits retained in Markdown."", ""cli_commands"": [""providers""], ""cli_exposure"": {""kind"": ""composed"", ""reason"": ""providers lists the inventory supplied through the extension contract; provider authoring remains a library capability.""}, ""converted_from_sha256"": ""de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e"", ""maintenance"": {""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5"", ""docs/WAYFINDER.md"", ""ticket:43""], ""code_basis"": {""crates/workcell-sdk/src/lib.rs"": ""fb968235760e31271ee7f09679adbc58358929ec4144ed5dc00f1a506f99a9d8""}, ""updated_at"": ""2026-09-06""}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+cap.workcell.rich-provider,capability,,,,[],"Compose isolated execution, storage and endpoints for a working world",OpenSandbox lifecycle adapter and material composition,Separate bindings with shared physical provenance and native endpoint access,Protocol adapter source-inspected; fixture conformance is not live provider proof,agent-inference,docs/OPENSANDBOX-SOURCE-INTEGRATION.md;../github-recovery-mirror/mirror/Workcell/issues/43.comments.json,crates/workcell-opensandbox/src/composition.rs;crates/workcell-opensandbox/src/project_world.rs,crates/workcell-opensandbox/tests/opensandbox_conformance.rs,workcell.html#q3/access,,,"{""basis"": ""Source-recovered capability account; original verification limits retained in Markdown."", ""cli_commands"": [""prepare"", ""observe"", ""expose"", ""collect"", ""release""], ""cli_exposure"": {""kind"": ""composed"", ""reason"": ""These world commands can use rich providers, but they do not select or prove an OpenSandbox-specific provider.""}, ""converted_from_sha256"": ""de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e"", ""maintenance"": {""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5"", ""docs/WAYFINDER.md"", ""ticket:43""], ""code_basis"": {""crates/workcell-opensandbox/src/composition.rs"": ""5a945f9c935741508d72da20eda675c19351863fb017780d0689a2f27a3efc13"", ""crates/workcell-opensandbox/src/project_world.rs"": ""377c0c3c0d5b7051c7389f0db244bf637925d7d8a2f56976db5193ac0592a8e1""}, ""updated_at"": ""2026-09-06""}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+cap.workcell.checkpoints,capability,,,,[],Handle provider lifetime separately from durable retention,Observe or renew lease and request reusable material checkpoint,Explicit expiry and provider-local restore reference,Source-inspected OpenSandbox protocol implementation; physical restore unrun,agent-inference,docs/OPENSANDBOX-SOURCE-INTEGRATION.md,crates/workcell-opensandbox/src/lib.rs;crates/workcell-core/src/contract/material.rs,crates/workcell-opensandbox/src/lib.rs;crates/workcell-opensandbox/tests/opensandbox_conformance.rs,workcell.html#q2/recovery-journey,,,"{""basis"": ""Source-recovered capability account; original verification limits retained in Markdown."", ""cli_commands"": [], ""cli_exposure"": {""kind"": ""gap"", ""reason"": ""The current help has no checkpoint, lease-renewal, or restore leaf command.""}, ""converted_from_sha256"": ""de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e"", ""maintenance"": {""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5"", ""docs/WAYFINDER.md"", ""ticket:43"", ""pull:56"", ""suite-change:git-lifecycle-and-product-ground-2026-09-08""], ""code_basis"": {""crates/workcell-core/src/contract/material.rs"": ""71d6431c8ac5642e79814af0dae7daa5ffa76fc49b7ee063035e53702c324fb1"", ""crates/workcell-opensandbox/src/lib.rs"": ""786073e8cfb83fa9a1d9e999fee9d3bcc73a6a161dc88e7870221afbb2a8285d""}, ""updated_at"": ""2026-09-08""}, ""last_reconciled_at"": ""2026-09-08T10:47:08.311183+00:00""}",
+cap.workcell.credentials,capability,,,,[],Make a credential usable within bounded material access,Secret materialisation and OpenSandbox credential broker adapter,Use-only credential relation with redacted material receipts,Source-inspected; live credential broker acceptance unrun,agent-inference,docs/OPENSANDBOX-SOURCE-INTEGRATION.md,crates/workcell-opensandbox/src/credential.rs;crates/workcell-core/src/secret.rs,crates/workcell-opensandbox/src/credential.rs,workcell.html#q3/access,,,"{""basis"": ""Source-recovered capability account; original verification limits retained in Markdown."", ""cli_commands"": [], ""cli_exposure"": {""kind"": ""gap"", ""reason"": ""The current help has no credential-materialisation leaf command.""}, ""converted_from_sha256"": ""de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e"", ""maintenance"": {""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5"", ""docs/WAYFINDER.md"", ""ticket:43""], ""code_basis"": {""crates/workcell-core/src/secret.rs"": ""d584f1cd980b7bc0318ed51effdb9cb2df86840fec0d4c1288a6287d966adf51"", ""crates/workcell-opensandbox/src/credential.rs"": ""bbd61b0e230169edd460e247839428fe22bbe5e45350722215485e3fc3ef9fcb""}, ""updated_at"": ""2026-09-06""}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+cap.workcell.instance-registry,capability,,,,[],Know which harness processes are materially present and whether they remain live,"Persist, scan, declare and adopt harness-instance records",A conflict-safe registry distinguishing observed live/stale instances from declared-unverified intent,Observed in native registry and real-process scanner tests,agent-inference,README.md,crates/workcell-runtime/src/instance_registry.rs;crates/workcell-runtime/src/instance_scan.rs,crates/workcell-runtime/src/instance_registry.rs;crates/workcell-runtime/src/instance_scan.rs,workcell.html#q0/continuity,,,"{""basis"": ""Reconciled against the M1-M3 registry implementation landed on Workcell main."", ""cli_commands"": [""instances""], ""cli_exposure"": {""kind"": ""direct"", ""reason"": ""The instances command exposes list, show, register, declare and live scan operations.""}, ""maintenance"": {""change_refs"": [""pull:53"", ""pull:54"", ""pull:55"", ""suite-change:git-lifecycle-and-product-ground-2026-09-08""], ""code_basis"": {""crates/workcell-runtime/src/instance_registry.rs"": ""c0930c1e029323dd46b06c59c029b7aa6ca7a8d1682261a163b130fc9d97da31"", ""crates/workcell-runtime/src/instance_scan.rs"": ""eeb467c5ee961b7236b79447b22dc5083fe1d84de15dc58379832e676c02fac4""}, ""updated_at"": ""2026-09-08""}, ""last_reconciled_at"": ""2026-09-08T10:47:08.311183+00:00""}",
+cap.workcell.sandbox-reconciliation,capability,,,,[],Keep provider-owned sandboxes aligned with Workcell lease records,List and classify server-side OpenSandbox material; optionally release expired or explicitly selected orphans,An inspectable reconciliation report with idempotent cleanup outcomes,Observed in native reconciliation transport tests; live provider acceptance remains unrun,agent-inference,docs/OPENSANDBOX-SOURCE-INTEGRATION.md,crates/workcell-opensandbox/src/reconcile.rs,crates/workcell-opensandbox/src/reconcile.rs,workcell.html#q2/recovery-journey,,,"{""basis"": ""Reconciled against the server-side sandbox reconciler landed on Workcell main."", ""cli_commands"": [""sandboxes""], ""cli_exposure"": {""kind"": ""direct"", ""reason"": ""The sandboxes reconcile command reports and optionally releases provider-side orphan material.""}, ""maintenance"": {""change_refs"": [""pull:56"", ""suite-change:git-lifecycle-and-product-ground-2026-09-08""], ""code_basis"": {""crates/workcell-opensandbox/src/reconcile.rs"": ""cfd4e027dc1d3efc885b03464422b7021453114a900cb6b1b4e504c10c82d3cb""}, ""updated_at"": ""2026-09-08""}, ""last_reconciled_at"": ""2026-09-08T10:47:08.311183+00:00""}",
+cap.workcell.model-hosting,capability,,,,[],Supply material conditions for an inference service,"Managed host process/service with readiness, endpoint and resource requirements",A reachable service with client-owned model meaning and explicit lifecycle,Source-inspected; real Ollama/llama.cpp/vLLM physical acceptance unrun,agent-inference,docs/MODEL-SERVING-CONFORMANCE.md,crates/workcell-runtime/src/service.rs;crates/workcell-runtime/src/host.rs,crates/workcell-runtime/tests/model_serving_conformance.rs,workcell.html#q2/service-journey,,,"{""basis"": ""Source-recovered capability account; original verification limits retained in Markdown."", ""cli_commands"": [""prepare"", ""observe"", ""expose"", ""release""], ""cli_exposure"": {""kind"": ""composed"", ""reason"": ""World commands can manage a requested service, but no model-serving-specific leaf command exists.""}, ""converted_from_sha256"": ""de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e"", ""maintenance"": {""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5"", ""docs/WAYFINDER.md"", ""ticket:43""], ""code_basis"": {""crates/workcell-runtime/src/host.rs"": ""b01293184aa8cde3e84cb3f2e70500ea5699bb17677d261e2e84335bd88715df"", ""crates/workcell-runtime/src/service.rs"": ""9055c902827d54a3b0b90703b7358ee7cdd1429264ab24774a272c2e4a2c99c3""}, ""updated_at"": ""2026-09-06""}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+cap.workcell.exposure,capability,,,,[],Reach a prepared application through an appropriate material endpoint,expose through prepared-world provider bindings,Exposure bundle with endpoint and policy-relevant material information,Source-inspected; expose_collect suite not run in this pass,agent-inference,docs/ARCHITECTURE.md,crates/workcell-core/src/world/mod.rs,crates/workcell-runtime/tests/expose_collect.rs,workcell.html#q1/world,,,"{""basis"": ""Source-recovered capability account; original verification limits retained in Markdown."", ""cli_commands"": [""expose""], ""cli_exposure"": {""kind"": ""direct"", ""reason"": ""The top-level expose command resolves prepared exposure surfaces.""}, ""converted_from_sha256"": ""de34514a63382d808794e42728a3b1212ccd224b09b4220837c0e0e3fde0db2e"", ""maintenance"": {""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5"", ""docs/WAYFINDER.md"", ""ticket:43""], ""code_basis"": {""crates/workcell-core/src/world/mod.rs"": ""8ada2c91cf95ac10bb9003740ab11f8cece99a75163da8256faa10c30176ea7c""}, ""updated_at"": ""2026-09-06""}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H0->H4,relation,suite-relations,H0,H4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,04:ground-materialisation,W,"{""src_product"": ""Central"", ""dst_product"": ""Workcell"", ""ql"": """", ""cf_view"": ""CF5/CF6-field"", ""seam"": ""04:ground-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Central#24(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H0->A4,relation,suite-relations,H0,A4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,04:ground-materialisation,W,"{""src_product"": ""Central"", ""dst_product"": ""Workcell"", ""ql"": """", ""cf_view"": ""CF5/CF6-field"", ""seam"": ""04:ground-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Central#24(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H1->H4,relation,suite-relations,H1,H4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,14:agency-embodiment,H,"{""src_product"": ""Actuation"", ""dst_product"": ""Workcell"", ""ql"": ""C2"", ""cf_view"": ""CF5-field"", ""seam"": ""14:agency-embodiment"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Actuation#1;EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H1->A4,relation,suite-relations,H1,A4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,14:agency-embodiment,H,"{""src_product"": ""Actuation"", ""dst_product"": ""Workcell"", ""ql"": ""D2-complete"", ""cf_view"": ""CF5-field"", ""seam"": ""14:agency-embodiment"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Actuation#1;EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H2->H4,relation,suite-relations,H2,H4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,24:context-materialisation,S,"{""src_product"": ""AIKit"", ""dst_product"": ""Workcell"", ""ql"": """", ""cf_view"": ""CF5-field"", ""seam"": ""24:context-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/ai-kit#58(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H2->A4,relation,suite-relations,H2,A4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,24:context-materialisation,S,"{""src_product"": ""AIKit"", ""dst_product"": ""Workcell"", ""ql"": """", ""cf_view"": ""CF5-field"", ""seam"": ""24:context-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/ai-kit#58(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H3->H4,relation,suite-relations,H3,H4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,34:development-materialisation,H,"{""src_product"": ""Factory"", ""dst_product"": ""Workcell"", ""ql"": ""B2"", ""cf_view"": ""CF5-field"", ""seam"": ""34:development-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/agent-system-design#142(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H3->A4,relation,suite-relations,H3,A4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,34:development-materialisation,H,"{""src_product"": ""Factory"", ""dst_product"": ""Workcell"", ""ql"": ""D2-transform"", ""cf_view"": ""CF5-field"", ""seam"": ""34:development-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/agent-system-design#142(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H4->H0,relation,suite-relations,H4,H0,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,04:ground-materialisation,W,"{""src_product"": ""Workcell"", ""dst_product"": ""Central"", ""ql"": """", ""cf_view"": ""CF5/CF6-field"", ""seam"": ""04:ground-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Central#24(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H4->H1,relation,suite-relations,H4,H1,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,14:agency-embodiment,H,"{""src_product"": ""Workcell"", ""dst_product"": ""Actuation"", ""ql"": ""C2"", ""cf_view"": ""CF5-field"", ""seam"": ""14:agency-embodiment"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Actuation#1;EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H4->H2,relation,suite-relations,H4,H2,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,24:context-materialisation,S,"{""src_product"": ""Workcell"", ""dst_product"": ""AIKit"", ""ql"": """", ""cf_view"": ""CF5-field"", ""seam"": ""24:context-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/ai-kit#58(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H4->H3,relation,suite-relations,H4,H3,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,34:development-materialisation,H,"{""src_product"": ""Workcell"", ""dst_product"": ""Factory"", ""ql"": ""B2"", ""cf_view"": ""CF5-field"", ""seam"": ""34:development-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/agent-system-design#142(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H4->H4,relation,suite-relations,H4,H4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,self:Workcell,I,"{""src_product"": ""Workcell"", ""dst_product"": ""Workcell"", ""ql"": """", ""cf_view"": ""CF5-field"", ""seam"": ""self:Workcell"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H4->H5,relation,suite-relations,H4,H5,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,45:actuality-formal-intelligence,H,"{""src_product"": ""Workcell"", ""dst_product"": ""QL"", ""ql"": ""A3"", ""cf_view"": ""CF5/CF6-field"", ""seam"": ""45:actuality-formal-intelligence"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Workcell#18(PR);EpiLogos/QL-MEF#19(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H4->A0,relation,suite-relations,H4,A0,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,04:ground-materialisation,W,"{""src_product"": ""Workcell"", ""dst_product"": ""Central"", ""ql"": """", ""cf_view"": ""CF5/CF6-field"", ""seam"": ""04:ground-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Central#24(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H4->A1,relation,suite-relations,H4,A1,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,14:agency-embodiment,H,"{""src_product"": ""Workcell"", ""dst_product"": ""Actuation"", ""ql"": ""D2-complete"", ""cf_view"": ""CF5-field"", ""seam"": ""14:agency-embodiment"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Actuation#1;EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H4->A2,relation,suite-relations,H4,A2,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,24:context-materialisation,S,"{""src_product"": ""Workcell"", ""dst_product"": ""AIKit"", ""ql"": """", ""cf_view"": ""CF5-field"", ""seam"": ""24:context-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/ai-kit#58(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H4->A3,relation,suite-relations,H4,A3,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,34:development-materialisation,H,"{""src_product"": ""Workcell"", ""dst_product"": ""Factory"", ""ql"": ""D2-require"", ""cf_view"": ""CF5-field"", ""seam"": ""34:development-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/agent-system-design#142(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H4->A4,relation,suite-relations,H4,A4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,conjugation:Workcell,H,"{""src_product"": ""Workcell"", ""dst_product"": ""Workcell"", ""ql"": ""D1"", ""cf_view"": ""CF5-field"", ""seam"": ""conjugation:Workcell"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H4->A5,relation,suite-relations,H4,A5,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,45:actuality-formal-intelligence,H,"{""src_product"": ""Workcell"", ""dst_product"": ""QL"", ""ql"": ""D2-transform"", ""cf_view"": ""CF5/CF6-field"", ""seam"": ""45:actuality-formal-intelligence"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Workcell#18(PR);EpiLogos/QL-MEF#19(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H5->H4,relation,suite-relations,H5,H4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,45:actuality-formal-intelligence,H,"{""src_product"": ""QL"", ""dst_product"": ""Workcell"", ""ql"": ""A3"", ""cf_view"": ""CF5/CF6-field"", ""seam"": ""45:actuality-formal-intelligence"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Workcell#18(PR);EpiLogos/QL-MEF#19(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+H5->A4,relation,suite-relations,H5,A4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,45:actuality-formal-intelligence,H,"{""src_product"": ""QL"", ""dst_product"": ""Workcell"", ""ql"": ""D2-require"", ""cf_view"": ""CF5/CF6-field"", ""seam"": ""45:actuality-formal-intelligence"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Workcell#18(PR);EpiLogos/QL-MEF#19(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A0->H4,relation,suite-relations,A0,H4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,04:ground-materialisation,W,"{""src_product"": ""Central"", ""dst_product"": ""Workcell"", ""ql"": """", ""cf_view"": ""CF5/CF6-field"", ""seam"": ""04:ground-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Central#24(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A0->A4,relation,suite-relations,A0,A4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,04:ground-materialisation,W,"{""src_product"": ""Central"", ""dst_product"": ""Workcell"", ""ql"": """", ""cf_view"": ""CF5/CF6-field"", ""seam"": ""04:ground-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Central#24(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A1->H4,relation,suite-relations,A1,H4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,14:agency-embodiment,H,"{""src_product"": ""Actuation"", ""dst_product"": ""Workcell"", ""ql"": ""D2-complete.inverse"", ""cf_view"": ""CF5-field"", ""seam"": ""14:agency-embodiment"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Actuation#1;EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A1->A4,relation,suite-relations,A1,A4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,14:agency-embodiment,H,"{""src_product"": ""Actuation"", ""dst_product"": ""Workcell"", ""ql"": ""D3:C2"", ""cf_view"": ""CF5-field"", ""seam"": ""14:agency-embodiment"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Actuation#1;EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A2->H4,relation,suite-relations,A2,H4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,24:context-materialisation,S,"{""src_product"": ""AIKit"", ""dst_product"": ""Workcell"", ""ql"": """", ""cf_view"": ""CF5-field"", ""seam"": ""24:context-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/ai-kit#58(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A2->A4,relation,suite-relations,A2,A4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,24:context-materialisation,S,"{""src_product"": ""AIKit"", ""dst_product"": ""Workcell"", ""ql"": """", ""cf_view"": ""CF5-field"", ""seam"": ""24:context-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/ai-kit#58(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A3->H4,relation,suite-relations,A3,H4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,34:development-materialisation,H,"{""src_product"": ""Factory"", ""dst_product"": ""Workcell"", ""ql"": ""D2-require.inverse"", ""cf_view"": ""CF5-field"", ""seam"": ""34:development-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/agent-system-design#142(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A3->A4,relation,suite-relations,A3,A4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,34:development-materialisation,H,"{""src_product"": ""Factory"", ""dst_product"": ""Workcell"", ""ql"": ""D3:B2"", ""cf_view"": ""CF5-field"", ""seam"": ""34:development-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/agent-system-design#142(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A4->H0,relation,suite-relations,A4,H0,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,04:ground-materialisation,W,"{""src_product"": ""Workcell"", ""dst_product"": ""Central"", ""ql"": """", ""cf_view"": ""CF5/CF6-field"", ""seam"": ""04:ground-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Central#24(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A4->H1,relation,suite-relations,A4,H1,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,14:agency-embodiment,H,"{""src_product"": ""Workcell"", ""dst_product"": ""Actuation"", ""ql"": ""D2-complete.inverse"", ""cf_view"": ""CF5-field"", ""seam"": ""14:agency-embodiment"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Actuation#1;EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A4->H2,relation,suite-relations,A4,H2,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,24:context-materialisation,S,"{""src_product"": ""Workcell"", ""dst_product"": ""AIKit"", ""ql"": """", ""cf_view"": ""CF5-field"", ""seam"": ""24:context-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/ai-kit#58(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A4->H3,relation,suite-relations,A4,H3,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,34:development-materialisation,H,"{""src_product"": ""Workcell"", ""dst_product"": ""Factory"", ""ql"": ""D2-transform.inverse"", ""cf_view"": ""CF5-field"", ""seam"": ""34:development-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/agent-system-design#142(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A4->H4,relation,suite-relations,A4,H4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,conjugation:Workcell,H,"{""src_product"": ""Workcell"", ""dst_product"": ""Workcell"", ""ql"": ""D1.inverse"", ""cf_view"": ""CF5-field"", ""seam"": ""conjugation:Workcell"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A4->H5,relation,suite-relations,A4,H5,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,45:actuality-formal-intelligence,H,"{""src_product"": ""Workcell"", ""dst_product"": ""QL"", ""ql"": ""D2-require.inverse"", ""cf_view"": ""CF5/CF6-field"", ""seam"": ""45:actuality-formal-intelligence"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Workcell#18(PR);EpiLogos/QL-MEF#19(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A4->A0,relation,suite-relations,A4,A0,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,04:ground-materialisation,W,"{""src_product"": ""Workcell"", ""dst_product"": ""Central"", ""ql"": """", ""cf_view"": ""CF5/CF6-field"", ""seam"": ""04:ground-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Central#24(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A4->A1,relation,suite-relations,A4,A1,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,14:agency-embodiment,H,"{""src_product"": ""Workcell"", ""dst_product"": ""Actuation"", ""ql"": ""D3:C2"", ""cf_view"": ""CF5-field"", ""seam"": ""14:agency-embodiment"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Actuation#1;EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A4->A2,relation,suite-relations,A4,A2,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,24:context-materialisation,S,"{""src_product"": ""Workcell"", ""dst_product"": ""AIKit"", ""ql"": """", ""cf_view"": ""CF5-field"", ""seam"": ""24:context-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/ai-kit#58(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A4->A3,relation,suite-relations,A4,A3,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,34:development-materialisation,H,"{""src_product"": ""Workcell"", ""dst_product"": ""Factory"", ""ql"": ""D3:B2"", ""cf_view"": ""CF5-field"", ""seam"": ""34:development-materialisation"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/agent-system-design#142(PR);EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A4->A4,relation,suite-relations,A4,A4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,self:Workcell,I,"{""src_product"": ""Workcell"", ""dst_product"": ""Workcell"", ""ql"": """", ""cf_view"": ""CF5-field"", ""seam"": ""self:Workcell"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Workcell#18(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A4->A5,relation,suite-relations,A4,A5,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,45:actuality-formal-intelligence,H,"{""src_product"": ""Workcell"", ""dst_product"": ""QL"", ""ql"": ""D3:A3"", ""cf_view"": ""CF5/CF6-field"", ""seam"": ""45:actuality-formal-intelligence"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Workcell#18(PR);EpiLogos/QL-MEF#19(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A5->H4,relation,suite-relations,A5,H4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,45:actuality-formal-intelligence,H,"{""src_product"": ""QL"", ""dst_product"": ""Workcell"", ""ql"": ""D2-transform.inverse"", ""cf_view"": ""CF5/CF6-field"", ""seam"": ""45:actuality-formal-intelligence"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Workcell#18(PR);EpiLogos/QL-MEF#19(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+A5->A4,relation,suite-relations,A5,A4,[],,,,,agent-inference,O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR),,,,45:actuality-formal-intelligence,H,"{""src_product"": ""QL"", ""dst_product"": ""Workcell"", ""ql"": ""D3:A3"", ""cf_view"": ""CF5/CF6-field"", ""seam"": ""45:actuality-formal-intelligence"", ""defined_in"": ""O-I:docs/CANONICAL-PRODUCT-FIELD.md|QL-MEF#19(PR)"", ""tracked_by"": ""EpiLogos/O-I#29;EpiLogos/Workcell#18(PR);EpiLogos/QL-MEF#19(PR)"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+rel.workcell.q0.S,relation,product-field,q0,S,"[""cap.workcell.discovery"", ""cap.workcell.observation"", ""cap.workcell.candidates""]",,,,,agent-inference,ProjectCentral/user/workcell.html#whole-why,,,workcell.html#whole/why,"An Agent can understand a task and still lack the material conditions to carry it out: a writable workspace, a running service, a reachable endpoint or enough resources. Workcell closes that gap. It gives human and Agent work an inspectable computational home, so the purpose of an activity can survive changes in the machinery that makes it possible.",,"{""basis"": ""Exact overview seed text. Capability links follow their existing governing expanded account units; cell placement is editorial inference."", ""seed_ref"": ""workcell:seed:q0"", ""source_unit"": ""whole-why"", ""seed_sha256"": ""55ba602c6410bd60dfc79b3b7717d56e19e1bccb72647a96112dae72181c2423"", ""source_standing"": ""agent-inference"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",Why?
+rel.workcell.q1.S,relation,product-field,q1,S,"[""cap.workcell.planning"", ""cap.workcell.cli"", ""cap.workcell.bindings"", ""cap.workcell.exposure""]",,,,,agent-inference,ProjectCentral/user/workcell.html#whole-what,,,workcell.html#whole/what,"Workcell is a Rust CLI, library and optional control service that prepares and manages computational environments. It turns requirements for workspaces, processes, services, storage and connectivity into provider-backed resources, records how they are bound together, and provides operations to inspect, expose, collect from and release them.",,"{""basis"": ""Exact overview seed text. Capability links follow their existing governing expanded account units; cell placement is editorial inference."", ""seed_ref"": ""workcell:seed:q1"", ""source_unit"": ""whole-what"", ""seed_sha256"": ""0287b28cc09bf4940cb6dcb75ddd963379027f65295a19d005801e5fa08267a0"", ""source_standing"": ""agent-inference"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",What?
+rel.workcell.q2.S,relation,product-field,q2,S,"[""cap.workcell.local-world"", ""cap.workcell.workspace"", ""cap.workcell.services"", ""cap.workcell.release"", ""cap.workcell.reconciliation"", ""cap.workcell.checkpoints"", ""cap.workcell.model-hosting""]",,,,,agent-inference,ProjectCentral/user/workcell.html#whole-how,,,workcell.html#whole/how,"A client describes the material conditions it needs. Workcell discovers available providers, plans a feasible composition and prepares the resulting environment. It returns durable references and bindings through which the client can use native processes and services. Observation and reconciliation show what remains available, what changed and what needs recovery.",,"{""basis"": ""Exact overview seed text. Capability links follow their existing governing expanded account units; cell placement is editorial inference."", ""seed_ref"": ""workcell:seed:q2"", ""source_unit"": ""whole-how"", ""seed_sha256"": ""1fd223c6c0b6b2ea68e8dd04a346a0dfb938f7155d6d4996b58169bf782db6e0"", ""source_standing"": ""agent-inference"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",How?
+rel.workcell.q3.S,relation,product-field,q3,S,"[""cap.workcell.connectivity"", ""cap.workcell.provider-extension"", ""cap.workcell.rich-provider"", ""cap.workcell.credentials""]",,,,,agent-inference,ProjectCentral/user/workcell.html#whole-whereby,,,workcell.html#whole/whereby,Workcell serves people who need understandable infrastructure and clients that need reliable material operations. A person can inspect a plan or a running environment; an Agent can use the same operations through structured interfaces. Replaceable providers supply the physical capabilities while the calling product retains the purpose and identity of its work.,,"{""basis"": ""Exact overview seed text. Capability links follow their existing governing expanded account units; cell placement is editorial inference."", ""seed_ref"": ""workcell:seed:q3"", ""source_unit"": ""whole-whereby"", ""seed_sha256"": ""d82818aae51fbb3b839dc27c9532412271994b8a8c0295e68405deb64b4a0c4c"", ""source_standing"": ""agent-inference"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",Who / Whereby?
+rel.workcell.q4.S,relation,product-field,q4,S,"[""cap.workcell.remote-control"", ""cap.workcell.placement""]",,,,,agent-inference,ProjectCentral/user/workcell.html#whole-context,,,workcell.html#whole/context,"Workcell begins on an ordinary computer with filesystem and host-process facilities. Richer deployments can supply containers, persistent services, remote control, private connectivity and isolated execution. The same material questions apply before work begins, while it runs, after interruption and when resources are retained or released.",,"{""basis"": ""Exact overview seed text. Capability links follow their existing governing expanded account units; cell placement is editorial inference."", ""seed_ref"": ""workcell:seed:q4"", ""source_unit"": ""whole-context"", ""seed_sha256"": ""63cc211dff1f5f956a35cddb45e72a0bde54bd76f0adcdf96d8e1720579ff7e1"", ""source_standing"": ""agent-inference"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",Where / When?
+rel.workcell.q5.S,relation,product-field,q5,S,"[""cap.workcell.collection""]",,,,,agent-inference,ProjectCentral/user/workcell.html#whole-purpose,,,workcell.html#whole/purpose,"Workcell lets the O:I products make their intended activities real without rebuilding infrastructure management inside each product. Central provides durable source and placement intention; AIKit resolves operative requirements; Factory relates environments to developmental work. Workcell returns the material facts of what was prepared and what happened, helping people maintain continuity, inspect consequences and improve the next arrangement.",,"{""basis"": ""Exact overview seed text. Capability links follow their existing governing expanded account units; cell placement is editorial inference."", ""seed_ref"": ""workcell:seed:q5"", ""source_unit"": ""whole-purpose"", ""seed_sha256"": ""1d1c14281caf5dcec9244f6685ebf9a3ecaffd67194e1874c9a76ad1db8d41a9"", ""source_standing"": ""agent-inference"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",Why-For?
+rel.workcell.q3.S0,relation,product-field,q3,S0,"[""cap.workcell.bindings"", ""cap.workcell.candidates""]",,,,,agent-inference,ProjectCentral/user/workcell.html#q3-ownership,,,workcell.html#q3/ownership,Central can preserve source and placement intention while a Workcell reports changed material availability.,,"{""basis"": ""Exact account sentence; cell placement is editorial inference."", ""source_unit"": ""q3-ownership"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+rel.workcell.q3.S2,relation,product-field,q3,S2,"[""cap.workcell.bindings"", ""cap.workcell.candidates""]",,,,,agent-inference,ProjectCentral/user/workcell.html#q3-ownership,,,workcell.html#q3/ownership,AIKit can alter its operative deployment choice and keep the Agent relation intact.,,"{""basis"": ""Exact account sentence; cell placement is editorial inference."", ""source_unit"": ""q3-ownership"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+rel.workcell.q3.S3,relation,product-field,q3,S3,"[""cap.workcell.bindings"", ""cap.workcell.candidates""]",,,,,agent-inference,ProjectCentral/user/workcell.html#q3-ownership,,,workcell.html#q3/ownership,Factory can destroy a candidate environment and retain the candidate's developmental history.,,"{""basis"": ""Exact account sentence; cell placement is editorial inference."", ""source_unit"": ""q3-ownership"", ""maintenance"": {""updated_at"": ""2026-09-06"", ""change_refs"": [""codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5""]}, ""last_reconciled_at"": ""2026-09-06T14:30:24.356014+00:00""}",
+```
