@@ -32,7 +32,8 @@ use serde_json::{json, Value};
 
 use crate::instance_registry::{
     build_instance_record, InstanceObservation, InstanceRegistry, RegisterOutcome,
-    EVIDENCE_GATEWAY_CONFIRMED, EVIDENCE_LIVE_PID, LIVENESS_LIVE, LIVENESS_STALE,
+    EVIDENCE_DECLARED_UNVERIFIED, EVIDENCE_GATEWAY_CONFIRMED, EVIDENCE_LIVE_PID, LIVENESS_LIVE,
+    LIVENESS_STALE,
 };
 
 pub const STALE_AFTER_MISSED_SCANS: u64 = 2;
@@ -68,8 +69,21 @@ pub struct ScanTransitions {
     pub registered: usize,
     pub refreshed: usize,
     pub revived: usize,
+    /// A `declared-unverified` record bound to a live observation this scan
+    /// (adopt-after-detect).
+    pub adopted: usize,
     pub went_stale: usize,
     pub still_stale: usize,
+}
+
+/// A named identity conflict the scan refused to auto-resolve. The registry
+/// keeps its existing record; the owner resolves the finding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstanceConflict {
+    pub slug: String,
+    pub existing_ref: String,
+    pub incoming_ref: String,
+    pub reason: &'static str,
 }
 
 /// One scan report. `status: "unavailable"` names a failed run and carries
@@ -82,6 +96,7 @@ pub struct ScanReport {
     pub live: Vec<Value>,
     pub stale: Vec<Value>,
     pub transitions: ScanTransitions,
+    pub conflicts: Vec<InstanceConflict>,
     /// pid comms that matched no known alias; named, never silently dropped.
     pub unmatched_processes: Vec<String>,
 }
@@ -95,6 +110,7 @@ impl ScanReport {
             live: Vec::new(),
             stale: Vec::new(),
             transitions: ScanTransitions::default(),
+            conflicts: Vec::new(),
             unmatched_processes: Vec::new(),
         }
     }
@@ -203,11 +219,94 @@ pub fn reconcile(
         .collect();
 
     let mut transitions = ScanTransitions::default();
+    let mut conflicts = Vec::new();
     for instance in &observed {
         let reference = instance.record["instance_ref"]
             .as_str()
             .unwrap_or_default()
             .to_owned();
+        let slug = instance.record["harness_ref"]
+            .as_str()
+            .unwrap_or_default()
+            .trim_start_matches("harness/")
+            .to_owned();
+        let observed_sha = instance
+            .record
+            .pointer("/executable/sha256")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+
+        // Adopt-after-detect (plan §3): a declaration for this slug binds
+        // to what the scan observes. A declared executable identity that
+        // concretely differs from the observation is a named conflict,
+        // never auto-resolved.
+        let declared: Vec<(String, String)> = registry
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|record| {
+                record
+                    .get("evidence_grade")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    == EVIDENCE_DECLARED_UNVERIFIED
+                    && record
+                        .get("harness_ref")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        == format!("harness/{slug}")
+            })
+            .map(|record| {
+                (
+                    record["instance_ref"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                    record
+                        .pointer("/executable/sha256")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                )
+            })
+            .collect();
+        if let Some((declared_ref, declared_sha)) = declared.first() {
+            if !declared_sha.is_empty() && declared_sha != &observed_sha {
+                conflicts.push(InstanceConflict {
+                    slug,
+                    existing_ref: declared_ref.clone(),
+                    incoming_ref: reference,
+                    reason: "declared executable identity differs from the observed identity",
+                });
+                continue;
+            }
+            match registry.adopt(instance.record.clone(), declared_ref) {
+                Ok(RegisterOutcome::Registered) => {
+                    transitions.adopted += 1;
+                }
+                Ok(RegisterOutcome::Unchanged) => {}
+                Ok(RegisterOutcome::Conflict { existing, .. }) => {
+                    conflicts.push(InstanceConflict {
+                        slug,
+                        existing_ref: existing["instance_ref"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_owned(),
+                        incoming_ref: reference,
+                        reason: "adoption conflicts with another registered identity",
+                    });
+                }
+                Err(error) => {
+                    return ScanReport::unavailable(
+                        workcell_ref,
+                        format!("adopt instance: {error}"),
+                    )
+                }
+            }
+            continue;
+        }
+
         let prior = registry.show(&reference).ok();
         let was_stale = prior
             .as_ref()
@@ -229,10 +328,19 @@ pub fn reconcile(
                     transitions.registered += 1;
                 }
             }
-            Ok(RegisterOutcome::Conflict { .. }) => {
+            Ok(RegisterOutcome::Conflict { existing, .. }) => {
                 // A live observation conflicting with the registered identity
                 // is named and left for the owner; the registry keeps its
                 // existing record (register() never auto-resolves).
+                conflicts.push(InstanceConflict {
+                    slug,
+                    existing_ref: existing["instance_ref"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                    incoming_ref: reference,
+                    reason: "live observation conflicts with the registered identity",
+                });
             }
             Err(error) => {
                 return ScanReport::unavailable(workcell_ref, format!("register instance: {error}"))
@@ -251,6 +359,19 @@ pub fn reconcile(
                 .as_str()
                 .unwrap_or_default()
                 .to_owned();
+            // Declared-unverified records wait for observation; they are
+            // never aged by missed scans (they already disclose
+            // not-observed). They stay visible in the stale listing as the
+            // honest prespecified state.
+            if record
+                .get("evidence_grade")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                == EVIDENCE_DECLARED_UNVERIFIED
+            {
+                stale.push(record);
+                continue;
+            }
             if observed_refs.contains(&reference) {
                 record["consecutive_misses"] = 0u64.into();
                 record["liveness"] = LIVENESS_LIVE.into();
@@ -317,6 +438,7 @@ pub fn reconcile(
         live,
         stale,
         transitions,
+        conflicts,
         unmatched_processes,
     }
 }
@@ -585,9 +707,22 @@ pub fn report_json(report: &ScanReport) -> Value {
             "registered": report.transitions.registered,
             "refreshed": report.transitions.refreshed,
             "revived": report.transitions.revived,
+            "adopted": report.transitions.adopted,
             "went_stale": report.transitions.went_stale,
             "still_stale": report.transitions.still_stale,
         },
+        "conflicts": report
+            .conflicts
+            .iter()
+            .map(|conflict| {
+                json!({
+                    "slug": conflict.slug,
+                    "existing_ref": conflict.existing_ref,
+                    "incoming_ref": conflict.incoming_ref,
+                    "reason": conflict.reason,
+                })
+            })
+            .collect::<Vec<_>>(),
         "unmatched_processes": report.unmatched_processes,
         "instances": report.live.iter().chain(report.stale.iter()).cloned().collect::<Vec<_>>(),
     })
@@ -896,5 +1031,140 @@ mod tests {
         );
         assert_eq!(report.status, "ok");
         assert_eq!(registry.list().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn declared_instance_is_adopted_when_observed() {
+        let root = temp_root("adopt");
+        let registry = InstanceRegistry::new(&root, WorkcellRef::new("workcell:local").unwrap());
+        let declared = registry.declare("hermes", None, "declared:hermes").unwrap();
+        let RegisterOutcome::Registered = declared else {
+            panic!("expected the declaration to register, got {declared:?}");
+        };
+        let declared_ref = registry.list().unwrap()[0]["instance_ref"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            registry.list().unwrap()[0]["evidence_grade"],
+            json!(EVIDENCE_DECLARED_UNVERIFIED)
+        );
+
+        let report = scan(
+            registry.clone(),
+            inputs(
+                detection(&[("hermes", true)]),
+                vec![(41, "hermes".into())],
+                false,
+            ),
+        );
+        assert_eq!(report.status, "ok");
+        assert_eq!(report.transitions.adopted, 1);
+        assert_eq!(report.transitions.registered, 0);
+        assert!(report.conflicts.is_empty());
+
+        // The declared record is gone; the live identity holds the lineage.
+        assert!(registry.show(&declared_ref).is_err());
+        let records = registry.list().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["evidence_grade"], json!(EVIDENCE_LIVE_PID));
+        assert_eq!(records[0]["liveness"], json!(LIVENESS_LIVE));
+        assert_eq!(records[0]["pids"], json!([41]));
+        assert_eq!(
+            records[0]["lineage"]["adopted_from"],
+            json!(declared_ref.clone())
+        );
+    }
+
+    #[test]
+    fn declared_instance_is_never_aged_and_reruns_are_byte_identical() {
+        let root = temp_root("declare-idempotent");
+        let registry = InstanceRegistry::new(&root, WorkcellRef::new("workcell:local").unwrap());
+        registry.declare("pi", None, "declared:pi").unwrap();
+        let before = fs::read(root.join("instances/registry.json")).unwrap();
+
+        for _ in 0..3 {
+            let report = scan(
+                registry.clone(),
+                inputs(detection(&[("hermes", true)]), vec![], false),
+            );
+            assert_eq!(report.status, "ok");
+            // A declaration is not a miss: it never transitions, it waits.
+            assert_eq!(report.transitions.went_stale, 0);
+            assert_eq!(report.transitions.still_stale, 0);
+            assert_eq!(report.transitions.registered, 0);
+            let records = registry.list().unwrap();
+            assert_eq!(records.len(), 1);
+            assert_eq!(
+                records[0]["evidence_grade"],
+                json!(EVIDENCE_DECLARED_UNVERIFIED)
+            );
+            assert_eq!(records[0]["consecutive_misses"], json!(0));
+        }
+        let after = fs::read(root.join("instances/registry.json")).unwrap();
+        assert_eq!(before, after, "re-scans must leave a declaration untouched");
+    }
+
+    #[test]
+    fn declared_executable_identity_differing_from_observation_is_named_conflict() {
+        let root = temp_root("declare-conflict");
+        let registry = InstanceRegistry::new(&root, WorkcellRef::new("workcell:local").unwrap());
+        // A real executable file whose sha256 cannot equal the detection
+        // receipt's "ab".repeat(32).
+        let executable = root.join("bin/hermes");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, b"#!/bin/sh\necho hermes\n").unwrap();
+        registry
+            .declare("hermes", Some(&executable), "identity-from-file")
+            .unwrap();
+
+        let report = scan(
+            registry.clone(),
+            inputs(
+                detection(&[("hermes", true)]),
+                vec![(77, "hermes".into())],
+                false,
+            ),
+        );
+        assert_eq!(report.status, "ok");
+        assert_eq!(report.transitions.adopted, 0);
+        assert_eq!(report.conflicts.len(), 1);
+        assert_eq!(report.conflicts[0].slug, "hermes");
+        assert!(report.conflicts[0]
+            .reason
+            .contains("declared executable identity differs"));
+        // The registry keeps the declared record; nothing auto-resolved.
+        let records = registry.list().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0]["evidence_grade"],
+            json!(EVIDENCE_DECLARED_UNVERIFIED)
+        );
+    }
+
+    #[test]
+    fn declaring_over_a_live_record_is_an_unchanged_noop() {
+        let root = temp_root("declare-over-live");
+        let registry = InstanceRegistry::new(&root, WorkcellRef::new("workcell:local").unwrap());
+        let report = scan(
+            registry.clone(),
+            inputs(
+                detection(&[("codex", true)]),
+                vec![(88, "codex".into())],
+                false,
+            ),
+        );
+        assert_eq!(report.transitions.registered, 1);
+        let live_ref = registry.list().unwrap()[0]["instance_ref"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let declared = registry.declare("codex", None, "declared:codex").unwrap();
+        assert_eq!(declared, RegisterOutcome::Unchanged);
+        let records = registry.list().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["instance_ref"], json!(live_ref));
+        assert_eq!(records[0]["evidence_grade"], json!(EVIDENCE_LIVE_PID));
     }
 }
