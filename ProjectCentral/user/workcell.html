@@ -530,7 +530,7 @@ body.right-closed .right-rail{transform:translateX(100%);opacity:0;pointer-event
   "source_basis_path_base": "repository-root",
   "matrix_basis": {
     "protocol": "ql-capability-matrix/1",
-    "csv_sha256": "934294016c61ece5addeb8ff0c3c09e24e55dad16ca92c0f770bfb81ea08905f",
+    "csv_sha256": "54aa00be0da17dc18176e76c61323564df167ac33b7e5dfbeab8270938a6354f",
     "manifest_sha256": "002afaef8d37a31ceffd8edc2e4e7f074e830f406a437281ad1e6252aa5b5c20",
     "record_sha256": {
       "cap.workcell.discovery": "53eafc08d021ab51ad6d6fec4bd80c4074dd90b94cdcdeaa6363276f34d80398",
@@ -550,8 +550,10 @@ body.right-closed .right-rail{transform:translateX(100%);opacity:0;pointer-event
       "cap.workcell.candidates": "cdd334f1cd37b2c2d18f0613ceff03910a48e42cb1f273eb91e63f3df3035f19",
       "cap.workcell.provider-extension": "df4d47e24fa5d0d2069116a05c8a58777fe4cde8e9b1bd9d157ccf94a3981257",
       "cap.workcell.rich-provider": "825d856d5ee94c2913a213e6ff706118b34c8e3b78c1d8a39536d1e4cfdfe001",
-      "cap.workcell.checkpoints": "50b780f7df01293ca0cce69ebe6bd594969c81c5a3dc43ddd04b84a4219f24a0",
+      "cap.workcell.checkpoints": "a09ee185c8213bf33d99bddf535eb53e6443b6d227e88cb909146b86d726a9a9",
       "cap.workcell.credentials": "e4c25d98f623f05efef01a0779233d722019d1c3306cacfd4219dc127cd0a072",
+      "cap.workcell.instance-registry": "ff9cc68330bc7ce3884adcef0fd70d160e9cf5da3fb2dd8bd828cf58e217f4cd",
+      "cap.workcell.sandbox-reconciliation": "7236d5e78747a19c778fd224096af193d40921468d2c4d2c42e12a3cfec47bcf",
       "cap.workcell.model-hosting": "17fb386032e6499543d034bb7a5430ca454a61172422e004f8f2c0abbe60713b",
       "cap.workcell.exposure": "21a18e605c9e470be2675d18b04a6408e6fdaecd6990348f5ce517aa267e3ee1",
       "H0->H4": "8077d2dee96e769919b2380de894b1b0e269a30f64572678430b290ecbe60722",
@@ -608,9 +610,12 @@ body.right-closed .right-rail{transform:translateX(100%);opacity:0;pointer-event
       "rel.workcell.q3.S2": "d0e53a1562d39b27446614346a5a4a5dab22cf76e3a7cdfdbeea57f144cfa80b",
       "rel.workcell.q3.S3": "38b4b68b4ead9ce5ca48871c86f8a64c1b2ce5a47038d6162a9bb57c93dfda6e"
     },
-    "change_ref": "codex:thread:01a07608-d2ec-7b10-9713-74c445adf8a5",
-    "reviewed_at": "2026-09-06T14:37:53.939048+00:00",
-    "reviewed_sections": []
+    "change_ref": "suite-change:git-lifecycle-and-product-ground-2026-09-08",
+    "reviewed_at": "2026-09-08T10:47:08.311183+00:00",
+    "reviewed_sections": [
+      "q0",
+      "q2"
+    ]
   }
 }</script>
 <script type="application/json" id="ground-resources">
@@ -870,6 +875,14 @@ body.right-closed .right-rail{transform:translateX(100%);opacity:0;pointer-event
   "cap.workcell.rich-provider": {
     "title": "Compose isolated execution, storage and endpoints for a working world",
     "href": "capability-matrix.md#cap-workcell-rich-provider"
+  },
+  "cap.workcell.instance-registry": {
+    "title": "Know which harness processes are materially present and whether they remain live",
+    "href": "capability-matrix.md#cap-workcell-instance-registry"
+  },
+  "cap.workcell.sandbox-reconciliation": {
+    "title": "Keep provider-owned sandboxes aligned with Workcell lease records",
+    "href": "capability-matrix.md#cap-workcell-sandbox-reconciliation"
   },
   "cap.workcell.checkpoints": {
     "title": "Handle provider lifetime separately from durable retention",

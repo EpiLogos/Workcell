@@ -1,5 +1,3 @@
 /target/
 /.ci-helper/
-
-# Local recovery receipts for reviewed documentation changes.
-/.central/documentation-transactions/
+/.central/
