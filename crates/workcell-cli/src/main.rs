@@ -828,12 +828,13 @@ fn command_instances(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
                 match report.status {
                     "ok" => {
                         println!(
-                            "scan: {} live, {} stale ({} registered, {} refreshed, {} revived, {} went stale)",
+                            "scan: {} live, {} stale ({} registered, {} refreshed, {} revived, {} adopted, {} went stale)",
                             report.live.len(),
                             report.stale.len(),
                             report.transitions.registered,
                             report.transitions.refreshed,
                             report.transitions.revived,
+                            report.transitions.adopted,
                             report.transitions.went_stale,
                         );
                         for record in report.live.iter().chain(report.stale.iter()) {
@@ -845,6 +846,15 @@ fn command_instances(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
                                 record["pids"].as_array().map_or("-".to_string(), |pids| {
                                     pids.iter().filter_map(Value::as_u64).map(|pid| pid.to_string()).collect::<Vec<_>>().join(",")
                                 }),
+                            );
+                        }
+                        for conflict in &report.conflicts {
+                            println!(
+                                "  ! conflict: {} — {} vs {} ({})",
+                                conflict.slug,
+                                conflict.existing_ref,
+                                conflict.incoming_ref,
+                                conflict.reason,
                             );
                         }
                         if !report.unmatched_processes.is_empty() {
@@ -1028,8 +1038,83 @@ fn command_instances(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
             }
             Ok(())
         }
+        "declare" => {
+            let mut harness = None;
+            let mut executable: Option<PathBuf> = None;
+            let mut identity_material = None;
+            let mut index = 1;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--harness" => {
+                        index += 1;
+                        harness = args.get(index).cloned();
+                    }
+                    "--executable" => {
+                        index += 1;
+                        executable = args.get(index).map(PathBuf::from);
+                    }
+                    "--identity-material" => {
+                        index += 1;
+                        identity_material = args.get(index).cloned();
+                    }
+                    other => {
+                        return Err(WorkcellError::InvalidDemand(format!(
+                            "unknown instances declare flag `{other}`"
+                        )))
+                    }
+                }
+                index += 1;
+            }
+            let Some(harness) = harness else {
+                return Err(WorkcellError::InvalidDemand(
+                    "usage: workcell instances declare --harness <slug> \
+                     [--executable <path>] [--identity-material <text>]"
+                        .into(),
+                ));
+            };
+            let identity_material = identity_material.unwrap_or_else(|| {
+                executable
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| format!("declared:{harness}"))
+            });
+            match registry.declare(&harness, executable.as_deref(), &identity_material)? {
+                RegisterOutcome::Registered => {
+                    if global.json {
+                        emit_json(json!({ "ok": true, "outcome": "declared" }));
+                    } else {
+                        println!("declared: {harness} (declared-unverified; binds on next scan)");
+                    }
+                }
+                RegisterOutcome::Unchanged => {
+                    if global.json {
+                        emit_json(json!({ "ok": true, "outcome": "unchanged" }));
+                    } else {
+                        println!("unchanged");
+                    }
+                }
+                RegisterOutcome::Conflict { existing, incoming } => {
+                    emit_json(json!({
+                        "ok": false,
+                        "error": {
+                            "kind": "instance_conflict",
+                            "message": format!(
+                                "harness `{}` already holds identity {} (incoming {}); resolve the authored declaration",
+                                harness,
+                                existing["instance_ref"].as_str().unwrap_or("?"),
+                                incoming["instance_ref"].as_str().unwrap_or("?"),
+                            ),
+                        }
+                    }));
+                    return Err(WorkcellError::InvalidDemand(format!(
+                        "declaration conflict for harness `{harness}`; see --json output"
+                    )));
+                }
+            }
+            Ok(())
+        }
         other => Err(WorkcellError::InvalidDemand(format!(
-            "unknown instances subcommand `{other}`; expected list|show|register"
+            "unknown instances subcommand `{other}`; expected list|show|register|declare|scan"
         ))),
     }
 }

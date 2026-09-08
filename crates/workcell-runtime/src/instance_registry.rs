@@ -182,6 +182,168 @@ impl InstanceRegistry {
         Ok(RegisterOutcome::Registered)
     }
 
+    /// Declare a prespecified harness instance before it is observed:
+    /// `evidence_grade: declared-unverified`, no pids, born in the
+    /// disclosed not-observed state.
+    ///
+    /// Adopt-after-detect (plan §3): a later scan observing the same slug
+    /// binds the declaration to what exists via [`InstanceRegistry::adopt`].
+    /// Until then the declaration waits — it is never aged by missed scans
+    /// and never silently deleted.
+    ///
+    /// Conflict law, mirrored from `machine.adopt-current`: a declaration
+    /// whose concrete identity (non-empty executable sha256, or the
+    /// identity material when no executable is given) differs from an
+    /// existing record for the same slug is a named `Conflict`, never
+    /// auto-resolved. Declaring a slug that already holds a live record is
+    /// an `Unchanged` no-op — live evidence dominates a declaration.
+    pub fn declare(
+        &self,
+        slug: &str,
+        executable: Option<&Path>,
+        identity_material: &str,
+    ) -> Result<RegisterOutcome> {
+        let (path, sha256) = match executable {
+            Some(path) => (path.to_path_buf(), sha256_file(path)?),
+            None => (PathBuf::new(), String::new()),
+        };
+        let record = build_instance_record(
+            &self.workcell_ref,
+            &InstanceObservation {
+                slug: slug.to_owned(),
+                executable: path,
+                executable_sha256: sha256.clone(),
+                identity_material: identity_material.to_owned(),
+                pids: Vec::new(),
+                evidence_grade: EVIDENCE_DECLARED_UNVERIFIED.to_owned(),
+                seams: Vec::new(),
+            },
+        );
+        validate_instance_record(&record)?;
+        let declared_ref = record_ref(&record)?;
+
+        let mut file = self.load()?;
+        let instances = file
+            .get_mut("instances")
+            .and_then(Value::as_object_mut)
+            .expect("validated registry file has an instances object");
+
+        if let Some(existing) = instances.get(&declared_ref) {
+            if existing == &record {
+                return Ok(RegisterOutcome::Unchanged);
+            }
+            // Same identity, refreshed declaration fields in place.
+            let mut updated = existing.clone();
+            for key in ["observed_at"] {
+                if let Some(value) = record.get(key) {
+                    updated[key] = value.clone();
+                }
+            }
+            instances.insert(declared_ref.clone(), updated);
+            self.store(&file)?;
+            return Ok(RegisterOutcome::Registered);
+        }
+
+        for (existing_ref, existing) in instances.iter() {
+            if !existing_ref.starts_with(&format!("instance:{slug}:")) {
+                continue;
+            }
+            let existing_sha = existing
+                .pointer("/executable/sha256")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let existing_material = existing
+                .get("identity_material")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let existing_declared = existing
+                .get("evidence_grade")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                == EVIDENCE_DECLARED_UNVERIFIED;
+            let identity_differs = if !sha256.is_empty() && !existing_sha.is_empty() {
+                sha256 != existing_sha
+            } else if existing_declared {
+                identity_material != existing_material
+            } else {
+                false
+            };
+            if identity_differs {
+                return Ok(RegisterOutcome::Conflict {
+                    existing: existing.clone(),
+                    incoming: record,
+                });
+            }
+            // Same slug, no concrete identity conflict: an existing live
+            // record already knows more than a declaration; another
+            // declared record with matching identity was handled above by
+            // instance_ref. Either way nothing to write.
+            return Ok(RegisterOutcome::Unchanged);
+        }
+
+        instances.insert(declared_ref, record);
+        self.store(&file)?;
+        Ok(RegisterOutcome::Registered)
+    }
+
+    /// Adopt-after-detect: replace a `declared-unverified` record with the
+    /// observed live identity, carrying lineage. The caller has already
+    /// established that the declared identity does not concretely conflict
+    /// with the observation; any other same-slug surprise surfaces as a
+    /// named `Conflict`, never auto-resolved.
+    pub fn adopt(&self, observed: Value, declared_ref: &str) -> Result<RegisterOutcome> {
+        validate_instance_record(&observed)?;
+        let observed_ref = record_ref(&observed)?;
+        let mut file = self.load()?;
+        let instances = file
+            .get_mut("instances")
+            .and_then(Value::as_object_mut)
+            .expect("validated registry file has an instances object");
+        let Some(declared) = instances.get(declared_ref) else {
+            return Err(WorkcellError::InvalidDemand(format!(
+                "cannot adopt: no declared record `{declared_ref}`"
+            )));
+        };
+        if observed_ref == declared_ref {
+            // Declaration already matched the observed identity.
+            if declared == &observed {
+                return Ok(RegisterOutcome::Unchanged);
+            }
+            let mut updated = declared.clone();
+            for key in ["pids", "observed_at", "seams", "liveness", "evidence_grade"] {
+                if let Some(value) = observed.get(key) {
+                    updated[key] = value.clone();
+                }
+            }
+            instances.insert(observed_ref.clone(), updated);
+            self.store(&file)?;
+            return Ok(RegisterOutcome::Registered);
+        }
+        for (existing_ref, existing) in instances.iter() {
+            if existing_ref.starts_with(&format!("instance:{}:", harness_slug(&observed)?))
+                && existing_ref != declared_ref
+                && existing.pointer("/executable/sha256") != observed.pointer("/executable/sha256")
+            {
+                return Ok(RegisterOutcome::Conflict {
+                    existing: existing.clone(),
+                    incoming: observed,
+                });
+            }
+        }
+        let mut adopted = observed;
+        adopted["lineage"] = json!({
+            "adopted_from": declared_ref,
+            "declared_identity_material": declared
+                .get("identity_material")
+                .cloned()
+                .unwrap_or(Value::Null),
+        });
+        instances.remove(declared_ref);
+        instances.insert(observed_ref, adopted);
+        self.store(&file)?;
+        Ok(RegisterOutcome::Registered)
+    }
+
     /// Apply liveness bookkeeping from a completed scan: the named records
     /// get their miss count and liveness state written; every other record
     /// is untouched. Records are never deleted here — `stale` is disclosed,
@@ -280,6 +442,18 @@ pub fn build_instance_record(
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let bytes = fs::read(path).map_err(|error| {
+        WorkcellError::InvalidDemand(format!(
+            "cannot hash declared executable {}: {error}",
+            path.display()
+        ))
+    })?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Ok(hex(&hasher.finalize()))
 }
 
 fn observed_now() -> String {
