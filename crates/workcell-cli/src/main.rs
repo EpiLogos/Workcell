@@ -812,11 +812,119 @@ fn command_instances(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
     let registry = InstanceRegistry::new(&global.state_root, workcell_ref.clone());
     let Some(subcommand) = args.first().map(String::as_str) else {
         return Err(WorkcellError::InvalidDemand(
-            "usage: workcell instances <list|show|register|scan> [args]".into(),
+            "usage: workcell instances <list|show|register|declare|scan|candidates|project> [args]"
+                .into(),
         ));
     };
 
     match subcommand {
+        "candidates" => {
+            let records = registry.list()?;
+            let candidates = epilogos_workcell_runtime::projection_candidates(&records);
+            if global.json {
+                emit_json(json!({
+                    "ok": true,
+                    "workcell_ref": workcell_ref.as_str(),
+                    "projection_candidate": !candidates.is_empty(),
+                    "candidates": candidates,
+                }));
+            } else {
+                println!(
+                    "projection candidate: {} ({} detected instance(s) with evidence_grade live-pid or stronger)",
+                    if candidates.is_empty() { "no" } else { "yes" },
+                    candidates.len(),
+                );
+                for record in candidates {
+                    println!(
+                        "  {} [{}] {}",
+                        record["instance_ref"].as_str().unwrap_or("?"),
+                        record["evidence_grade"].as_str().unwrap_or("?"),
+                        record["harness_ref"].as_str().unwrap_or("?"),
+                    );
+                }
+            }
+            Ok(())
+        }
+        "project" => {
+            let Some(reference) = args.get(1) else {
+                return Err(WorkcellError::InvalidDemand(
+                    "usage: workcell instances project <instance_ref> --to-workcell <workcell:ref> \
+                     [--to-state-root <path>]"
+                        .into(),
+                ));
+            };
+            let mut to_workcell = None;
+            let mut to_state_root = global.state_root.clone();
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--to-workcell" => {
+                        index += 1;
+                        to_workcell = args.get(index).cloned();
+                    }
+                    "--to-state-root" => {
+                        index += 1;
+                        let Some(path) = args.get(index) else {
+                            return Err(WorkcellError::InvalidDemand(
+                                "--to-state-root requires a path".into(),
+                            ));
+                        };
+                        to_state_root = PathBuf::from(path);
+                    }
+                    other => {
+                        return Err(WorkcellError::InvalidDemand(format!(
+                            "unknown instances project flag `{other}`"
+                        )))
+                    }
+                }
+                index += 1;
+            }
+            let Some(to_workcell) = to_workcell else {
+                return Err(WorkcellError::InvalidDemand(
+                    "usage: workcell instances project <instance_ref> --to-workcell <workcell:ref> \
+                     [--to-state-root <path>]"
+                        .into(),
+                ));
+            };
+            let target_ref = parse_workcell_ref(&to_workcell)?;
+            let report = epilogos_workcell_runtime::project_instance_live(
+                &registry,
+                reference,
+                &to_state_root,
+                &target_ref,
+                "actuation",
+            )?;
+            let status = report.status;
+            let reason = report
+                .reason
+                .clone()
+                .unwrap_or_else(|| "no reason given".to_owned());
+            if global.json {
+                emit_json(epilogos_workcell_runtime::projection_report_json(&report));
+            } else {
+                match status {
+                    "ok" => {
+                        let redetected = report
+                            .redetected
+                            .expect("ok carries the re-detected record");
+                        println!(
+                            "projected: {} re-detected on {} (identity held: {})",
+                            redetected["harness_ref"].as_str().unwrap_or("?"),
+                            report.target_workcell_ref,
+                            report.expected_instance_ref,
+                        );
+                    }
+                    other => println!("project: {} ({})", other, reason),
+                }
+            }
+            if status == "ok" {
+                Ok(())
+            } else {
+                Err(WorkcellError::OperationFailed(format!(
+                    "projection {status}: {reason}"
+                )))
+            }
+        }
         "scan" => {
             let report = epilogos_workcell_runtime::scan_live(
                 &global.state_root,
@@ -1115,7 +1223,7 @@ fn command_instances(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
             Ok(())
         }
         other => Err(WorkcellError::InvalidDemand(format!(
-            "unknown instances subcommand `{other}`; expected list|show|register|declare|scan"
+            "unknown instances subcommand `{other}`; expected list|show|register|declare|scan|candidates|project"
         ))),
     }
 }
@@ -1591,7 +1699,7 @@ fn print_help() {
     println!(
         "Workcell — provider-neutral material execution control\n\n\
 Usage:\n  workcell [global options] <command> [command options]\n\n\
-Commands:\n  status       Summarise this local Workcell\n  discover     Discover material offers\n  plan         Plan an ExecutionDemand\n  prepare      Prepare a material world and persist a receipt\n  observe      Observe a prepared world from its receipt\n  expose       Resolve prepared exposure surfaces\n  collect      Collect prepared output channels\n  release      Release or preserve a prepared world\n  reconcile    Reconcile desired material state\n  instances    Live harness-instance registry (list|show|register|scan|declare)
+Commands:\n  status       Summarise this local Workcell\n  discover     Discover material offers\n  plan         Plan an ExecutionDemand\n  prepare      Prepare a material world and persist a receipt\n  observe      Observe a prepared world from its receipt\n  expose       Resolve prepared exposure surfaces\n  collect      Collect prepared output channels\n  release      Release or preserve a prepared world\n  reconcile    Reconcile desired material state\n  instances    Live harness-instance registry (list|show|register|scan|declare|candidates|project)
   sandboxes    OpenSandbox server-side material (reconcile)\n  providers    List provider inventory\n  doctor       Verify the zero-setup local baseline\n\n\
 Global options:\n  --json                     Structured machine/agent output\n  --state-root PATH          Local Workcell state (default: $WORKCELL_HOME or ~/.workcell)\n  --workcell-ref REF         Workcell identity for new local operations\n  --receipt PATH             Material-world receipt for prepare/resume\n  --workspace-source PATH    Physical local source binding; never semantic identity\n\n\
 Demand options for plan/prepare:\n  --demand-ref REF\n  --require VALUE | --prefer VALUE | --optional VALUE\n  --workspace writable|read-only [--workspace-ref REF] [--revision REV]\n  --project-runtime MODE\n  --connect VALUE | --prefer-connect VALUE | --optional-connect VALUE\n  --expose VALUE | --prefer-expose VALUE | --optional-expose VALUE\n  --output VALUE | --prefer-output VALUE | --optional-output VALUE\n  --resource key[=amount[:unit]]\n  --subject role=opaque-ref\n  --persistence SCOPE\n  --isolation VALUE\n  --retention release|preserve|suspend-if-supported|snapshot-if-supported\n  --extension key=value\n\n\

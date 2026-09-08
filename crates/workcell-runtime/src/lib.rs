@@ -1,5 +1,6 @@
 mod external_service;
 mod host;
+mod instance_projection;
 mod instance_registry;
 mod instance_scan;
 mod local;
@@ -15,6 +16,10 @@ pub use external_service::{
     ExternalServiceCommand,
 };
 pub use host::{HostProcessExecutionProvider, HostProcessOperationGrant};
+pub use instance_projection::{
+    is_projection_candidate, project_instance, project_instance_live, project_record,
+    projection_candidates, projection_report_json, ProjectionReport,
+};
 pub use instance_registry::{
     build_instance_record, by_slug, identity_hash, seam, sort_by_reference,
     validate_instance_record, InstanceObservation, InstanceRegistry, RegisterOutcome,
@@ -22,8 +27,8 @@ pub use instance_registry::{
     HARNESS_INSTANCE_SCHEMA, LIVENESS_LIVE, LIVENESS_STALE, REGISTRY_SCHEMA,
 };
 pub use instance_scan::{
-    gateway_answering, read_pid_table, reconcile, report_json, scan_live, InstanceConflict,
-    ObservedInstance, ScanInputs, ScanReport, ScanTransitions, PID_ALIASES,
+    gateway_answering, read_pid_table, reconcile, report_json, scan_inputs_live, scan_live,
+    InstanceConflict, ObservedInstance, ScanInputs, ScanReport, ScanTransitions, PID_ALIASES,
     STALE_AFTER_MISSED_SCANS,
 };
 pub use local::{CollapsedLocalConfig, CollapsedLocalWorkcell};

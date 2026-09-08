@@ -114,6 +114,12 @@ impl ScanReport {
             unmatched_processes: Vec::new(),
         }
     }
+
+    /// An unavailable report shaped for a workcell ref given as a plain
+    /// string (callers that never ran a scan still disclose the same shape).
+    pub(crate) fn unavailable_for(workcell_ref: &WorkcellRef) -> Self {
+        Self::unavailable(workcell_ref, "no scan was run".to_owned())
+    }
 }
 
 /// Gathered live inputs. `scan_live` fills these from the host; tests feed
