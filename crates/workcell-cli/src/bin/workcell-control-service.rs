@@ -56,7 +56,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    let mut config = CollapsedLocalConfig::new(WorkcellRef::new(workcell_ref)?, state_root);
+    let mut config = CollapsedLocalConfig::new(WorkcellRef::new(workcell_ref)?, state_root)
+        .with_persistent_host_lifetime();
     if let Some(path) = services {
         config = config.with_service_declaration_file(path);
     }

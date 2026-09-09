@@ -16,7 +16,7 @@ use epilogos_workcell_workspace::DirectoryWorkspaceProvider;
 
 use crate::{
     service_declaration::{read_service_declarations, read_state_root_service_declarations},
-    DeclaredServices, ExternalManagedService, ExternalManagedServiceProvider,
+    DeclaredServices, ExternalManagedService, ExternalManagedServiceProvider, HostLifetime,
     HostProcessExecutionProvider, ManagedHostService, ManagedHostServiceProvider,
 };
 
@@ -56,6 +56,12 @@ pub struct CollapsedLocalConfig {
     pub services: DeclaredServices,
     /// Where further declarations are read from at composition time.
     pub service_declaration: ServiceDeclarationSource,
+    /// Whether the process composing this Workcell is a one-shot command or a
+    /// persistent host (the Workcell Control Service).
+    ///
+    /// Defaults to `OneShotCommand`: the honest assumption unless a persistent
+    /// host explicitly says otherwise. See [`HostLifetime`].
+    pub host_lifetime: HostLifetime,
 }
 
 impl CollapsedLocalConfig {
@@ -67,7 +73,16 @@ impl CollapsedLocalConfig {
             artifact_channels: vec!["logs:run".into(), "artifacts:run".into()],
             services: DeclaredServices::default(),
             service_declaration: ServiceDeclarationSource::StateRoot,
+            host_lifetime: HostLifetime::OneShotCommand,
         }
+    }
+
+    /// Declare that this Workcell is composed inside a persistent host (the
+    /// Workcell Control Service), not a one-shot CLI command, so a
+    /// provider-process-scoped service may honour `retention: preserve`.
+    pub fn with_persistent_host_lifetime(mut self) -> Self {
+        self.host_lifetime = HostLifetime::PersistentHost;
+        self
     }
 
     pub fn with_workspace_source(mut self, source: impl Into<PathBuf>) -> Self {
@@ -322,10 +337,13 @@ impl CollapsedLocalWorkcell {
         // empty provider offers nothing, so a demand for a service nobody
         // declared stays honestly unsatisfiable; what changes is that the port
         // now exists on a real machine instead of only inside runtime tests.
-        let managed_services = SharedProvider::new(ManagedHostServiceProvider::new(
-            ProviderRef::new(MANAGED_SERVICE_PROVIDER_REF).unwrap(),
-            declared.managed,
-        )?);
+        let managed_services = SharedProvider::new(
+            ManagedHostServiceProvider::new(
+                ProviderRef::new(MANAGED_SERVICE_PROVIDER_REF).unwrap(),
+                declared.managed,
+            )?
+            .with_host_lifetime(config.host_lifetime),
+        );
         let target_services = SharedProvider::new(ExternalManagedServiceProvider::new(
             ProviderRef::new(TARGET_SERVICE_PROVIDER_REF).unwrap(),
             declared.target_owned,
@@ -490,6 +508,7 @@ impl CollapsedLocalWorkcell {
                     demand_ref: demand.demand_ref.clone(),
                     connection,
                     persistence: demand.persistence.clone(),
+                    retention: demand.retention.clone(),
                 };
                 if binding.provider_ref == managed_service_ref {
                     self.managed_services.resolve_service(&request)?

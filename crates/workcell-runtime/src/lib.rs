@@ -53,8 +53,8 @@ pub use secret::{
     run_with_secret_env, run_with_secret_file, run_with_secret_pipe, MaterialisedChild,
 };
 pub use service::{
-    ManagedHostService, ManagedHostServiceProvider, StaticService, StaticServiceProvider,
-    TcpEndpointProbe,
+    HostLifetime, ManagedHostService, ManagedHostServiceProvider, StaticService,
+    StaticServiceProvider, TcpEndpointProbe,
 };
 pub use service_declaration::{
     default_service_declaration_path, parse_service_declarations, read_service_declarations,

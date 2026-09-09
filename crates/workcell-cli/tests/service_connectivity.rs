@@ -32,6 +32,7 @@ use serde_json::{json, Value};
 const LISTEN_CHILD_ENV: &str = "WORKCELL_CLI_SERVICE_CHILD";
 const LISTEN_ADDR_ENV: &str = "WORKCELL_CLI_SERVICE_CHILD_ADDR";
 const PROBE_ADDR_ENV: &str = "WORKCELL_CLI_SERVICE_PROBE_ADDR";
+const ENSURE_MARKER_ENV: &str = "WORKCELL_CLI_SERVICE_ENSURE_MARKER";
 
 /// The logical service ref a caller owns. Workcell never parses it.
 const LOGICAL_INFERENCE_SERVICE: &str = "inference:caller-owned-service";
@@ -129,6 +130,31 @@ fn target_owned_declaration(port: u16) -> Value {
     }])
 }
 
+/// A declared service that Workcell must start itself through a target-native
+/// command, then hand off to that target's own supervision. `status`/`start`/
+/// `stop` all check or flip a marker file rather than a real socket, because
+/// what is under test is which command each Workcell verb invokes and when —
+/// not whether a particular process manager can run a program.
+fn ensure_running_declaration(marker: &Path) -> Value {
+    let command = |test_name: &str| {
+        json!({
+            "program": env::current_exe().unwrap().display().to_string(),
+            "args": ["--exact", test_name, "--nocapture"],
+            "env": {ENSURE_MARKER_ENV: marker.display().to_string()},
+        })
+    };
+    json!([{
+        "logical_ref": LOGICAL_INFERENCE_SERVICE,
+        "lifetime": "target-owned",
+        "endpoint": "target-native://ensure-running-fixture",
+        "acquisition": "ensure-running",
+        "status": command("service_ensure_status"),
+        "start": command("service_ensure_start"),
+        "stop": command("service_ensure_stop"),
+        "metadata": {"declared_by": "cli-conformance"},
+    }])
+}
+
 /// Re-invoked by the managed service provider as the material service process.
 #[test]
 fn service_listener_child() {
@@ -163,6 +189,38 @@ fn service_status_probe() {
         TcpStream::connect_timeout(&address, Duration::from_millis(500)).is_ok(),
         "declared service is not reachable at {address}"
     );
+}
+
+/// Re-invoked as the target-native status command for the ensure-running
+/// fixture: healthy iff the target-native supervisor's own marker says so.
+#[test]
+fn service_ensure_status() {
+    let Ok(marker) = env::var(ENSURE_MARKER_ENV) else {
+        return;
+    };
+    assert!(
+        Path::new(&marker).exists(),
+        "ensure-running fixture marker `{marker}` is absent"
+    );
+}
+
+/// Re-invoked as the target-native start command: this is what actually keeps
+/// the service alive once the `workcell` process that resolved it has exited.
+#[test]
+fn service_ensure_start() {
+    let Ok(marker) = env::var(ENSURE_MARKER_ENV) else {
+        return;
+    };
+    fs::write(&marker, b"running").unwrap();
+}
+
+/// Re-invoked as the target-native stop command.
+#[test]
+fn service_ensure_stop() {
+    let Ok(marker) = env::var(ENSURE_MARKER_ENV) else {
+        return;
+    };
+    fs::remove_file(&marker).unwrap();
 }
 
 fn assert_success(output: &Output, what: &str) {
@@ -348,6 +406,91 @@ fn a_target_owned_service_can_be_observed_by_a_later_invocation() {
 
     drop(accepting);
     let _ = fs::remove_dir_all(&state);
+}
+
+#[test]
+fn a_service_workcell_starts_survives_the_command_and_is_stopped_on_release() {
+    let state = temp_path("ensure-running");
+    let marker = temp_path("ensure-running-marker");
+    write_declaration(&state, ensure_running_declaration(&marker));
+    assert!(!marker.exists(), "fixture marker must not pre-exist");
+
+    let receipt = state.join("world.json");
+    let prepared = run(&[
+        "--state-root",
+        path_arg(&state),
+        "--receipt",
+        path_arg(&receipt),
+        "--json",
+        "prepare",
+        "--demand-ref",
+        "demand:cli-ensure-running",
+        "--connect",
+        LOGICAL_INFERENCE_SERVICE,
+    ]);
+    assert_success(&prepared, "workcell prepare");
+    let world: Value = serde_json::from_slice(&fs::read(&receipt).unwrap()).unwrap();
+    let service = world["binding_graph"]["bindings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["port"] == "service")
+        .cloned()
+        .unwrap_or_else(|| panic!("receipt has no service binding: {world}"));
+    assert_eq!(service["properties"]["started_by_provider"], "true");
+    // The target-native start command is what is keeping this alive: the
+    // `workcell prepare` process that invoked it has already exited.
+    assert!(
+        marker.exists(),
+        "prepare must have started the service through its target-native start command"
+    );
+
+    // A separate process, run after the one that started it exited. It has no
+    // in-memory record of the binding and must re-enter it from the receipt.
+    let observed = run(&[
+        "--state-root",
+        path_arg(&state),
+        "--receipt",
+        path_arg(&receipt),
+        "--json",
+        "observe",
+    ]);
+    assert_success(&observed, "workcell observe");
+    let observation = json_stdout(&observed);
+    let observed_service = observation["observations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["logical_ref"] == format!("connectivity:{LOGICAL_INFERENCE_SERVICE}"))
+        .unwrap_or_else(|| panic!("no service observation: {observation}"));
+    assert_eq!(
+        observed_service["state"], "healthy",
+        "a re-entered ensure-running service must be observable: {observed_service}"
+    );
+    assert_eq!(
+        observed_service["detail"]["started_by_provider"], "true",
+        "a fresh process must recover ownership from the receipt, not assume it: {observed_service}"
+    );
+
+    // A third process. Release must follow the ownership this provider
+    // recorded and stop, through the target-native command, a service
+    // Workcell itself started — even though this process never started it.
+    let released = run(&[
+        "--state-root",
+        path_arg(&state),
+        "--receipt",
+        path_arg(&receipt),
+        "--json",
+        "release",
+    ]);
+    assert_success(&released, "workcell release");
+    assert!(
+        !marker.exists(),
+        "release must stop a service Workcell started, even from a fresh process"
+    );
+
+    let _ = fs::remove_dir_all(&state);
+    let _ = fs::remove_file(&marker);
 }
 
 #[test]

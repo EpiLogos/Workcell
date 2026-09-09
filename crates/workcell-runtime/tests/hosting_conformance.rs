@@ -188,6 +188,7 @@ fn persistent_hosting_is_service_lifecycle_plus_fabric_not_agent_gateway_ontolog
         demand_ref: DemandRef::new("demand:persistent-hosting").unwrap(),
         connection: LogicalConnectionRequirement::new("service:interactive-host").unwrap(),
         persistence: Some(PersistenceScope::Project),
+        retention: RetentionExpectation::Release,
     };
 
     let mut services = managed_provider();

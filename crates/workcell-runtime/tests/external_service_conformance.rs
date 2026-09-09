@@ -86,6 +86,7 @@ fn request() -> ServiceMaterialRequest {
         demand_ref: DemandRef::new("demand:external-service").unwrap(),
         connection: LogicalConnectionRequirement::new("service:existing-gateway").unwrap(),
         persistence: Some(epilogos_workcell_core::PersistenceScope::Project),
+        retention: RetentionExpectation::Release,
     }
 }
 
