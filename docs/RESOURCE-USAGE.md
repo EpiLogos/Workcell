@@ -30,6 +30,13 @@ process start marker and executable across both samples. PID reuse, executable
 replacement, instance revival/rebinding or movement to another Workcell is a
 named unavailable result, never a continuation of the old interval.
 
+The live scanner binds each PID to the executable path the host actually
+reports and fingerprints that binary when readable. Installation detection is
+only matching vocabulary; it cannot substitute its candidate executable for a
+different running binary. Processes from the same harness family but distinct
+executables therefore remain distinct HarnessInstances instead of being
+collapsed or made unobservable by a later identity check.
+
 An instance with several PIDs requires an explicit `--pid`. A projected
 instance expectation has no live target PID and therefore cannot be observed;
 the target must first complete its normal re-detection. Once re-detected, a

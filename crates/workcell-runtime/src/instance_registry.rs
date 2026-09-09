@@ -13,8 +13,9 @@
 //!
 //! Temperament (doctor's three honest states): a failed operation is named
 //! unavailability; `stale` is a disclosed state, never a silent delete; a
-//! conflicting identity for a known slug is a named finding, never
-//! auto-resolved.
+//! conflicting identity for a declaration is a named finding, never
+//! auto-resolved. Distinct observed executables of one harness family remain
+//! distinct live instances.
 
 use std::{
     collections::BTreeMap,
@@ -139,13 +140,13 @@ impl InstanceRegistry {
 
     /// Register one validated `workcell.harness-instance/v1` record.
     ///
-    /// Same `instance_ref` with byte-identical content → `Unchanged`. Same
-    /// slug with a differing executable identity → `Conflict` (named, not
-    /// written). Anything else → written and `Registered`.
+    /// Same `instance_ref` with byte-identical content → `Unchanged`. The
+    /// stable executable-derived identity permits more than one live binary
+    /// of the same harness family. Anything else → written and `Registered`.
     pub fn register(&self, record: Value) -> Result<RegisterOutcome> {
         validate_instance_record(&record)?;
         let record_ref = record_ref(&record)?;
-        let slug = harness_slug(&record)?;
+        let _slug = harness_slug(&record)?;
 
         let mut file = self.load()?;
         let instances = file
@@ -168,21 +169,6 @@ impl InstanceRegistry {
             instances.insert(record_ref.clone(), updated.clone());
             self.store(&file)?;
             return Ok(RegisterOutcome::Registered);
-        }
-
-        for (existing_ref, existing) in instances.iter() {
-            if existing_ref.starts_with(&format!("instance:{slug}:")) {
-                let same_identity = existing
-                    .pointer("/executable/sha256")
-                    .and_then(Value::as_str)
-                    == record.pointer("/executable/sha256").and_then(Value::as_str);
-                if !same_identity {
-                    return Ok(RegisterOutcome::Conflict {
-                        existing: existing.clone(),
-                        incoming: record,
-                    });
-                }
-            }
         }
 
         instances.insert(record_ref, record);
@@ -452,7 +438,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn sha256_file(path: &Path) -> Result<String> {
+pub(crate) fn sha256_file(path: &Path) -> Result<String> {
     let bytes = fs::read(path).map_err(|error| {
         WorkcellError::InvalidDemand(format!(
             "cannot hash declared executable {}: {error}",
@@ -778,8 +764,8 @@ mod tests {
     }
 
     #[test]
-    fn same_slug_different_executable_is_named_conflict() {
-        let root = temp_root("conflict");
+    fn same_slug_different_live_executables_are_distinct_instances() {
+        let root = temp_root("multiple-live-identities");
         let registry = InstanceRegistry::new(&root, WorkcellRef::new("workcell:local").unwrap());
         registry
             .register(sample_record(
@@ -795,15 +781,10 @@ mod tests {
             "dd".repeat(32).as_str(),
             Some(2),
         ));
-        match outcome.unwrap() {
-            RegisterOutcome::Conflict { existing, incoming } => {
-                assert_eq!(existing["executable"]["sha256"], "cc".repeat(32));
-                assert_eq!(incoming["executable"]["sha256"], "dd".repeat(32));
-            }
-            other => panic!("expected conflict, got {other:?}"),
-        }
-        // The conflicting record is never auto-resolved into the store.
-        assert_eq!(registry.list().unwrap().len(), 1);
+        assert_eq!(outcome.unwrap(), RegisterOutcome::Registered);
+        let records = registry.list().unwrap();
+        assert_eq!(records.len(), 2);
+        assert_ne!(records[0]["instance_ref"], records[1]["instance_ref"]);
     }
 
     #[test]

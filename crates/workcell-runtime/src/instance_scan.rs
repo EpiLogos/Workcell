@@ -20,7 +20,8 @@
 //! silently deleted).
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
+    fs,
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -31,7 +32,7 @@ use epilogos_workcell_core::{Result, WorkcellError, WorkcellRef};
 use serde_json::{json, Value};
 
 use crate::instance_registry::{
-    build_instance_record, InstanceObservation, InstanceRegistry, RegisterOutcome,
+    build_instance_record, sha256_file, InstanceObservation, InstanceRegistry, RegisterOutcome,
     EVIDENCE_DECLARED_UNVERIFIED, EVIDENCE_GATEWAY_CONFIRMED, EVIDENCE_LIVE_PID, LIVENESS_LIVE,
     LIVENESS_STALE,
 };
@@ -127,7 +128,8 @@ impl ScanReport {
 pub struct ScanInputs {
     /// Parsed Actuation detection document (`actuation.harness-detection/v1`).
     pub detection: Value,
-    /// Live pid table: (pid, executable basename).
+    /// Live pid table: (pid, observed executable path where the host supplies
+    /// one, otherwise its executable name).
     pub processes: Vec<(u32, String)>,
     /// Whether the ai-kit Agency Gateway answered its well-known endpoint
     /// this scan. An independent detection seam: Hermes runs under
@@ -420,7 +422,7 @@ pub fn reconcile(
     let matched_comms: BTreeSet<String> = inputs
         .processes
         .iter()
-        .map(|(_, comm)| comm.clone())
+        .map(|(_, comm)| executable_basename(comm))
         .collect();
     let known_aliases: BTreeSet<&str> = PID_ALIASES.iter().map(|(alias, _)| *alias).collect();
     let unmatched_processes = matched_comms
@@ -501,12 +503,25 @@ fn observations_from_detection(
             .cloned()
             .unwrap_or_default();
 
-        let pids: Vec<u32> = processes
-            .iter()
-            .filter(|(_, comm)| comm == &executable_name || alias_matches_slug(comm, slug))
-            .map(|(pid, _)| *pid)
-            .collect();
-        if pids.is_empty() {
+        let mut process_groups: BTreeMap<(PathBuf, bool), Vec<u32>> = BTreeMap::new();
+        for (pid, observed_comm) in processes {
+            let observed_name = executable_basename(observed_comm);
+            if observed_name != executable_name && !alias_matches_slug(&observed_name, slug) {
+                continue;
+            }
+            let observed_path = PathBuf::from(observed_comm);
+            let observed_identity = observed_path.is_absolute();
+            let identity_path = if observed_identity {
+                fs::canonicalize(&observed_path).unwrap_or(observed_path)
+            } else {
+                PathBuf::from(executable_path)
+            };
+            process_groups
+                .entry((identity_path, observed_identity))
+                .or_default()
+                .push(*pid);
+        }
+        if process_groups.is_empty() {
             continue; // installed, not executing — not an instance
         }
 
@@ -514,24 +529,37 @@ fn observations_from_detection(
         if (slug == "hermes" || slug == "hermes-acp") && gateway_answer {
             evidence_grade = EVIDENCE_GATEWAY_CONFIRMED;
         }
-        let identity_material = if executable_path.is_empty() {
-            format!("pid-observed:{executable_name}")
-        } else {
-            executable_path.to_owned()
-        };
-        let record = build_instance_record(
-            workcell_ref,
-            &InstanceObservation {
-                slug: slug.to_owned(),
-                executable: PathBuf::from(executable_path),
-                executable_sha256: executable_sha.to_owned(),
-                identity_material,
-                pids,
-                evidence_grade: evidence_grade.to_owned(),
-                seams: seams.clone(),
-            },
-        );
-        observed.push(ObservedInstance { record });
+        for ((identity_path, observed_identity), pids) in process_groups {
+            let (path, sha256, identity_material) = if observed_identity {
+                let sha256 = sha256_file(&identity_path)?;
+                let material = identity_path.to_string_lossy().into_owned();
+                (identity_path, sha256, material)
+            } else {
+                let material = if executable_path.is_empty() {
+                    format!("pid-observed:{executable_name}")
+                } else {
+                    executable_path.to_owned()
+                };
+                (
+                    PathBuf::from(executable_path),
+                    executable_sha.to_owned(),
+                    material,
+                )
+            };
+            let record = build_instance_record(
+                workcell_ref,
+                &InstanceObservation {
+                    slug: slug.to_owned(),
+                    executable: path,
+                    executable_sha256: sha256,
+                    identity_material,
+                    pids,
+                    evidence_grade: evidence_grade.to_owned(),
+                    seams: seams.clone(),
+                },
+            );
+            observed.push(ObservedInstance { record });
+        }
     }
     Ok(observed)
 }
@@ -664,19 +692,18 @@ pub fn read_pid_table() -> std::result::Result<Vec<(u32, String)>, String> {
         let Some(pid) = parts.next().and_then(|value| value.parse::<u32>().ok()) else {
             continue;
         };
-        let comm = parts
-            .next()
-            .map(|value| {
-                Path::new(value)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or(value)
-                    .to_owned()
-            })
-            .unwrap_or_default();
+        let comm = parts.next().unwrap_or_default().to_owned();
         processes.push((pid, comm));
     }
     Ok(processes)
+}
+
+fn executable_basename(value: &str) -> String {
+    Path::new(value)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(value)
+        .to_owned()
 }
 
 /// Minimal shape validation of the Actuation detection document. Full
@@ -842,6 +869,76 @@ mod tests {
         assert_eq!(records[0]["pids"], json!([4242]));
         assert_eq!(records[0]["liveness"], "live");
         assert_eq!(records[0]["seams"][0]["kind"], "skills");
+    }
+
+    #[test]
+    fn live_scan_binds_the_observed_executable_not_the_installed_candidate() {
+        let root = temp_root("observed-executable");
+        let running_dir = root.join("ChatGPT.app/Contents/Resources");
+        fs::create_dir_all(&running_dir).unwrap();
+        let running = running_dir.join("codex");
+        fs::write(&running, b"actual running codex binary").unwrap();
+        let registry = InstanceRegistry::new(&root, WorkcellRef::new("workcell:local").unwrap());
+
+        let report = scan(
+            registry.clone(),
+            inputs(
+                detection(&[("codex", true)]),
+                vec![(30757, running.to_string_lossy().into_owned())],
+                false,
+            ),
+        );
+
+        assert_eq!(report.status, "ok");
+        let records = registry.list().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["pids"], json!([30757]));
+        let canonical_running = fs::canonicalize(&running).unwrap();
+        assert_eq!(
+            records[0]["executable"]["path"],
+            canonical_running.to_string_lossy().as_ref()
+        );
+        assert_ne!(records[0]["executable"]["sha256"], "ab".repeat(32));
+    }
+
+    #[test]
+    fn same_slug_processes_with_distinct_executables_are_distinct_instances() {
+        let root = temp_root("distinct-executables");
+        let first = root.join("one/codex");
+        let second = root.join("two/codex");
+        fs::create_dir_all(first.parent().unwrap()).unwrap();
+        fs::create_dir_all(second.parent().unwrap()).unwrap();
+        fs::write(&first, b"codex one").unwrap();
+        fs::write(&second, b"codex two").unwrap();
+        let registry = InstanceRegistry::new(&root, WorkcellRef::new("workcell:local").unwrap());
+
+        let report = scan(
+            registry.clone(),
+            inputs(
+                detection(&[("codex", true)]),
+                vec![
+                    (10, first.to_string_lossy().into_owned()),
+                    (11, second.to_string_lossy().into_owned()),
+                ],
+                false,
+            ),
+        );
+
+        assert_eq!(report.status, "ok");
+        assert_eq!(report.transitions.registered, 2);
+        let records = registry.list().unwrap();
+        assert_eq!(records.len(), 2);
+        assert_ne!(records[0]["instance_ref"], records[1]["instance_ref"]);
+        assert_ne!(
+            records[0]["executable"]["sha256"],
+            records[1]["executable"]["sha256"]
+        );
+        let mut pids = records
+            .iter()
+            .map(|record| record["pids"][0].as_u64().unwrap())
+            .collect::<Vec<_>>();
+        pids.sort_unstable();
+        assert_eq!(pids, vec![10, 11]);
     }
 
     #[test]
