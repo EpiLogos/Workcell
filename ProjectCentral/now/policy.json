@@ -1,0 +1,16 @@
+{
+  "schema": "central.project-now.policy/v1",
+  "carry_statuses": [
+    "active",
+    "waiting",
+    "carried"
+  ],
+  "remove_statuses": [
+    "resolved",
+    "expired",
+    "promoted"
+  ],
+  "protect_when_preserve_refs_exist": true,
+  "human_scratch_cleanup": "human-owned-manual",
+  "day_boundary": "caller-supplied-local-civil-date"
+}

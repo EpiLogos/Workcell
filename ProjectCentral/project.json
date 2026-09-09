@@ -1,0 +1,9 @@
+{
+  "human_source": "ProjectCentral/user",
+  "project_id": "Workcell",
+  "schema": "central.project/v1",
+  "wiki": {
+    "profile": "okf-wiki/v1",
+    "source": "ProjectCentral/agents/wiki/wiki.json"
+  }
+}
