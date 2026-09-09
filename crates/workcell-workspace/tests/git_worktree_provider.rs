@@ -4,6 +4,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -14,14 +15,17 @@ use epilogos_workcell_core::{
 };
 use epilogos_workcell_workspace::GitWorktreeWorkspaceProvider;
 
+static NEXT_TEMP_PATH: AtomicU64 = AtomicU64::new(0);
+
 fn temp_path(label: &str) -> PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!(
-        "epilogos-workcell-{label}-{}-{nonce}",
-        std::process::id()
+        "epilogos-workcell-{label}-{}-{nonce}-{}",
+        std::process::id(),
+        NEXT_TEMP_PATH.fetch_add(1, Ordering::Relaxed),
     ))
 }
 

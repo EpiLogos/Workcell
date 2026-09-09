@@ -41,6 +41,95 @@ fn json_stdout(output: &Output) -> Value {
 }
 
 #[test]
+fn instance_usage_cli_observes_a_real_local_process_without_private_process_data() {
+    let state = temp_path("resource-usage");
+    let executable = std::env::current_exe().unwrap();
+    let pid = std::process::id().to_string();
+    let registered = run(&[
+        "--state-root",
+        path_arg(&state),
+        "--workcell-ref",
+        "workcell:owner-machine-test",
+        "--json",
+        "instances",
+        "register",
+        "--harness",
+        "cli-resource-test",
+        "--executable",
+        path_arg(&executable),
+        "--sha256",
+        "real-cli-test-process",
+        "--pid",
+        &pid,
+    ]);
+    assert!(
+        registered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&registered.stderr)
+    );
+
+    let listed = run(&[
+        "--state-root",
+        path_arg(&state),
+        "--workcell-ref",
+        "workcell:owner-machine-test",
+        "--json",
+        "instances",
+        "list",
+    ]);
+    let instance_ref = json_stdout(&listed)["instances"][0]["instance_ref"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let usage = run(&[
+        "--state-root",
+        path_arg(&state),
+        "--workcell-ref",
+        "workcell:owner-machine-test",
+        "--json",
+        "instances",
+        "usage",
+        &instance_ref,
+        "--pid",
+        &pid,
+        "--interval-ms",
+        "15",
+        "--correlation-ref",
+        "opaque:factory-test-run",
+    ]);
+    assert!(
+        usage.status.success(),
+        "{}",
+        String::from_utf8_lossy(&usage.stderr)
+    );
+    let reading = json_stdout(&usage);
+    assert_eq!(reading["schema"], "workcell.resource-usage/v1");
+    assert_eq!(reading["ok"], true);
+    assert_eq!(reading["workcell_ref"], "workcell:owner-machine-test");
+    assert_eq!(reading["harness_instance_ref"], instance_ref);
+    assert_eq!(reading["material_binding"]["pid"], std::process::id());
+    assert_eq!(reading["metrics"]["cpu_time"]["standing"], "observed");
+    assert_eq!(reading["metrics"]["memory_rss"]["standing"], "observed");
+    assert_eq!(
+        reading["metrics"]["network_bytes"]["standing"],
+        "unsupported"
+    );
+    assert_eq!(reading["provider"]["privacy"]["argv_collected"], false);
+    assert_eq!(
+        reading["provider"]["privacy"]["environment_collected"],
+        false
+    );
+    assert_eq!(
+        reading["external_correlation_refs"][0],
+        "opaque:factory-test-run"
+    );
+    assert!(reading.get("argv").is_none());
+    assert!(reading.get("environment").is_none());
+
+    let _ = fs::remove_dir_all(state);
+}
+
+#[test]
 fn status_and_discovery_are_agent_operable_json() {
     let state = temp_path("status");
     let status = run(&["--state-root", path_arg(&state), "--json", "status"]);

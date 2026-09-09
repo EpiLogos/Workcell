@@ -164,6 +164,8 @@ Current main and repository verification determine what is implemented now. Prov
 
 Read:
 
+- [`docs/RESOURCE-USAGE.md`](docs/RESOURCE-USAGE.md) — bounded, truthful CPU
+  and memory readings for live HarnessInstance processes.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — product boundary, material contract and provider-neutral architecture.
 - [`docs/MATERIALISATION-SPEC.md`](docs/MATERIALISATION-SPEC.md) — material world and binding semantics.
 - [`docs/LIFECYCLE-AND-CANDIDATES.md`](docs/LIFECYCLE-AND-CANDIDATES.md) — lifecycle, reconciliation and Candidate materialisation.
