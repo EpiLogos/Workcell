@@ -37,7 +37,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::{WorkcellError, WorkcellRef};
+    use crate::WorkcellRef;
 
     struct ContractFixture;
 
