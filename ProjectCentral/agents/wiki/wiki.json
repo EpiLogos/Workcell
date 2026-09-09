@@ -1,0 +1,17 @@
+{
+  "objects": [
+    {
+      "child_space_refs": [],
+      "node_refs": [],
+      "object": "space",
+      "parent_space_refs": [
+        "central:wiki:root"
+      ],
+      "profile": "okf-wiki/v1",
+      "provenance": [],
+      "ref": "central:wiki:project:Workcell",
+      "revision": 1,
+      "title": "Workcell"
+    }
+  ]
+}
