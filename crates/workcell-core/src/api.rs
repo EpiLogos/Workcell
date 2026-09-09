@@ -1,7 +1,7 @@
 use crate::{
     CollectionBundle, DesiredMaterialState, Discovery, ExecutionDemand, ExposureBundle,
     MaterialisationPlan, MaterialisedExecutionWorld, ObservationBundle, ReconciliationResult,
-    ReleaseResult, Result, WorldRef,
+    ReleaseResult, Result, WorkcellError, WorldRef,
 };
 
 /// Provider-neutral Workcell control-plane contract.
@@ -12,6 +12,19 @@ pub trait WorkcellControlPlane {
     fn discover(&self) -> Result<Discovery>;
     fn plan(&self, demand: &ExecutionDemand) -> Result<MaterialisationPlan>;
     fn prepare(&mut self, demand: &ExecutionDemand) -> Result<MaterialisedExecutionWorld>;
+
+    /// Re-read the canonical material binding graph for a prepared world.
+    ///
+    /// The default keeps existing third-party control planes source-compatible;
+    /// implementations with durable world state should override it. This is an
+    /// inspection of Workcell-owned material identity and lifecycle state, not
+    /// a semantic Project/Run/Agent lookup.
+    fn inspect(&self, _world: &WorldRef) -> Result<MaterialisedExecutionWorld> {
+        Err(WorkcellError::Unsupported(
+            "material-world inspection is not supported by this control plane".into(),
+        ))
+    }
+
     fn observe(&self, world: &WorldRef) -> Result<ObservationBundle>;
     fn expose(&self, world: &WorldRef) -> Result<ExposureBundle>;
     fn collect(&self, world: &WorldRef) -> Result<CollectionBundle>;
@@ -74,5 +87,9 @@ mod tests {
         let fixture = ContractFixture;
         let discovered = fixture.discover().unwrap();
         assert_eq!(discovered.workcell_ref.as_str(), "workcell:fixture");
+        assert!(matches!(
+            fixture.inspect(&WorldRef::new("world:fixture").unwrap()),
+            Err(WorkcellError::Unsupported(_))
+        ));
     }
 }
