@@ -206,16 +206,48 @@ impl ExternalManagedServiceProvider {
     }
 
     fn record(&self, allocation: &ProviderAllocation) -> Result<ExternalServiceRecord> {
+        if let Some(record) = self.records.borrow().get(&allocation.material_ref).cloned() {
+            return Ok(record);
+        }
+        self.reenter(allocation).ok_or_else(|| {
+            WorkcellError::NotFound(format!(
+                "external service binding `{}` is not known by this provider",
+                allocation.material_ref
+            ))
+        })
+    }
+
+    /// Rebuild a process-local record for a binding this provider itself minted.
+    ///
+    /// A target-owned service is supervised outside Workcell, so a later process
+    /// can honestly re-observe it: the status command is run again and answers
+    /// for itself. Re-entry is refused unless the binding names a service that
+    /// is still declared at the same endpoint, and `started_by_provider` is
+    /// taken from the binding rather than assumed, so release never stops
+    /// something Workcell did not start.
+    fn reenter(&self, allocation: &ProviderAllocation) -> Option<ExternalServiceRecord> {
+        if allocation.provider_ref != self.provider_ref
+            || allocation.port != ProviderPortKind::Service
+        {
+            return None;
+        }
+        let logical_ref = allocation.properties.get("logical_ref")?;
+        let service = self.services.get(logical_ref)?;
+        if allocation.properties.get("endpoint") != Some(&service.endpoint) {
+            return None;
+        }
+        let record = ExternalServiceRecord {
+            service: service.clone(),
+            started_by_provider: allocation
+                .properties
+                .get("started_by_provider")
+                .map(|value| value == "true")
+                .unwrap_or(false),
+        };
         self.records
-            .borrow()
-            .get(&allocation.material_ref)
-            .cloned()
-            .ok_or_else(|| {
-                WorkcellError::NotFound(format!(
-                    "external service binding `{}` is not known by this provider",
-                    allocation.material_ref
-                ))
-            })
+            .borrow_mut()
+            .insert(allocation.material_ref.clone(), record.clone());
+        Some(record)
     }
 
     fn observe_record(
@@ -289,6 +321,9 @@ impl ProviderPort for ExternalManagedServiceProvider {
                 metadata.insert("implementation".into(), "external-managed-service".into());
                 metadata.insert("logical_ref".into(), service.logical_ref.clone());
                 metadata.insert("configuration_owner".into(), "target".into());
+                metadata.insert("lifetime".into(), "target-owned".into());
+                metadata.insert("endpoint".into(), service.endpoint.clone());
+                metadata.insert("status_command".into(), service.status.display());
                 Ok(OperationalOffer {
                     offer_ref: OfferRef::new(format!(
                         "offer:{}:external-service:{}",
@@ -362,12 +397,14 @@ impl ServiceProvider for ExternalManagedServiceProvider {
         properties.insert("logical_ref".into(), logical_ref.into());
         properties.insert("endpoint".into(), service.endpoint.clone());
         properties.insert("configuration_owner".into(), "target".into());
+        properties.insert("lifetime".into(), "target-owned".into());
         properties.insert(
             "started_by_provider".into(),
             started_by_provider.to_string(),
         );
         let mut provenance = service.metadata.clone();
         provenance.insert("implementation".into(), "external-managed-service".into());
+        provenance.insert("lifetime".into(), "target-owned".into());
         provenance.insert("status_command".into(), service.status.display());
 
         self.records.borrow_mut().insert(

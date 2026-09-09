@@ -468,6 +468,15 @@ impl ProviderPort for ManagedHostServiceProvider {
             metadata.insert("logical_ref".into(), service.logical_ref.clone());
             metadata.insert("program".into(), service.program.clone());
             metadata.insert("endpoint".into(), service.endpoint.clone());
+            metadata.insert("lifetime".into(), "provider-process-scoped".into());
+            metadata.insert(
+                "physical_acceptance".into(),
+                if available {
+                    "executable-present-not-started".into()
+                } else {
+                    "executable-absent".to_owned()
+                },
+            );
             offers.push(OperationalOffer {
                 offer_ref: OfferRef::new(format!(
                     "offer:{}:managed-service:{}",
@@ -530,8 +539,14 @@ impl ServiceProvider for ManagedHostServiceProvider {
         properties.insert("endpoint".into(), service.endpoint.clone());
         properties.insert("program".into(), service.program.clone());
         properties.insert("pid".into(), child.id().to_string());
+        // The child belongs to this provider, and this provider belongs to this
+        // process. A one-shot command's service dies when the command returns;
+        // a long-running host keeps it. Say so in the binding rather than let a
+        // receipt imply a service that outlives its parent.
+        properties.insert("lifetime".into(), "provider-process-scoped".into());
         let mut provenance = BTreeMap::new();
         provenance.insert("implementation".into(), "managed-host-service".into());
+        provenance.insert("lifetime".into(), "provider-process-scoped".into());
         provenance.insert("logical_ref".into(), logical_ref.into());
         provenance.insert("provider_ref".into(), self.provider_ref.to_string());
         provenance.insert("program".into(), service.program.clone());

@@ -10,6 +10,7 @@ mod resource_usage;
 mod runtime;
 mod secret;
 mod service;
+mod service_declaration;
 mod support;
 
 pub use external_service::{
@@ -32,7 +33,10 @@ pub use instance_scan::{
     InstanceConflict, ObservedInstance, ScanInputs, ScanReport, ScanTransitions, PID_ALIASES,
     STALE_AFTER_MISSED_SCANS,
 };
-pub use local::{CollapsedLocalConfig, CollapsedLocalWorkcell};
+pub use local::{
+    CollapsedLocalConfig, CollapsedLocalWorkcell, ServiceDeclarationSource,
+    MANAGED_SERVICE_PROVIDER_REF, TARGET_SERVICE_PROVIDER_REF,
+};
 pub use profile::*;
 pub use reference_services::{
     aikit_gateway_service, hermes_gateway_service, openclaw_gateway_service,
@@ -51,4 +55,9 @@ pub use secret::{
 pub use service::{
     ManagedHostService, ManagedHostServiceProvider, StaticService, StaticServiceProvider,
     TcpEndpointProbe,
+};
+pub use service_declaration::{
+    default_service_declaration_path, parse_service_declarations, read_service_declarations,
+    read_state_root_service_declarations, DeclaredServices, ServiceLifetime,
+    SERVICE_DECLARATION_FILE, SERVICE_DECLARATION_SCHEMA,
 };

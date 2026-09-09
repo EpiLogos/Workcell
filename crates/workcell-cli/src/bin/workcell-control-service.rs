@@ -15,6 +15,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .unwrap_or_else(|| PathBuf::from(".workcell-state"));
     let mut workcell_ref = DEFAULT_WORKCELL_REF.to_owned();
     let mut authorization = env::var("WORKCELL_CONTROL_TOKEN").ok();
+    let mut services: Option<PathBuf> = None;
 
     let args = env::args().skip(1).collect::<Vec<_>>();
     let mut index = 0;
@@ -36,6 +37,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 authorization = Some(required_value(&args, index, "--authorization")?.to_owned());
                 index += 2;
             }
+            "--services" => {
+                services = Some(PathBuf::from(required_value(&args, index, "--services")?));
+                index += 2;
+            }
             "-h" | "--help" | "help" => {
                 print_help();
                 return Ok(());
@@ -51,10 +56,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    let workcell = DurableCollapsedLocalWorkcell::new(CollapsedLocalConfig::new(
-        WorkcellRef::new(workcell_ref)?,
-        state_root,
-    ))?;
+    let mut config = CollapsedLocalConfig::new(WorkcellRef::new(workcell_ref)?, state_root);
+    if let Some(path) = services {
+        config = config.with_service_declaration_file(path);
+    }
+    let declared = config.resolve_services()?.len();
+    let workcell = DurableCollapsedLocalWorkcell::new(config)?;
     let service = match authorization {
         Some(token) => ControlService::new(workcell).with_authorization(token),
         None => ControlService::new(workcell),
@@ -64,6 +71,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         "Workcell Control Service listening on {} using {}",
         server.local_addr()?,
         epilogos_workcell_control::CONTROL_PROTOCOL_VERSION
+    );
+    eprintln!(
+        "Declared logical services: {declared}. A declaration is not physical acceptance: each service is offered only when its executable or status command actually answers."
     );
     server.serve()?;
     Ok(())
@@ -87,6 +97,6 @@ fn is_loopback_listener(address: &str) -> bool {
 
 fn print_help() {
     println!(
-        "workcell-control-service [--listen HOST:PORT] [--state-root PATH] [--workcell-ref REF] [--authorization TOKEN]\n\nRemote/non-loopback listeners require an authorization token. Prefer WORKCELL_CONTROL_TOKEN over passing the token on the command line."
+        "workcell-control-service [--listen HOST:PORT] [--state-root PATH] [--workcell-ref REF] [--authorization TOKEN] [--services PATH]\n\nRemote/non-loopback listeners require an authorization token. Prefer WORKCELL_CONTROL_TOKEN over passing the token on the command line.\n\n--services declares logical services this Workcell can materialise; it defaults to <state-root>/services.json when that file exists."
     );
 }

@@ -46,6 +46,73 @@ The provider:
 
 The same provider is suitable for any ordinary host service and is therefore a reusable Workcell-owned seam exposed by model-serving implementation evidence rather than a provider-brand abstraction.
 
+## Reaching the seam from a real machine
+
+Implementing the port is not the same as offering it. Until the collapsed-local
+composition registered a `ServiceProvider`, `ManagedHostServiceProvider` existed
+only for callers who linked `epilogos-workcell-runtime` and wired it themselves:
+`workcell plan --connect inference:<caller-owned>` on an ordinary machine
+answered `no offer supports this material requirement`, because the machine had
+a workspace port, an execution port and an artifact port and no service port at
+all.
+
+`CollapsedLocalWorkcell` now always registers two service providers, so the
+shipped `workcell` binary and `workcell-control-service` both have the port.
+What they offer through it is whatever an operator has declared, in a JSON file
+read from `<state-root>/services.json` or from `--services PATH`:
+
+```json
+{
+  "schema": "workcell.service-declaration/v1",
+  "services": [
+    {
+      "logical_ref": "inference:caller-owned-service",
+      "lifetime": "provider-process-scoped",
+      "endpoint": "http://127.0.0.1:21434",
+      "program": "ollama",
+      "args": ["serve"],
+      "env": {"OLLAMA_HOST": "127.0.0.1:21434"},
+      "readiness": {"host": "127.0.0.1", "port": 21434, "timeout_ms": 20000}
+    }
+  ]
+}
+```
+
+The declaration carries no model, engine or vendor meaning into Workcell. The
+logical ref stays caller-owned; executable, arguments, endpoint and readiness are
+material facts the operator already knows. Workcell records them as provider
+properties and provenance, exactly as the runtime tests already do.
+
+A declaration is a claim about intent, not evidence of acceptance. The provider
+still has to find the executable, start it and reach the endpoint. A declared
+service whose program is not on the machine is offered as `unavailable`, and a
+plan for it fails with `matching offers are unavailable` — which is a different
+and more informative answer than the `no offer supports this material
+requirement` returned when the port was missing entirely.
+
+### Lifetime is part of the binding, not an implementation detail
+
+`lifetime` is required in every declaration because the two answers behave
+differently and a receipt that hid the difference would lie:
+
+| `lifetime` | provider | who owns the process | survives the Workcell process |
+|---|---|---|---|
+| `provider-process-scoped` | `ManagedHostServiceProvider` | Workcell starts it as a child | no — reaped when the provider drops |
+| `target-owned` | `ExternalManagedServiceProvider` | something else starts and supervises it | yes — re-observed through its own status command |
+
+The distinction is not cosmetic. In the long-running Control Service a
+provider-process-scoped child lives as long as the daemon and is released and
+reaped on `release`. In a one-shot `workcell prepare` the same child dies when
+the command returns, so the binding records `lifetime: provider-process-scoped`
+in its properties and provenance and a later `workcell observe` reports it as
+unavailable rather than claiming a service that is no longer there.
+
+A `target-owned` service is re-enterable across invocations: a later process
+rebuilds the record from the binding — refusing to do so unless the binding names
+a service still declared at the same endpoint — and then lets the target's own
+status command answer. `started_by_provider` is read from the binding rather than
+assumed, so release never stops something Workcell did not start.
+
 ## Inference access versus control
 
 The service binding proves only that an endpoint exists and is reachable.
@@ -69,6 +136,23 @@ Standard repository verification exercises:
 - vLLM resource planning failing without accelerator capacity;
 - the same vLLM demand becoming satisfiable when a separate remote execution offer provides the required accelerator capacity;
 - upstream provider revisions retained as material provenance.
+
+`crates/workcell-cli/tests/service_connectivity.rs` exercises the same contract
+through the programs Workcell ships rather than through a linked library:
+
+- `workcell plan` and `workcell prepare` satisfying a `connectivity:` demand from
+  a declared service, starting the process and reaching its endpoint;
+- the receipt disclosing `lifetime` so a provider-owned child is not mistaken for
+  a service that outlives the command;
+- a declared service whose executable is absent staying unsatisfiable, with the
+  omission saying the offer was unavailable;
+- a `target-owned` service re-entered and re-observed by a later, separate
+  invocation through its own status command;
+- the Control Service composition answering the same demand for a remote
+  `workcell --endpoint` client.
+
+The declared service in those tests is the test binary re-invoked as a socket
+listener. It proves the material contract, not the presence of any engine.
 
 The vLLM planning fixture deliberately separates the service offer from the accelerator offer. This preserves the existing Workcell grammar for later remote, multi-GPU and distributed placement: the service does not become a scheduler or model ontology.
 
@@ -123,6 +207,14 @@ The repository can deterministically prove lifecycle shape, loss/degradation, lo
 - multi-host or multi-GPU performance/placement behaviour.
 
 Those remain explicit physical gates. Their future evidence extends the same `ExecutionDemand` + provider/service/resource/fabric contracts.
+
+Registering the service port on the shipped programs does not close any of them,
+and nothing above has been run since this document was written. What changed is
+narrower and worth stating exactly: the material contract is now reachable from
+the `workcell` binary and `workcell-control-service` instead of only from code
+that links the runtime. Whether Ollama, llama.cpp or vLLM actually starts, loads
+a model and serves it on a given machine is still decided on that machine, by the
+gates above.
 
 ## Deliberately absent abstractions
 
