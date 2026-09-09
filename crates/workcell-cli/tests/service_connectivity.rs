@@ -347,8 +347,11 @@ fn a_declared_service_whose_program_is_absent_stays_honestly_unsatisfiable() {
 #[test]
 fn a_target_owned_service_can_be_observed_by_a_later_invocation() {
     let state = temp_path("target-owned");
-    let port = free_port();
-    let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+    // Bind first and read the port back, rather than asking `free_port()` for a
+    // number and rebinding to it: that gap is a real race under concurrent
+    // tests, and is exactly what made this suite flaky on CI.
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
     listener.set_nonblocking(true).unwrap();
     let accepting = thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(60);
@@ -496,8 +499,10 @@ fn a_service_workcell_starts_survives_the_command_and_is_stopped_on_release() {
 #[test]
 fn the_control_service_offers_declared_services_to_a_remote_shipped_binary() {
     let state = temp_path("control-service");
-    let port = free_port();
-    let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+    // Same fix as the target-owned test above: bind once and read the port
+    // back instead of rebinding to whatever `free_port()` last saw free.
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
     listener.set_nonblocking(true).unwrap();
     thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(60);
