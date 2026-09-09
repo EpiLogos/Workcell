@@ -6,6 +6,7 @@ mod instance_scan;
 mod local;
 mod profile;
 mod reference_services;
+mod resource_usage;
 mod runtime;
 mod secret;
 mod service;
@@ -38,6 +39,10 @@ pub use reference_services::{
     AIKIT_GATEWAY_APPLICATION_PROTOCOL, AIKIT_GATEWAY_MANAGEMENT_SOURCE,
     AIKIT_GATEWAY_SOURCE_REVISION, HERMES_MANAGEMENT_SOURCE, HERMES_SOURCE_REVISION,
     OPENCLAW_MANAGEMENT_SOURCE, OPENCLAW_SOURCE_REVISION,
+};
+pub use resource_usage::{
+    observe_resource_usage, validate_resource_usage, ResourceUsageReport, DEFAULT_INTERVAL,
+    MAX_INTERVAL, RESOURCE_USAGE_SCHEMA,
 };
 pub use runtime::{ReferenceProjectRuntimeProvider, RuntimeMode};
 pub use secret::{

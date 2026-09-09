@@ -106,6 +106,14 @@ impl InstanceRegistry {
             ))
         })?;
         validate_registry_file(&parsed)?;
+        if parsed.get("workcell_ref").and_then(Value::as_str) != Some(self.workcell_ref.as_str()) {
+            return Err(WorkcellError::OperationFailed(format!(
+                "instance registry {} belongs to {}, not {}",
+                path.display(),
+                parsed["workcell_ref"].as_str().unwrap_or("unknown"),
+                self.workcell_ref
+            )));
+        }
         Ok(parsed)
     }
 
@@ -498,9 +506,18 @@ fn validate_registry_file(file: &Value) -> Result<()> {
             "instance registry file must declare schema `{REGISTRY_SCHEMA}`"
         )));
     }
-    if object.get("workcell_ref").and_then(Value::as_str).is_none() {
+    let file_workcell_ref = object
+        .get("workcell_ref")
+        .and_then(Value::as_str)
+        .filter(|reference| !reference.is_empty())
+        .ok_or_else(|| {
+            WorkcellError::OperationFailed(
+                "instance registry file requires a string `workcell_ref`".into(),
+            )
+        })?;
+    if WorkcellRef::new(file_workcell_ref).is_err() {
         return Err(WorkcellError::OperationFailed(
-            "instance registry file requires a string `workcell_ref`".into(),
+            "instance registry file has an invalid `workcell_ref`".into(),
         ));
     }
     let instances = object
@@ -518,6 +535,11 @@ fn validate_registry_file(file: &Value) -> Result<()> {
         if record_ref(record).ok().as_deref() != Some(key.as_str()) {
             return Err(WorkcellError::OperationFailed(format!(
                 "registry key `{key}` does not match its record's instance_ref"
+            )));
+        }
+        if record.get("workcell_ref").and_then(Value::as_str) != Some(file_workcell_ref) {
+            return Err(WorkcellError::OperationFailed(format!(
+                "registry entry `{key}` belongs to a different Workcell"
             )));
         }
     }

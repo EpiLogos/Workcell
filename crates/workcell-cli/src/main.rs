@@ -868,12 +868,103 @@ fn command_instances(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
     let registry = InstanceRegistry::new(&global.state_root, workcell_ref.clone());
     let Some(subcommand) = args.first().map(String::as_str) else {
         return Err(WorkcellError::InvalidDemand(
-            "usage: workcell instances <list|show|register|declare|scan|candidates|project> [args]"
+            "usage: workcell instances <list|show|register|declare|scan|usage|candidates|project> [args]"
                 .into(),
         ));
     };
 
     match subcommand {
+        "usage" => {
+            let Some(reference) = args.get(1) else {
+                return Err(WorkcellError::InvalidDemand(
+                    "usage: workcell instances usage <instance_ref> [--pid <n>] \
+                     [--interval-ms <0..60000>] [--correlation-ref <opaque-ref>]..."
+                        .into(),
+                ));
+            };
+            let mut pid = None;
+            let mut interval = epilogos_workcell_runtime::DEFAULT_INTERVAL;
+            let mut correlation_refs = Vec::new();
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--pid" => {
+                        index += 1;
+                        pid = Some(
+                            args.get(index)
+                                .and_then(|value| value.parse::<u32>().ok())
+                                .ok_or_else(|| {
+                                    WorkcellError::InvalidDemand(
+                                        "--pid requires a numeric process id".into(),
+                                    )
+                                })?,
+                        );
+                    }
+                    "--interval-ms" => {
+                        index += 1;
+                        let millis = args
+                            .get(index)
+                            .and_then(|value| value.parse::<u64>().ok())
+                            .ok_or_else(|| {
+                                WorkcellError::InvalidDemand(
+                                    "--interval-ms requires whole milliseconds".into(),
+                                )
+                            })?;
+                        interval = std::time::Duration::from_millis(millis);
+                    }
+                    "--correlation-ref" => {
+                        index += 1;
+                        correlation_refs.push(
+                            args.get(index)
+                                .filter(|value| !value.is_empty())
+                                .cloned()
+                                .ok_or_else(|| {
+                                    WorkcellError::InvalidDemand(
+                                        "--correlation-ref requires an opaque reference".into(),
+                                    )
+                                })?,
+                        );
+                    }
+                    other => {
+                        return Err(WorkcellError::InvalidDemand(format!(
+                            "unknown instances usage flag `{other}`"
+                        )))
+                    }
+                }
+                index += 1;
+            }
+            let report = epilogos_workcell_runtime::observe_resource_usage(
+                &registry,
+                reference,
+                pid,
+                interval,
+                correlation_refs,
+            )?;
+            let value = report.as_json();
+            if global.json {
+                emit_json(value);
+            } else {
+                println!(
+                    "usage: {} pid {} over {} ms",
+                    value["harness_instance_ref"].as_str().unwrap_or("?"),
+                    value["material_binding"]["pid"].as_u64().unwrap_or(0),
+                    value["interval"]["duration_ms"].as_u64().unwrap_or(0),
+                );
+                for name in ["cpu_time", "cpu_utilisation", "memory_rss"] {
+                    let metric = &value["metrics"][name];
+                    match metric["standing"].as_str().unwrap_or("unavailable") {
+                        "observed" | "derived" => println!(
+                            "  {name}: {} {} ({})",
+                            metric["value"],
+                            metric["unit"].as_str().unwrap_or(""),
+                            metric["standing"].as_str().unwrap_or("?"),
+                        ),
+                        standing => println!("  {name}: {standing}"),
+                    }
+                }
+            }
+            Ok(())
+        }
         "candidates" => {
             let records = registry.list()?;
             let candidates = epilogos_workcell_runtime::projection_candidates(&records);
@@ -1279,7 +1370,7 @@ fn command_instances(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
             Ok(())
         }
         other => Err(WorkcellError::InvalidDemand(format!(
-            "unknown instances subcommand `{other}`; expected list|show|register|declare|scan|candidates|project"
+            "unknown instances subcommand `{other}`; expected list|show|register|declare|scan|usage|candidates|project"
         ))),
     }
 }
@@ -1755,7 +1846,7 @@ fn print_help() {
     println!(
         "Workcell — provider-neutral material execution control\n\n\
 Usage:\n  workcell [global options] <command> [command options]\n\n\
-Commands:\n  status       Summarise this local Workcell\n  discover     Discover material offers\n  plan         Plan an ExecutionDemand\n  prepare      Prepare a material world and persist a receipt\n  observe      Observe a prepared world from its receipt\n  expose       Resolve prepared exposure surfaces\n  collect      Collect prepared output channels\n  release      Release or preserve a prepared world\n  reconcile    Reconcile desired material state\n  instances    Live harness-instance registry (list|show|register|scan|declare|candidates|project)
+Commands:\n  status       Summarise this local Workcell\n  discover     Discover material offers\n  plan         Plan an ExecutionDemand\n  prepare      Prepare a material world and persist a receipt\n  observe      Observe a prepared world from its receipt\n  expose       Resolve prepared exposure surfaces\n  collect      Collect prepared output channels\n  release      Release or preserve a prepared world\n  reconcile    Reconcile desired material state\n  instances    Live harness instances and bounded resource usage
   sandboxes    OpenSandbox server-side material (reconcile)\n  providers    List provider inventory\n  doctor       Verify the zero-setup local baseline\n\n\
 Global options:\n  --json                     Structured machine/agent output\n  --state-root PATH          Local Workcell state (default: $WORKCELL_HOME or ~/.workcell)\n  --workcell-ref REF         Workcell identity for new local operations\n  --receipt PATH             Material-world receipt for prepare/resume\n  --workspace-source PATH    Physical local source binding; never semantic identity\n\n\
 Demand options for plan/prepare:\n  --demand-ref REF\n  --require VALUE | --prefer VALUE | --optional VALUE\n  --workspace writable|read-only [--workspace-ref REF] [--revision REV]\n  --project-runtime MODE\n  --connect VALUE | --prefer-connect VALUE | --optional-connect VALUE\n  --expose VALUE | --prefer-expose VALUE | --optional-expose VALUE\n  --output VALUE | --prefer-output VALUE | --optional-output VALUE\n  --resource key[=amount[:unit]]\n  --subject role=opaque-ref\n  --persistence SCOPE\n  --isolation VALUE\n  --retention release|preserve|suspend-if-supported|snapshot-if-supported\n  --extension key=value\n\n\

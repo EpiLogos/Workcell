@@ -1,0 +1,48 @@
+{
+  "schema": "workcell.resource-usage/v1",
+  "ok": true,
+  "status": "ok",
+  "usage_ref": "usage:0000000000000000000000000000000000000000000000000000000000000000",
+  "workcell_ref": "workcell:fixture",
+  "harness_instance_ref": "instance:fixture:identity",
+  "harness_ref": "harness/fixture",
+  "material_binding": {
+    "kind": "process",
+    "pid": 42,
+    "process_start_marker": "Mon Sep 9 10:00:00 2026",
+    "executable": {
+      "path": "/fixture/bin/harness",
+      "sha256": "fixture-executable-receipt"
+    },
+    "instance_evidence_grade": "live-pid",
+    "instance_seams": []
+  },
+  "interval": {
+    "started_at": "unix-ms:1000",
+    "ended_at": "unix-ms:1100",
+    "duration_ms": 100,
+    "requested_duration_ms": 100
+  },
+  "provider": {
+    "provider_ref": "provider:fixture",
+    "source": "conformance-fixture",
+    "platform": "fixture",
+    "collection": "bounded-on-demand",
+    "raw_native_refs": ["fixture:process-sample:42"],
+    "privacy": {
+      "argv_collected": false,
+      "environment_collected": false
+    }
+  },
+  "metrics": {
+    "cpu_time": { "standing": "observed", "value": 250, "unit": "milliseconds", "evidence": "fixture sample" },
+    "cpu_utilisation": { "standing": "derived", "value": 10.0, "unit": "percent", "derivation": "fixture delta" },
+    "memory_rss": { "standing": "observed", "value": 1048576, "unit": "bytes", "evidence": "fixture sample" },
+    "memory_peak_rss": { "standing": "unsupported", "reason": "fixture provider does not expose peak RSS" },
+    "gpu_utilisation": { "standing": "unsupported", "reason": "fixture provider does not expose GPU utilisation" },
+    "vram": { "standing": "unsupported", "reason": "fixture provider does not expose VRAM" },
+    "network_bytes": { "standing": "unsupported", "reason": "fixture provider does not expose network bytes" },
+    "storage_io_bytes": { "standing": "unsupported", "reason": "fixture provider does not expose storage I/O" }
+  },
+  "external_correlation_refs": ["opaque:factory-fixture"]
+}
