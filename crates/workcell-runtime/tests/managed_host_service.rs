@@ -11,7 +11,9 @@ use epilogos_workcell_core::{
     Availability, DemandRef, HealthState, LogicalConnectionRequirement, ProviderPort, ProviderRef,
     RetentionExpectation, ServiceMaterialRequest, ServiceProvider,
 };
-use epilogos_workcell_runtime::{ManagedHostService, ManagedHostServiceProvider, TcpEndpointProbe};
+use epilogos_workcell_runtime::{
+    HostLifetime, ManagedHostService, ManagedHostServiceProvider, TcpEndpointProbe,
+};
 
 const CHILD_ENV: &str = "WORKCELL_MANAGED_SERVICE_CHILD";
 const CHILD_ADDR_ENV: &str = "WORKCELL_MANAGED_SERVICE_CHILD_ADDR";
@@ -26,10 +28,18 @@ fn free_port() -> u16 {
 }
 
 fn request(logical_ref: &str) -> ServiceMaterialRequest {
+    request_with_retention(logical_ref, RetentionExpectation::Release)
+}
+
+fn request_with_retention(
+    logical_ref: &str,
+    retention: RetentionExpectation,
+) -> ServiceMaterialRequest {
     ServiceMaterialRequest {
         demand_ref: DemandRef::new(format!("demand:managed-service:{logical_ref}")).unwrap(),
         connection: LogicalConnectionRequirement::new(logical_ref).unwrap(),
         persistence: None,
+        retention,
     }
 }
 
@@ -203,4 +213,62 @@ fn missing_program_is_reported_as_unavailable_instead_of_fake_health() {
     assert_eq!(offer.availability, Availability::Unavailable);
     assert_eq!(offer.health, HealthState::Unavailable);
     assert!(provider.resolve_service(&request(logical_ref)).is_err());
+}
+
+#[test]
+fn a_one_shot_host_refuses_to_claim_preserve_for_a_provider_process_scoped_service() {
+    let logical_ref = "inference:one-shot-preserve";
+    let port = free_port();
+    let mut provider = ManagedHostServiceProvider::new(
+        ProviderRef::new("provider:test-one-shot").unwrap(),
+        [child_service(logical_ref, port, None)],
+    )
+    .unwrap();
+    // `HostLifetime::OneShotCommand` is the default: no builder call needed.
+
+    let error = provider
+        .resolve_service(&request_with_retention(
+            logical_ref,
+            RetentionExpectation::Preserve,
+        ))
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("preserve"),
+        "unexpected error: {error}"
+    );
+
+    // Release is the honest default and still works from the same one-shot host.
+    let allocation = provider.resolve_service(&request(logical_ref)).unwrap();
+    provider
+        .release_service(&allocation, &RetentionExpectation::Release)
+        .unwrap();
+}
+
+#[test]
+fn a_persistent_host_may_honour_preserve_for_a_provider_process_scoped_service() {
+    let logical_ref = "inference:persistent-preserve";
+    let port = free_port();
+    let mut provider = ManagedHostServiceProvider::new(
+        ProviderRef::new("provider:test-persistent-host").unwrap(),
+        [child_service(logical_ref, port, None)],
+    )
+    .unwrap()
+    .with_host_lifetime(HostLifetime::PersistentHost);
+
+    let allocation = provider
+        .resolve_service(&request_with_retention(
+            logical_ref,
+            RetentionExpectation::Preserve,
+        ))
+        .unwrap();
+    let released = provider
+        .release_service(&allocation, &RetentionExpectation::Preserve)
+        .unwrap();
+    assert!(!released.changed);
+    // A persistent host's provider-owned child survives release-time Preserve;
+    // it is only reaped when the provider itself finally drops.
+    assert_eq!(
+        provider.observe_service(&allocation).unwrap().health,
+        HealthState::Healthy
+    );
 }

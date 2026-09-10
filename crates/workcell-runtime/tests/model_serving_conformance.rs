@@ -21,6 +21,7 @@ fn service_request(demand_ref: &str) -> ServiceMaterialRequest {
         demand_ref: DemandRef::new(demand_ref).unwrap(),
         connection: LogicalConnectionRequirement::new(LOGICAL_INFERENCE_SERVICE).unwrap(),
         persistence: None,
+        retention: RetentionExpectation::Release,
     }
 }
 

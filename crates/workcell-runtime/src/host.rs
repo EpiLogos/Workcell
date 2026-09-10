@@ -11,7 +11,7 @@ use epilogos_workcell_core::{
     ReleaseDisposition, Result, RetentionExpectation, WorkcellError,
 };
 
-use crate::support::stable_key;
+use crate::{support::stable_key, PreparedWriteBoundary};
 
 const HOST_AFFORDANCES: &[&str] = &["shell", "process-execution", "execution:host-process"];
 
@@ -40,6 +40,7 @@ struct StoredHostProcessGrant {
     uses: u32,
     revoked: bool,
     operations: BTreeMap<String, String>,
+    boundary: Option<PreparedWriteBoundary>,
 }
 
 /// Zero-setup execution provider backed by ordinary host processes.
@@ -61,6 +62,33 @@ impl HostProcessExecutionProvider {
             provider_ref,
             operation_grants: BTreeMap::new(),
         }
+    }
+
+    /// Bind supplied material protection to a fresh finite grant. It cannot be
+    /// replaced after use or silently removed; retries need new authority.
+    pub fn bind_write_boundary(
+        &mut self,
+        grant_ref: &str,
+        boundary: PreparedWriteBoundary,
+        current_policy_revision: &str,
+    ) -> Result<()> {
+        boundary.revalidate(current_policy_revision)?;
+        let stored = self
+            .operation_grants
+            .get_mut(grant_ref)
+            .ok_or_else(|| WorkcellError::NotFound("unknown material grant".into()))?;
+        if stored.uses != 0 || stored.revoked || stored.boundary.is_some() {
+            return Err(WorkcellError::OperationFailed(
+                "boundary requires a fresh unbound material grant".into(),
+            ));
+        }
+        if boundary.requirements().authority_ref != stored.grant.authority_ref {
+            return Err(WorkcellError::OperationFailed(
+                "write boundary and material grant authority differ".into(),
+            ));
+        }
+        stored.boundary = Some(boundary);
+        Ok(())
     }
 
     pub fn register_operation_grant(
@@ -108,6 +136,7 @@ impl HostProcessExecutionProvider {
                 uses: 0,
                 revoked: false,
                 operations: BTreeMap::new(),
+                boundary: None,
             },
         );
         Ok(())
@@ -311,11 +340,34 @@ impl ExecutionProvider for HostProcessExecutionProvider {
         stored.uses += 1;
         stored.operations.insert(operation_id.clone(), fingerprint);
         let external_authority_ref = stored.grant.authority_ref.clone();
+        let boundary = stored.boundary.clone();
+        let required_digest = operation.parameters.get("write_boundary_digest");
+        if required_digest.is_some() && boundary.is_none() {
+            return Err(WorkcellError::OperationFailed(
+                "required material write boundary has not been bound; execution refused".into(),
+            ));
+        }
+        if let Some(boundary) = &boundary {
+            if required_digest != Some(&boundary.requirements().digest()) {
+                return Err(WorkcellError::OperationFailed(
+                    "material write boundary digest missing or changed".into(),
+                ));
+            }
+        }
 
         let mut command = Command::new(program);
         command.args(indexed_args.iter().map(|(_, value)| value.as_str()));
         if let Some(cwd) = operation.parameters.get("cwd") {
             command.current_dir(cwd);
+        }
+        if let Some(boundary) = &boundary {
+            let current_revision =
+                operation.parameters.get("policy_revision").ok_or_else(|| {
+                    WorkcellError::OperationFailed(
+                        "current policy revision is required for bounded execution".into(),
+                    )
+                })?;
+            boundary.configure_command(&mut command, current_revision)?;
         }
         let result = command.output().map_err(|error| {
             WorkcellError::OperationFailed(format!("execute host process `{program}`: {error}"))
@@ -343,6 +395,26 @@ impl ExecutionProvider for HostProcessExecutionProvider {
         provenance.insert("material_authority_ref".into(), grant_ref.clone());
         provenance.insert("external_authority_ref".into(), external_authority_ref);
         provenance.insert("operation_id".into(), operation_id.clone());
+        provenance.insert(
+            "write_boundary".into(),
+            boundary
+                .as_ref()
+                .map_or_else(|| "none".into(), |b| b.requirements().digest()),
+        );
+        if let Some(boundary) = &boundary {
+            provenance.insert(
+                "policy_ref".into(),
+                boundary.requirements().policy_ref.clone(),
+            );
+            provenance.insert(
+                "policy_revision".into(),
+                boundary.requirements().policy_revision.clone(),
+            );
+            provenance.insert(
+                "write_coverage".into(),
+                crate::WRITE_BOUNDARY_COVERAGE.join(","),
+            );
+        }
 
         Ok(ProviderOperationResult {
             provider_ref: self.provider_ref.clone(),

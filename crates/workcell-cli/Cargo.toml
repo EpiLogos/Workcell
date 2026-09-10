@@ -8,6 +8,18 @@ autobins = false
 name = "workcell"
 path = "src/bin/workcell_entry.rs"
 
+# `autobins = false` above stops cargo re-discovering `src/bin/workcell.rs` as a
+# second `workcell` target. It also stopped shipping these two, which had been
+# auto-discovered binaries since they were written. They are declared explicitly
+# so the optional Control Service is a real program again.
+[[bin]]
+name = "workcell-control-service"
+path = "src/bin/workcell-control-service.rs"
+
+[[bin]]
+name = "workcell-control-client"
+path = "src/bin/workcell-control-client.rs"
+
 [dependencies]
 epilogos-workcell-control = { path = "../workcell-control" }
 epilogos-workcell-core = { path = "../workcell-core" }
@@ -15,3 +27,8 @@ epilogos-workcell-opensandbox = { path = "../workcell-opensandbox" }
 epilogos-workcell-runtime = { path = "../workcell-runtime" }
 epilogos-workcell-wire = { path = "../workcell-wire" }
 serde_json = "1"
+sha2 = "0.10"
+
+[[bin]]
+name = "workcell-write-boundary"
+path = "src/bin/workcell-write-boundary.rs"

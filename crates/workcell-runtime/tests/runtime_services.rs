@@ -62,6 +62,7 @@ fn service_request(demand: &ExecutionDemand, logical_ref: &str) -> ServiceMateri
         demand_ref: demand.demand_ref.clone(),
         connection: LogicalConnectionRequirement::new(logical_ref).unwrap(),
         persistence: demand.persistence.clone(),
+        retention: demand.retention.clone(),
     }
 }
 

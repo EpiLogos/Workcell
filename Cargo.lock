@@ -105,6 +105,7 @@ dependencies = [
  "epilogos-workcell-runtime",
  "epilogos-workcell-wire",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -184,6 +185,7 @@ dependencies = [
  "epilogos-workcell-core",
  "epilogos-workcell-fabric",
  "epilogos-workcell-workspace",
+ "libc",
  "serde_json",
  "sha2",
 ]

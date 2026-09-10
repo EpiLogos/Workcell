@@ -30,6 +30,7 @@ struct GlobalArgs {
     workcell_ref: String,
     receipt: Option<PathBuf>,
     workspace_source: Option<PathBuf>,
+    services: Option<PathBuf>,
     remaining: Vec<String>,
 }
 
@@ -78,6 +79,8 @@ fn run(args: Vec<String>) -> Result<(), WorkcellError> {
         "plan" => command_plan(&global, command_args),
         "prepare" => command_prepare(&global, command_args),
         "observe" => command_observe(&global),
+        "inspect" => command_material(&global),
+        "recover" => command_recover(&global),
         "expose" => command_expose(&global),
         "material" => command_material(&global),
         "collect" => command_collect(&global),
@@ -97,6 +100,7 @@ fn parse_global(args: Vec<String>) -> Result<GlobalArgs, WorkcellError> {
     let mut workcell_ref = DEFAULT_WORKCELL_REF.to_owned();
     let mut receipt = None;
     let mut workspace_source = None;
+    let mut services = None;
     let mut remaining = Vec::new();
     let mut index = 0;
 
@@ -126,6 +130,10 @@ fn parse_global(args: Vec<String>) -> Result<GlobalArgs, WorkcellError> {
                 )?));
                 index += 2;
             }
+            "--services" => {
+                services = Some(PathBuf::from(require_value(&args, index, "--services")?));
+                index += 2;
+            }
             _ => {
                 remaining.push(args[index].clone());
                 index += 1;
@@ -139,6 +147,7 @@ fn parse_global(args: Vec<String>) -> Result<GlobalArgs, WorkcellError> {
         workcell_ref,
         receipt,
         workspace_source,
+        services,
         remaining,
     })
 }
@@ -290,6 +299,11 @@ fn command_doctor(global: &GlobalArgs) -> Result<(), WorkcellError> {
         "actuation",
     );
 
+    // Declared services are not part of the zero-setup baseline, so they never
+    // make doctor fail. They are reported because a declared service that does
+    // not answer is the thing an operator most needs to see.
+    let services = declared_service_report(&discovery);
+
     if global.json {
         emit_json(json!({
             "ok": true,
@@ -298,6 +312,7 @@ fn command_doctor(global: &GlobalArgs) -> Result<(), WorkcellError> {
             "writable_workspace": writable_workspace,
             "filesystem_artifacts": filesystem_artifacts,
             "optional_external_providers_required": false,
+            "declared_services": services,
             "instances": {
                 "status": scan.status,
                 "reason": scan.reason,
@@ -312,6 +327,20 @@ fn command_doctor(global: &GlobalArgs) -> Result<(), WorkcellError> {
         println!("  writable local workspace: yes");
         println!("  local artifact storage: yes");
         println!("  Docker/Arrakis/Tailscale required: no");
+        if services.is_empty() {
+            println!("  declared services: none");
+        } else {
+            println!("  declared services: {}", services.len());
+            for service in &services {
+                println!(
+                    "    {} — {} ({}, {})",
+                    service["logical_ref"].as_str().unwrap_or("?"),
+                    service["availability"].as_str().unwrap_or("?"),
+                    service["lifetime"].as_str().unwrap_or("?"),
+                    service["endpoint"].as_str().unwrap_or("no endpoint"),
+                );
+            }
+        }
         match scan.status {
             "ok" => println!(
                 "  harness instances: {} live, {} stale",
@@ -325,6 +354,25 @@ fn command_doctor(global: &GlobalArgs) -> Result<(), WorkcellError> {
         }
     }
     Ok(())
+}
+
+/// What the service port is actually offering, from discovery alone.
+fn declared_service_report(discovery: &Discovery) -> Vec<Value> {
+    discovery
+        .offers
+        .iter()
+        .filter(|offer| offer.port == ProviderPortKind::Service.as_str())
+        .map(|offer| {
+            json!({
+                "logical_ref": offer.connections.first().map(String::as_str).unwrap_or(""),
+                "provider_ref": offer.provider_ref.as_str(),
+                "availability": availability(&offer.availability),
+                "health": health(&offer.health),
+                "lifetime": offer.metadata.get("lifetime").map(String::as_str).unwrap_or("unknown"),
+                "endpoint": offer.metadata.get("endpoint").map(String::as_str),
+            })
+        })
+        .collect()
 }
 
 fn command_plan(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
@@ -374,6 +422,16 @@ fn command_prepare(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellE
             println!("omissions: {}", world.plan_omissions.len());
         }
     }
+    Ok(())
+}
+
+fn command_recover(global: &GlobalArgs) -> Result<(), WorkcellError> {
+    let (mut workcell, world, _) = resume(global)?;
+    let recovered = workcell.recover(&world.world_ref)?;
+    let receipt = default_receipt_path(&global.state_root, recovered.world_ref.as_str());
+    write_receipt(&receipt, &recovered)?;
+    if global.json { emit_json(json!({"ok":true,"receipt":receipt,"world":world_value(&recovered)?})); }
+    else { println!("material recovery: {} -> {}; receipt {}", world.world_ref, recovered.world_ref, receipt.display()); }
     Ok(())
 }
 
@@ -540,6 +598,15 @@ fn command_reconcile(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
 }
 
 fn parse_demand(args: &[String]) -> Result<ExecutionDemand, WorkcellError> {
+    if args.first().map(String::as_str) == Some("--demand-json") {
+        if args.len() != 2 { return Err(WorkcellError::InvalidDemand("--demand-json requires exactly one file and cannot be mixed with requirement flags".into())); }
+        let raw = fs::read(&args[1]).map_err(|e| WorkcellError::InvalidDemand(format!("read demand JSON: {e}")))?;
+        if raw.len() > 1_048_576 { return Err(WorkcellError::InvalidDemand("demand JSON exceeds 1 MiB".into())); }
+        let value = serde_json::from_slice(&raw).map_err(|e| WorkcellError::InvalidDemand(format!("parse demand JSON: {e}")))?;
+        let demand = epilogos_workcell_control::codec::decode_demand(&value)?;
+        demand.validate()?;
+        return Ok(demand);
+    }
     let mut demand_ref = DEFAULT_DEMAND_REF.to_owned();
     let mut affordances = Tiered::default();
     let mut connectivity = Tiered::default();
@@ -691,7 +758,10 @@ fn resume(
     })?;
     let world = decode_world(&encoded)?;
     let channels = world_artifact_channels(&world);
-    let mut config = CollapsedLocalConfig::new(world.workcell_ref.clone(), &global.state_root);
+    let mut config = with_declared_services(
+        CollapsedLocalConfig::new(world.workcell_ref.clone(), &global.state_root),
+        global,
+    );
     config.artifact_channels = channels.into_iter().collect();
     let mut workcell = CollapsedLocalWorkcell::new(config)?;
     workcell.register_world(world.clone())?;
@@ -703,7 +773,10 @@ fn new_local(
     workcell_ref: WorkcellRef,
     additional_channels: BTreeSet<String>,
 ) -> Result<CollapsedLocalWorkcell, WorkcellError> {
-    let mut config = CollapsedLocalConfig::new(workcell_ref, &global.state_root);
+    let mut config = with_declared_services(
+        CollapsedLocalConfig::new(workcell_ref, &global.state_root),
+        global,
+    );
     if let Some(source) = &global.workspace_source {
         config = config.with_workspace_source(source);
     }
@@ -711,6 +784,18 @@ fn new_local(
     channels.extend(additional_channels);
     config.artifact_channels = channels.into_iter().collect();
     CollapsedLocalWorkcell::new(config)
+}
+
+/// `--services PATH` names the declaration file; without it the conventional
+/// `<state-root>/services.json` is read when it is there.
+fn with_declared_services(
+    config: CollapsedLocalConfig,
+    global: &GlobalArgs,
+) -> CollapsedLocalConfig {
+    match &global.services {
+        Some(path) => config.with_service_declaration_file(path),
+        None => config,
+    }
 }
 
 fn demand_output_channels(demand: &ExecutionDemand) -> BTreeSet<String> {
@@ -1843,12 +1928,13 @@ fn exit_code(error: &WorkcellError) -> u8 {
 }
 
 fn print_help() {
+    println!("CAW material operations: inspect / recover --receipt FILE; plan / prepare --demand-json FILE (full native demand including storage). Write restrictions: workcell-write-boundary capabilities / inspect / run. These do not create semantic sessions or execute Factory work.");
     println!(
         "Workcell — provider-neutral material execution control\n\n\
 Usage:\n  workcell [global options] <command> [command options]\n\n\
 Commands:\n  status       Summarise this local Workcell\n  discover     Discover material offers\n  plan         Plan an ExecutionDemand\n  prepare      Prepare a material world and persist a receipt\n  observe      Observe a prepared world from its receipt\n  expose       Resolve prepared exposure surfaces\n  collect      Collect prepared output channels\n  release      Release or preserve a prepared world\n  reconcile    Reconcile desired material state\n  instances    Live harness instances and bounded resource usage
   sandboxes    OpenSandbox server-side material (reconcile)\n  providers    List provider inventory\n  doctor       Verify the zero-setup local baseline\n\n\
-Global options:\n  --json                     Structured machine/agent output\n  --state-root PATH          Local Workcell state (default: $WORKCELL_HOME or ~/.workcell)\n  --workcell-ref REF         Workcell identity for new local operations\n  --receipt PATH             Material-world receipt for prepare/resume\n  --workspace-source PATH    Physical local source binding; never semantic identity\n\n\
+Global options:\n  --json                     Structured machine/agent output\n  --state-root PATH          Local Workcell state (default: $WORKCELL_HOME or ~/.workcell)\n  --workcell-ref REF         Workcell identity for new local operations\n  --receipt PATH             Material-world receipt for prepare/resume\n  --workspace-source PATH    Physical local source binding; never semantic identity\n  --services PATH            Operator-declared logical services (default: <state-root>/services.json)\n\n\
 Demand options for plan/prepare:\n  --demand-ref REF\n  --require VALUE | --prefer VALUE | --optional VALUE\n  --workspace writable|read-only [--workspace-ref REF] [--revision REV]\n  --project-runtime MODE\n  --connect VALUE | --prefer-connect VALUE | --optional-connect VALUE\n  --expose VALUE | --prefer-expose VALUE | --optional-expose VALUE\n  --output VALUE | --prefer-output VALUE | --optional-output VALUE\n  --resource key[=amount[:unit]]\n  --subject role=opaque-ref\n  --persistence SCOPE\n  --isolation VALUE\n  --retention release|preserve|suspend-if-supported|snapshot-if-supported\n  --extension key=value\n\n\
 Reconcile:\n  workcell --receipt WORLD.json reconcile --desired logical-ref=state"
     );

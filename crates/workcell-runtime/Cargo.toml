@@ -9,6 +9,7 @@ epilogos-workcell-core = { path = "../workcell-core" }
 epilogos-workcell-workspace = { path = "../workcell-workspace" }
 serde_json = "1"
 sha2 = "0.10"
+libc = "0.2"
 
 [dev-dependencies]
 epilogos-workcell-fabric = { path = "../workcell-fabric" }

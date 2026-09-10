@@ -168,6 +168,10 @@ where
         self.invoke("inspect", codec::world_ref_value(world_ref))
     }
 
+    pub fn recover(&mut self, world_ref: &WorldRef) -> Result<Value, ControlClientError> {
+        self.invoke("recover", codec::world_ref_value(world_ref))
+    }
+
     pub fn observe(&mut self, world_ref: &WorldRef) -> Result<Value, ControlClientError> {
         self.invoke("observe", codec::world_ref_value(world_ref))
     }
