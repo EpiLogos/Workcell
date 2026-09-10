@@ -1,0 +1,50 @@
+{
+  "schema": "workcell.installed-campaign/v1",
+  "authorized_material_effects": false,
+  "test_world": true,
+  "release_after_test": true,
+  "placements": [
+    {
+      "workcell_ref": "workcell:local-proof-a",
+      "endpoint": "tcp://127.0.0.1:REPLACE_PORT",
+      "token_env": "WORKCELL_SITE_A_TOKEN",
+      "census_file": "/REPLACE/census-a.json",
+      "authorized_restart_argv": []
+    },
+    {
+      "workcell_ref": "workcell:local-proof-b",
+      "endpoint": "tcp://REPLACE_SECOND_HOST:REPLACE_PORT",
+      "token_env": "WORKCELL_SITE_B_TOKEN",
+      "census_file": "/REPLACE/census-b.json",
+      "authorized_restart_argv": []
+    }
+  ],
+  "demand": {
+    "demand_ref": "demand:REPLACE-with-unique-authorised-local-proof",
+    "subjects": {
+      "agent": "REPLACE-with-owner-agent-ref",
+      "session": "REPLACE-with-owner-session-ref",
+      "attempt": "REPLACE-with-owner-attempt-ref",
+      "source": "REPLACE-with-owner-source-ref",
+      "policy": "REPLACE-with-owner-policy-ref"
+    },
+    "affordances": {"required": [], "preferred": [], "optional": []},
+    "connectivity": {
+      "required": ["service:REPLACE-gateway", "service:REPLACE-session", "service:REPLACE-scheduler"],
+      "preferred": [], "optional": []
+    },
+    "exposure": {"required": [], "preferred": [], "optional": []},
+    "outputs": {"required": [], "preferred": [], "optional": []},
+    "storage": {
+      "required": [{"logical_ref": "now:REPLACE-with-Central-allocation", "access": "writable", "sharing": "shared", "minimum_capacity": null, "unit": null, "persistence": "external", "retention": "preserve"}],
+      "preferred": [], "optional": []
+    },
+    "workspace": null,
+    "project_runtime": null,
+    "resources": [],
+    "persistence": null,
+    "isolation_trust": null,
+    "retention": "release",
+    "extensions": {}
+  }
+}

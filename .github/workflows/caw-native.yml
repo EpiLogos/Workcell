@@ -61,6 +61,7 @@ jobs:
           set -o pipefail
           python3 scripts/caw_native_campaign.py --bin-dir target/debug --output evidence/material-campaign.json 2>&1 | tee evidence/material-campaign.txt
           python3 -m py_compile scripts/caw_installed_world.py
+          PYTHONPATH=scripts python3 -m unittest -v scripts/test_caw_installed_world.py 2>&1 | tee evidence/procedure-safety.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -69,11 +69,13 @@ def address(endpoint):
     return parsed.hostname, parsed.port
 
 
-def exercise(args, evidence):
+def exercise(args, evidence, checkpoint=lambda: None):
+    check(args.manifest.stat().st_size <= 1024 * 1024, "campaign packet exceeds 1 MiB")
     packet = json.loads(args.manifest.read_text())
     check(args.execute_authorized and packet.get("authorized_material_effects") is True and packet.get("test_world") is True,
           "exercise requires --execute-authorized and an explicit authorised test_world packet")
     check(packet.get("schema") == "workcell.installed-campaign/v1", "unsupported campaign schema")
+    check(isinstance(packet.get("release_after_test"), bool), "explicit release_after_test choice required")
     sites = packet["placements"]
     check(len(sites) == 2, "exactly two placements are required")
     check(sites[0]["workcell_ref"] != sites[1]["workcell_ref"], "placements reuse Workcell identity")
@@ -87,8 +89,13 @@ def exercise(args, evidence):
     evidence["host_evidence_standing"] = "supplied per-host census; endpoint-to-host binding still requires independent local verification"
     source_demand = packet["demand"]
     check(source_demand.get("subjects"), "explicit semantic correlations required")
+    check(source_demand.get("storage", {}).get("required") and source_demand.get("connectivity", {}).get("required"),
+          "installed hosting campaign requires explicit service and NOW storage requirements")
     clients = []
     for site in sites:
+        restart = site.get("authorized_restart_argv")
+        check(isinstance(restart, list) and 0 < len(restart) <= 128 and all(isinstance(a, str) and a for a in restart),
+              "explicit bounded native restart argv required before material effects; no inferred supervisor")
         token = os.environ.get(site["token_env"])
         check(bool(token), "named control token environment variable is missing")
         target = address(site["endpoint"])
@@ -103,17 +110,23 @@ def exercise(args, evidence):
     for site, call in zip(sites, clients):
         entry = {"workcell_ref": site["workcell_ref"], "status": "preparing"}
         evidence["placements"].append(entry)
+        checkpoint()
         world = call("prepare", source_demand)
         entry.update(world=world, status="prepared")
+        checkpoint()
         check(world["subjects"] == source_demand["subjects"], "semantic identity changed during placement")
         check(call("inspect", {"world_ref": world["world_ref"]}) == world, "public receipt readback changed")
         observation = call("observe", {"world_ref": world["world_ref"]})
         entry["before_restart"] = observation
-        check(all(o["state"] == "healthy" for o in observation["observations"]), "material world is not healthy")
+        check(observation["observations"] and all(o["state"] == "healthy" for o in observation["observations"]), "material world is not healthy")
         restart = site.get("authorized_restart_argv")
         check(isinstance(restart, list) and restart and all(isinstance(a, str) for a in restart), "explicit native restart argv required; no inferred supervisor")
         entry["restart_command_sha256"] = hashlib.sha256(json.dumps(restart).encode()).hexdigest()
+        entry["status"] = "restarting"
+        checkpoint()
         subprocess.run(restart, check=True, timeout=30, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        entry["status"] = "reconnecting"
+        checkpoint()
         deadline = time.monotonic()+30
         while True:
             try:
@@ -123,16 +136,22 @@ def exercise(args, evidence):
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(.25)
+        entry["status"] = "recovering"
+        checkpoint()
         recovered = call("recover", {"world_ref": world["world_ref"]})
         check(recovered["subjects"] == source_demand["subjects"], "recovery changed semantic correlations")
         entry["recovered"] = recovered
+        checkpoint()
         entry["after_restart"] = call("observe", {"world_ref": recovered["world_ref"]})
-        check(all(o["state"] == "healthy" for o in entry["after_restart"]["observations"]), "recovered material is unhealthy")
+        check(entry["after_restart"]["observations"] and all(o["state"] == "healthy" for o in entry["after_restart"]["observations"]), "recovered material is unhealthy")
         if packet.get("release_after_test") is True:
+            entry["status"] = "releasing"
+            checkpoint()
             entry["release"] = call("release", {"world_ref": recovered["world_ref"]})
             entry["status"] = "released-as-requested"
         else:
             entry["status"] = "retained-explicitly; release-proof-pending"
+        checkpoint()
     check(evidence["placements"][0]["world"]["world_ref"] != evidence["placements"][1]["world"]["world_ref"], "second placement reused material world identity")
     evidence["status"] = "material-campaign-passed-not-whole-feature-acceptance"
     evidence["still_requires"] = ["independent endpoint/host/provider verification", "source/data migration and retained bytes under the authorised local migration plan",
@@ -156,15 +175,43 @@ def main():
         save(args.output, census(args))
         print("Read-only census recorded. No installed state changed.")
         return
-    evidence = {"schema": "workcell.installed-campaign-evidence/v1", "status": "not-started"}
-    try:
-        exercise(args, evidence)
-    except Exception as error:
-        evidence.update(status="failed-or-interrupted; effects-require-inspection", error_type=type(error).__name__, error=str(error))
-        save(args.output, evidence)
-        raise
-    save(args.output, evidence)
+    record_exercise(args)
     print("Material campaign recorded; independent and whole-operation proof remains separate.")
+
+
+def record_exercise(args):
+    """Reserve evidence before effects and fsync append-only checkpoints.
+
+    On a forced harness death, the sidecar records the last known operation and
+    receipts; the reserved final file is not a success claim. No file is reused.
+    """
+    evidence = {"schema": "workcell.installed-campaign-evidence/v1", "status": "not-started"}
+    descriptor = os.open(args.output, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w+") as final:
+        final.write(json.dumps(evidence)+"\n")
+        final.flush()
+        os.fsync(final.fileno())
+        journal_descriptor = os.open(str(args.output)+".journal.jsonl", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(journal_descriptor, "w") as journal:
+            def checkpoint():
+                journal.write(json.dumps(evidence)+"\n")
+                journal.flush()
+                os.fsync(journal.fileno())
+            checkpoint()
+            try:
+                exercise(args, evidence, checkpoint)
+            except BaseException as error:
+                evidence.update(status="failed-or-interrupted; effects-require-inspection",
+                                error_type=type(error).__name__, error=str(error))
+                raise
+            finally:
+                checkpoint()
+                final.seek(0)
+                final.write(json.dumps(evidence, indent=2)+"\n")
+                final.truncate()
+                final.flush()
+                os.fsync(final.fileno())
+
 
 
 if __name__ == "__main__":
