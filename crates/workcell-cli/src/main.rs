@@ -86,6 +86,7 @@ fn run(args: Vec<String>) -> Result<(), WorkcellError> {
         "reconcile" => command_reconcile(&global, command_args),
         "instances" => command_instances(&global, command_args),
         "sandboxes" => command_sandboxes(&global, command_args),
+        "system" => command_system(&global),
         other => Err(WorkcellError::InvalidDemand(format!(
             "unknown command `{other}`; run `workcell help`"
         ))),
@@ -1627,6 +1628,915 @@ fn command_sandboxes(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
     Ok(())
 }
 
+fn system_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn system_prov(owner_ref: &str, path: &str, observed_at: u64) -> Value {
+    json!({
+        "owner_ref": owner_ref,
+        "path": path,
+        "observed_at_unix_ms": observed_at,
+    })
+}
+
+fn system_axes(
+    owner_ref: &str,
+    path: &str,
+    observed_at: u64,
+    declared: Value,
+    effective: Value,
+    active: Value,
+    materialisation_ref: Option<&str>,
+) -> Value {
+    let active_axis = match materialisation_ref {
+        Some(reference) => json!({
+            "value": active,
+            "provenance": system_prov(owner_ref, path, observed_at),
+            "materialisation_ref": reference,
+        }),
+        None => json!({
+            "value": active,
+            "provenance": system_prov(owner_ref, path, observed_at),
+        }),
+    };
+    json!({
+        "declared": {
+            "value": declared,
+            "provenance": system_prov(owner_ref, path, observed_at),
+        },
+        "effective": {
+            "value": effective,
+            "provenance": system_prov(owner_ref, path, observed_at),
+        },
+        "active": active_axis,
+        "staged": {
+            "value": {},
+            "provenance": system_prov(owner_ref, path, observed_at),
+            "stage_ref": null,
+            "stage_state": "none",
+        },
+        "expected_effect": { "summary": null, "ref": null },
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn system_setting(
+    key: &str,
+    title: &str,
+    kind: &str,
+    owner_ref: &str,
+    path: &str,
+    observed_at: u64,
+    declared: Value,
+    effective: Value,
+    active: Value,
+    materialisation_ref: Option<&str>,
+    mutable: bool,
+    native_path: Option<&str>,
+    bootstrap: bool,
+    drift_state: &str,
+    drift_between: &[&str],
+    remediation: Option<&str>,
+) -> Value {
+    json!({
+        "key": key,
+        "title": title,
+        "kind": kind,
+        "axes": system_axes(
+            owner_ref, path, observed_at, declared, effective, active, materialisation_ref
+        ),
+        "mutable": mutable,
+        "native_path": native_path,
+        "bootstrap": bootstrap,
+        "drift": {
+            "state": drift_state,
+            "between": drift_between,
+            "remediation_action_ref": remediation,
+        },
+    })
+}
+
+fn system_unavailable(reason: &str) -> Value {
+    json!({ "state": "unavailable", "reason": reason })
+}
+
+/// One collapsed-local faculty whose availability is observed, not asserted.
+/// The same reading feeds both the section axis values and the degradation list,
+/// so a faculty that later lands changes both without a second edit.
+struct FacultyDetection {
+    subject_ref: &'static str,
+    state: &'static str,
+    reason: &'static str,
+}
+
+/// Single named faculty-detection point for the four faculties collapsed-local
+/// does not implement today. `fabric.provider` and `fabric.tailscale` are
+/// probe-gated on the discovery inventory (a later-registered fabric/Tailscale
+/// provider flips them to available with no code change here);
+/// `hardware.accelerator` and `hardware.host_enumeration` are structurally
+/// absent — collapsed-local has no such observation faculty — and their absence
+/// is named once, here, so the day either faculty ships the reading changes in
+/// this one place rather than across four scattered literals.
+fn detect_faculties(discovery: &Discovery) -> Vec<FacultyDetection> {
+    let has_fabric_provider = discovery.offers.iter().any(|offer| {
+        offer.provider_ref.as_str().contains("fabric") || offer.port.as_str().contains("fabric")
+    });
+    let has_tailscale_provider = discovery
+        .offers
+        .iter()
+        .any(|offer| offer.provider_ref.as_str().contains("tailscale"));
+
+    let mut detections = Vec::new();
+    if !has_fabric_provider {
+        detections.push(FacultyDetection {
+            subject_ref: "fabric.provider",
+            state: "unavailable",
+            reason: "no Fabric/network provider is registered; host-process execution does not claim or enforce cross-host network reachability",
+        });
+    }
+    if !has_tailscale_provider {
+        detections.push(FacultyDetection {
+            subject_ref: "fabric.tailscale",
+            state: "unavailable",
+            reason: "no Tailscale provider is registered and no tailnet is detected",
+        });
+    }
+    detections.push(FacultyDetection {
+        subject_ref: "hardware.accelerator",
+        state: "unavailable",
+        reason: "no accelerator-observation faculty exists in collapsed-local; a GPU is never invented",
+    });
+    detections.push(FacultyDetection {
+        subject_ref: "hardware.host_enumeration",
+        state: "unavailable",
+        reason: "no host hardware enumeration faculty exists at the Workcell level",
+    });
+    detections
+}
+
+/// Axis value for a detected faculty: an honest unavailable reading when the
+/// faculty is absent, and a plain available reading once it has landed.
+fn faculty_axis_value(detections: &[FacultyDetection], subject_ref: &str) -> Value {
+    match detections
+        .iter()
+        .find(|detection| detection.subject_ref == subject_ref)
+    {
+        Some(detection) => system_unavailable(detection.reason),
+        None => json!({ "state": "available" }),
+    }
+}
+
+fn system_hex_digest(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Zero every `*_unix_ms` field in the descriptor, recursively, so the canonical
+/// reading body is independent of when the reading was taken (§4.5). The live
+/// descriptor keeps its real timestamps; only the hashed body is zeroed.
+fn zero_unix_ms(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            let keys: Vec<String> = map
+                .keys()
+                .filter(|key| key.ends_with("_unix_ms"))
+                .cloned()
+                .collect();
+            for key in keys {
+                map.insert(key, json!(0u64));
+            }
+            for (_, child) in map.iter_mut() {
+                zero_unix_ms(child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                zero_unix_ms(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn system_action(
+    action_ref: &str,
+    title: &str,
+    args: Vec<Value>,
+    subject_kinds: Vec<&str>,
+    availability: &str,
+    explain: &[&str],
+    history: &[&str],
+) -> Value {
+    json!({
+        "action_ref": action_ref,
+        "title": title,
+        "args": args,
+        "availability": availability,
+        "unavailable_reason": null,
+        "subject_kinds": subject_kinds,
+        "authority": {
+            "requires": [],
+            "granted_by": "local-user-or-agent",
+            "evidence_ref": null,
+        },
+        "exposure": { "ui": false, "agent": true, "headless": true },
+        "explain": { "ref": action_ref, "command": explain },
+        "history": { "ref": action_ref, "command": history },
+    })
+}
+
+/// Emit this Workcell's System settings disclosure (`oi.product-settings-disclosure/v2`).
+///
+/// The reading is assembled from the collapsed-local operational domain: `discover()`
+/// (providers/offers/capabilities), the instance registry and a read-only live scan
+/// (instances/processes), the state-root service declarations (services), artifact
+/// channels (storage), and the fixed composition facts (fabric/hardware/model-serving
+/// faculties). Logical Workcell identity is never collapsed into a provider, process,
+/// or material binding: every axis carries its own value and owner-namespace provenance.
+///
+/// The canonical reading body (over which `owner.reading_digest` is computed) is
+/// the descriptor with every `*_unix_ms` field zeroed — `disclosed_at_unix_ms`,
+/// `owner.observed_at_unix_ms` and every `axes.*.provenance.observed_at_unix_ms` —
+/// and `owner.reading_digest` set to null (§4.5). serde_json default map ordering
+/// (sorted keys) makes the serialization deterministic, and because no live clock
+/// value survives in the hashed body, two readings of an unchanged world produce
+/// the same digest: a changed digest means a changed reading, never a changed clock.
+fn command_system(global: &GlobalArgs) -> Result<(), WorkcellError> {
+    use epilogos_workcell_runtime::{
+        scan_inputs_live, InstanceRegistry, AIKIT_GATEWAY_APPLICATION_PROTOCOL,
+        AIKIT_GATEWAY_SOURCE_REVISION, HERMES_SOURCE_REVISION, OPENCLAW_SOURCE_REVISION,
+    };
+    use sha2::{Digest, Sha256};
+
+    let workcell_ref = parse_workcell_ref(&global.workcell_ref)?;
+    let workcell = new_local(global, workcell_ref.clone(), BTreeSet::new())?;
+    let discovery = workcell.discover()?;
+
+    let now = system_now_ms();
+    let owner_ref = discovery.workcell_ref.as_str().to_owned();
+    let detections = detect_faculties(&discovery);
+    let discovery_path = format!("{owner_ref}:discovery");
+    let registry_path = format!("{owner_ref}:instances:registry");
+    let scan_path = format!("{owner_ref}:instances:scan");
+    let reference_path = format!("{owner_ref}:reference-services");
+
+    // Provider inventory, offers, capabilities and aggregate capacity.
+    let mut providers_by_ref: BTreeMap<
+        String,
+        Vec<&epilogos_workcell_core::OperationalOffer>,
+    > = BTreeMap::new();
+    for offer in &discovery.offers {
+        providers_by_ref
+            .entry(offer.provider_ref.to_string())
+            .or_default()
+            .push(offer);
+    }
+    let declared_providers: Vec<Value> = [
+        "provider:collapsed-local-workspace",
+        "provider:collapsed-local-host-process",
+        "provider:collapsed-local-artifacts",
+        "provider:collapsed-local-managed-services",
+        "provider:collapsed-local-target-services",
+    ]
+    .iter()
+    .map(|provider| json!({ "provider_ref": provider }))
+    .collect();
+    let inventory_effective: Vec<Value> = providers_by_ref
+        .iter()
+        .map(|(provider, offers)| {
+            let ports = offers
+                .iter()
+                .map(|offer| offer.port.as_str())
+                .collect::<BTreeSet<_>>();
+            json!({
+                "provider_ref": provider,
+                "ports": ports,
+                "offers": offers.len(),
+            })
+        })
+        .collect();
+    let inventory_active: Vec<Value> = providers_by_ref
+        .iter()
+        .map(|(provider, offers)| {
+            let available = offers
+                .iter()
+                .filter(|offer| offer.availability == Availability::Available)
+                .count();
+            json!({ "provider_ref": provider, "available_offers": available })
+        })
+        .collect();
+    let offers_effective: Vec<Value> = discovery
+        .offers
+        .iter()
+        .map(|offer| {
+            json!({
+                "offer_ref": offer.offer_ref.as_str(),
+                "provider_ref": offer.provider_ref.as_str(),
+                "port": offer.port,
+                "affordances": offer.affordances,
+                "connections": offer.connections,
+                "exposures": offer.exposures,
+                "isolation_trust": offer.isolation_trust,
+                "availability": availability(&offer.availability),
+                "health": health(&offer.health),
+            })
+        })
+        .collect();
+    let offers_active: Vec<Value> = discovery
+        .offers
+        .iter()
+        .filter(|offer| offer.availability == Availability::Available)
+        .map(|offer| {
+            json!({
+                "offer_ref": offer.offer_ref.as_str(),
+                "provider_ref": offer.provider_ref.as_str(),
+                "port": offer.port,
+            })
+        })
+        .collect();
+    let mut capabilities: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for offer in &discovery.offers {
+        for affordance in &offer.affordances {
+            capabilities
+                .entry(affordance.clone())
+                .or_default()
+                .insert(offer.provider_ref.to_string());
+        }
+    }
+    let capabilities_effective: Vec<Value> = capabilities
+        .iter()
+        .map(|(affordance, providers)| json!({ "affordance": affordance, "providers": providers }))
+        .collect();
+    let aggregate_capacity: Vec<Value> = discovery
+        .capacity
+        .iter()
+        .map(|(key, value)| json!({ "key": key, "amount": value.amount, "unit": value.unit }))
+        .collect();
+
+    // Instances: registry (read-only) and live scan inputs (read-only).
+    let registry = InstanceRegistry::new(&global.state_root, workcell_ref.clone());
+    let registry_records = registry.list().unwrap_or_default();
+    let declared_instances: Vec<Value> = registry_records
+        .iter()
+        .filter(|record| {
+            record.get("evidence_grade").and_then(Value::as_str) == Some("declared-unverified")
+        })
+        .cloned()
+        .collect();
+    let live_instances: Vec<Value> = registry_records
+        .iter()
+        .filter(|record| record.get("liveness").and_then(Value::as_str) == Some("live"))
+        .cloned()
+        .collect();
+    let scan_inputs = scan_inputs_live("actuation");
+    let (scan_effective, scan_active) = match &scan_inputs {
+        Ok(inputs) => (
+            json!({ "state": "supplied", "faculty": "actuation detection + pid table + gateway seam" }),
+            json!({
+                "live_processes": inputs.processes.len(),
+                "gateway_answering": inputs.gateway_answering,
+            }),
+        ),
+        Err(reason) => (
+            system_unavailable(reason),
+            system_unavailable("live scan inputs could not be gathered"),
+        ),
+    };
+
+    // Services.
+    let service_offers: Vec<&epilogos_workcell_core::OperationalOffer> = discovery
+        .offers
+        .iter()
+        .filter(|offer| offer.port == ProviderPortKind::Service.as_str())
+        .collect();
+    let services_declared: Vec<Value> = service_offers
+        .iter()
+        .map(|offer| {
+            json!({
+                "logical_ref": offer.connections.first().map(String::as_str).unwrap_or(""),
+                "provider_ref": offer.provider_ref.as_str(),
+                "availability": availability(&offer.availability),
+                "health": health(&offer.health),
+                "lifetime": offer.metadata.get("lifetime").map(String::as_str).unwrap_or("unknown"),
+                "endpoint": offer.metadata.get("endpoint").map(String::as_str),
+            })
+        })
+        .collect();
+    let services_active: Vec<Value> = service_offers
+        .iter()
+        .filter(|offer| offer.health == HealthState::Healthy)
+        .map(|offer| {
+            json!({
+                "logical_ref": offer.connections.first().map(String::as_str).unwrap_or(""),
+                "provider_ref": offer.provider_ref.as_str(),
+            })
+        })
+        .collect();
+
+    // Storage / artifact channels.
+    let artifact_channels: Vec<Value> = discovery
+        .offers
+        .iter()
+        .filter(|offer| offer.port == ProviderPortKind::ArtifactStorage.as_str())
+        .map(|offer| {
+            json!({
+                "channel": offer.metadata.get("logical_channel").cloned(),
+                "provider_ref": offer.provider_ref.as_str(),
+            })
+        })
+        .collect();
+
+    // Local / remote presence.
+    let remote_endpoint = env::var("WORKCELL_CONTROL_ENDPOINT").ok();
+    let remote_presence = match &remote_endpoint {
+        Some(endpoint) => json!({ "state": "available", "endpoint": endpoint }),
+        None => system_unavailable(
+            "no WORKCELL_CONTROL_ENDPOINT is set; no remote Workcell is configured",
+        ),
+    };
+
+    // Model-serving materialisation: reference services (declared capability) and
+    // any currently-declared model-serving service (active).
+    let model_targets = ["aikit-gateway", "hermes", "openclaw", "ollama", "llama.cpp", "vllm"];
+    let model_serving_active: Vec<Value> = service_offers
+        .iter()
+        .filter(|offer| {
+            let target = offer.metadata.get("target").map(String::as_str);
+            let program = offer.metadata.get("program").map(String::as_str);
+            target.is_some_and(|t| model_targets.contains(&t))
+                || program.is_some_and(|p| model_targets.iter().any(|t| p.starts_with(*t)))
+        })
+        .map(|offer| {
+            json!({
+                "logical_ref": offer.connections.first().map(String::as_str).unwrap_or(""),
+                "target": offer.metadata.get("target"),
+                "program": offer.metadata.get("program"),
+            })
+        })
+        .collect();
+
+    // Drift on the two settings that have a distinct authored value.
+    let identity_drift = if global.workcell_ref.as_str() == discovery.workcell_ref.as_str() {
+        "none"
+    } else {
+        "diverged"
+    };
+    let state_root_declared = default_state_root().display().to_string();
+    let state_root_effective = global.state_root.display().to_string();
+    let state_root_drift = if state_root_declared == state_root_effective {
+        "none"
+    } else {
+        "diverged"
+    };
+
+    let sections = vec![
+        json!({
+            "id": "workcells",
+            "title": "Workcells / instances",
+            "settings": [
+                system_setting(
+                    "workcells.current", "Workcell identity", "scalar",
+                    &owner_ref, &discovery_path, now,
+                    json!({ "workcell_ref": global.workcell_ref }),
+                    json!({ "workcell_ref": discovery.workcell_ref.as_str() }),
+                    json!({ "workcell_ref": discovery.workcell_ref.as_str() }),
+                    None, false, Some("workcell --workcell-ref REF"), true,
+                    identity_drift, &["declared", "effective"], None,
+                ),
+                system_setting(
+                    "workcells.instances", "Registered harness instances", "table",
+                    &owner_ref, &registry_path, now,
+                    json!({ "records": declared_instances }),
+                    json!({ "records": registry_records }),
+                    json!({ "records": live_instances }),
+                    Some(&registry_path), false,
+                    Some("workcell instances register|declare"), false,
+                    "none", &["declared", "effective"], None,
+                ),
+                system_setting(
+                    "workcells.live_scan", "Live instance scan", "presence",
+                    &owner_ref, &scan_path, now,
+                    json!({ "state": "available", "faculty": "actuation detection + pid table + gateway seam" }),
+                    scan_effective, scan_active,
+                    None, false, Some("workcell instances scan"), false,
+                    "none", &["declared", "effective"], None,
+                ),
+            ],
+        }),
+        json!({
+            "id": "providers",
+            "title": "Providers / offers / capabilities",
+            "settings": [
+                system_setting(
+                    "providers.inventory", "Provider inventory", "table",
+                    &owner_ref, &discovery_path, now,
+                    json!({ "composition": "collapsed-local", "providers": declared_providers }),
+                    json!({ "providers": inventory_effective }),
+                    json!({ "providers": inventory_active }),
+                    None, false, Some("workcell providers"), false,
+                    "none", &["declared", "effective"], None,
+                ),
+                system_setting(
+                    "providers.offers", "Operational offers", "table",
+                    &owner_ref, &discovery_path, now,
+                    json!({ "offers": offers_effective }),
+                    json!({ "offers": offers_effective }),
+                    json!({ "offers": offers_active }),
+                    None, false, Some("workcell discover"), false,
+                    "none", &["declared", "effective"], None,
+                ),
+                system_setting(
+                    "providers.capabilities", "Material capabilities (affordances)", "table",
+                    &owner_ref, &discovery_path, now,
+                    json!({ "capabilities": capabilities_effective }),
+                    json!({ "capabilities": capabilities_effective }),
+                    json!({ "capabilities": capabilities_effective }),
+                    None, false, Some("workcell discover"), false,
+                    "none", &["declared", "effective"], None,
+                ),
+                system_setting(
+                    "providers.capacity", "Workcell-wide aggregate capacity", "table",
+                    &owner_ref, &discovery_path, now,
+                    json!({ "capacity": aggregate_capacity }),
+                    json!({ "capacity": aggregate_capacity }),
+                    json!({ "capacity": aggregate_capacity }),
+                    None, false, Some("workcell discover"), false,
+                    "none", &["declared", "effective"], None,
+                ),
+            ],
+        }),
+        json!({
+            "id": "processes-services",
+            "title": "Processes / services",
+            "settings": [
+                system_setting(
+                    "services.declared", "Declared logical services", "table",
+                    &owner_ref, &discovery_path, now,
+                    json!({ "services": services_declared }),
+                    json!({ "services": services_declared }),
+                    json!({ "services": services_active }),
+                    None, false, Some("workcell --services PATH"), false,
+                    "none", &["declared", "effective"], None,
+                ),
+                system_setting(
+                    "processes.execution", "Host-process execution", "presence",
+                    &owner_ref, &discovery_path, now,
+                    json!({ "state": "available", "provider": "provider:collapsed-local-host-process" }),
+                    json!({ "state": "available", "affordances": ["shell", "process-execution", "execution:host-process"] }),
+                    json!({ "state": "available", "authority": "explicit material operation grant required" }),
+                    None, false, Some("workcell plan|prepare --require shell"), false,
+                    "none", &["declared", "effective"], None,
+                ),
+            ],
+        }),
+        json!({
+            "id": "storage",
+            "title": "Storage / artifacts",
+            "settings": [
+                system_setting(
+                    "storage.state_root", "Workcell state root", "scalar",
+                    &owner_ref, &format!("{owner_ref}:env"), now,
+                    json!({ "path": state_root_declared }),
+                    json!({ "path": state_root_effective }),
+                    json!({ "path": state_root_effective }),
+                    None, false, Some("workcell --state-root PATH"), true,
+                    state_root_drift, &["declared", "effective"], None,
+                ),
+                system_setting(
+                    "storage.artifact_channels", "Artifact channels", "table",
+                    &owner_ref, &discovery_path, now,
+                    json!({ "channels": artifact_channels }),
+                    json!({ "channels": artifact_channels }),
+                    json!({ "channels": artifact_channels }),
+                    None, false, Some("workcell prepare --output CHANNEL"), false,
+                    "none", &["declared", "effective"], None,
+                ),
+            ],
+        }),
+        json!({
+            "id": "fabric",
+            "title": "Fabric / reachability",
+            "settings": [
+                system_setting(
+                    "fabric.local_placement", "Same-host (loopback) placement", "presence",
+                    &owner_ref, &discovery_path, now,
+                    json!({ "state": "available" }),
+                    json!({ "state": "available", "note": "collapsed-local materialises execution and storage on the same host" }),
+                    json!({ "state": "available" }),
+                    None, false, None, false, "none", &["declared", "effective"], None,
+                ),
+                system_setting(
+                    "fabric.provider", "Fabric / network provider", "presence",
+                    &owner_ref, &discovery_path, now,
+                    faculty_axis_value(&detections, "fabric.provider"),
+                    faculty_axis_value(&detections, "fabric.provider"),
+                    faculty_axis_value(&detections, "fabric.provider"),
+                    None, false, None, false, "none", &["declared", "effective"], None,
+                ),
+                system_setting(
+                    "fabric.tailscale", "Tailscale / tailnet", "presence",
+                    &owner_ref, &discovery_path, now,
+                    faculty_axis_value(&detections, "fabric.tailscale"),
+                    faculty_axis_value(&detections, "fabric.tailscale"),
+                    faculty_axis_value(&detections, "fabric.tailscale"),
+                    None, false, None, false, "none", &["declared", "effective"], None,
+                ),
+                system_setting(
+                    "fabric.remote_control", "Remote control endpoint", "presence",
+                    &owner_ref, &format!("{owner_ref}:env"), now,
+                    remote_presence.clone(), remote_presence.clone(), remote_presence.clone(),
+                    None, false, Some("workcell --endpoint HOST:PORT"), false,
+                    "none", &["declared", "effective"], None,
+                ),
+            ],
+        }),
+        json!({
+            "id": "local-remote",
+            "title": "Local / remote state",
+            "settings": [
+                system_setting(
+                    "placement.backend", "Control backend", "scalar",
+                    &owner_ref, &discovery_path, now,
+                    json!({ "backend": "native-cli" }),
+                    json!({ "backend": "native-cli" }),
+                    json!({ "backend": "native-cli" }),
+                    None, false, None, false, "none", &["declared", "effective"], None,
+                ),
+                system_setting(
+                    "placement.local", "Local operational domain", "presence",
+                    &owner_ref, &discovery_path, now,
+                    json!({ "state": "available" }),
+                    json!({ "state": "available" }),
+                    json!({ "state": "available" }),
+                    None, false, None, false, "none", &["declared", "effective"], None,
+                ),
+                system_setting(
+                    "placement.remote", "Remote Workcell", "presence",
+                    &owner_ref, &format!("{owner_ref}:env"), now,
+                    remote_presence.clone(), remote_presence.clone(), remote_presence.clone(),
+                    None, false, Some("workcell --endpoint HOST:PORT"), false,
+                    "none", &["declared", "effective"], None,
+                ),
+            ],
+        }),
+        json!({
+            "id": "model-serving",
+            "title": "Model-serving materialisation",
+            "settings": [
+                system_setting(
+                    "model-serving.reference_services", "Reference service materialisation", "table",
+                    &owner_ref, &reference_path, now,
+                    json!({ "services": [
+                        { "target": "aikit-gateway", "shape": "managed host service (serve --ws)", "source_revision": AIKIT_GATEWAY_SOURCE_REVISION, "application_protocol": AIKIT_GATEWAY_APPLICATION_PROTOCOL },
+                        { "target": "hermes", "shape": "target-owned external service (gateway start/stop/restart/status)", "source_revision": HERMES_SOURCE_REVISION },
+                        { "target": "openclaw", "shape": "target-owned external service (gateway start/stop/health/status)", "source_revision": OPENCLAW_SOURCE_REVISION },
+                    ] }),
+                    json!({ "services": [
+                        { "target": "aikit-gateway", "shape": "managed host service (serve --ws)", "source_revision": AIKIT_GATEWAY_SOURCE_REVISION, "application_protocol": AIKIT_GATEWAY_APPLICATION_PROTOCOL },
+                        { "target": "hermes", "shape": "target-owned external service (gateway start/stop/restart/status)", "source_revision": HERMES_SOURCE_REVISION },
+                        { "target": "openclaw", "shape": "target-owned external service (gateway start/stop/health/status)", "source_revision": OPENCLAW_SOURCE_REVISION },
+                    ] }),
+                    json!({ "services": model_serving_active }),
+                    None, false, Some("workcell --services PATH"), false,
+                    "none", &["declared", "effective"], None,
+                ),
+                system_setting(
+                    "model-serving.engine_shapes", "Engine materialisation shapes", "table",
+                    &owner_ref, &reference_path, now,
+                    json!({ "engines": [
+                        { "engine": "ollama", "shape": "ollama serve (managed service); model control separate from inference reachability", "standing": "source-pinned materialisation shape" },
+                        { "engine": "llama.cpp", "shape": "llama-cli (one-shot) / llama-server (service)", "standing": "source-pinned materialisation shape" },
+                        { "engine": "vllm", "shape": "vllm serve (service); accelerator-gated", "standing": "source-pinned materialisation shape" },
+                    ] }),
+                    json!({ "engines": [
+                        { "engine": "ollama", "shape": "ollama serve (managed service); model control separate from inference reachability", "standing": "source-pinned materialisation shape" },
+                        { "engine": "llama.cpp", "shape": "llama-cli (one-shot) / llama-server (service)", "standing": "source-pinned materialisation shape" },
+                        { "engine": "vllm", "shape": "vllm serve (service); accelerator-gated", "standing": "source-pinned materialisation shape" },
+                    ] }),
+                    system_unavailable("no model-serving service is declared on this Workcell"),
+                    None, false, None, false, "none", &["declared", "effective"], None,
+                ),
+            ],
+        }),
+        json!({
+            "id": "hardware",
+            "title": "Hardware / accelerator observations",
+            "settings": [
+                system_setting(
+                    "hardware.accelerator", "Accelerator (GPU) observation", "presence",
+                    &owner_ref, &discovery_path, now,
+                    faculty_axis_value(&detections, "hardware.accelerator"),
+                    faculty_axis_value(&detections, "hardware.accelerator"),
+                    faculty_axis_value(&detections, "hardware.accelerator"),
+                    None, false, None, false, "none", &["declared", "effective"], None,
+                ),
+                system_setting(
+                    "hardware.resource_observation", "Bounded instance resource observation", "presence",
+                    &owner_ref, &scan_path, now,
+                    json!({ "state": "available", "metrics": ["cpu_time", "cpu_utilisation", "memory_rss"] }),
+                    json!({ "state": "available", "metrics": ["cpu_time", "cpu_utilisation", "memory_rss"], "network": "unsupported" }),
+                    json!({ "state": "available", "metrics": ["cpu_time", "cpu_utilisation", "memory_rss"], "network": "unsupported" }),
+                    None, false, Some("workcell instances usage"), false,
+                    "none", &["declared", "effective"], None,
+                ),
+                system_setting(
+                    "hardware.host_enumeration", "Host hardware enumeration", "presence",
+                    &owner_ref, &discovery_path, now,
+                    faculty_axis_value(&detections, "hardware.host_enumeration"),
+                    faculty_axis_value(&detections, "hardware.host_enumeration"),
+                    faculty_axis_value(&detections, "hardware.host_enumeration"),
+                    None, false, None, false, "none", &["declared", "effective"], None,
+                ),
+            ],
+        }),
+        json!({
+            "id": "lifecycle",
+            "title": "Lifecycle / reconcile / release",
+            "settings": [
+                system_setting(
+                    "lifecycle.operations", "Control-plane operations", "table",
+                    &owner_ref, &discovery_path, now,
+                    json!({ "operations": [
+                        { "operation": "discover", "availability": "available", "native_path": "workcell discover" },
+                        { "operation": "plan", "availability": "available", "native_path": "workcell plan" },
+                        { "operation": "prepare", "availability": "available", "native_path": "workcell prepare" },
+                        { "operation": "observe", "availability": "available", "native_path": "workcell observe" },
+                        { "operation": "expose", "availability": "available", "native_path": "workcell expose" },
+                        { "operation": "collect", "availability": "available", "native_path": "workcell collect" },
+                        { "operation": "release", "availability": "available", "native_path": "workcell release" },
+                        { "operation": "reconcile", "availability": "available", "native_path": "workcell reconcile" },
+                    ] }),
+                    json!({ "operations": [
+                        { "operation": "discover", "availability": "available", "native_path": "workcell discover" },
+                        { "operation": "plan", "availability": "available", "native_path": "workcell plan" },
+                        { "operation": "prepare", "availability": "available", "native_path": "workcell prepare" },
+                        { "operation": "observe", "availability": "available", "native_path": "workcell observe" },
+                        { "operation": "expose", "availability": "available", "native_path": "workcell expose" },
+                        { "operation": "collect", "availability": "available", "native_path": "workcell collect" },
+                        { "operation": "release", "availability": "available", "native_path": "workcell release" },
+                        { "operation": "reconcile", "availability": "available", "native_path": "workcell reconcile" },
+                    ] }),
+                    json!({ "operations": [
+                        { "operation": "discover", "availability": "available", "native_path": "workcell discover" },
+                        { "operation": "plan", "availability": "available", "native_path": "workcell plan" },
+                        { "operation": "prepare", "availability": "available", "native_path": "workcell prepare" },
+                        { "operation": "observe", "availability": "available", "native_path": "workcell observe" },
+                        { "operation": "expose", "availability": "available", "native_path": "workcell expose" },
+                        { "operation": "collect", "availability": "available", "native_path": "workcell collect" },
+                        { "operation": "release", "availability": "available", "native_path": "workcell release" },
+                        { "operation": "reconcile", "availability": "available", "native_path": "workcell reconcile" },
+                    ] }),
+                    None, false, Some("workcell <discover|plan|prepare|observe|expose|collect|release|reconcile>"), false,
+                    "none", &["declared", "effective"], None,
+                ),
+                system_setting(
+                    "lifecycle.persisted_worlds", "Persisted material-world receipts", "scalar",
+                    &owner_ref, &format!("{owner_ref}:state-root"), now,
+                    json!({ "count": receipt_count(&global.state_root)? }),
+                    json!({ "count": receipt_count(&global.state_root)? }),
+                    json!({ "count": receipt_count(&global.state_root)? }),
+                    None, false, Some("workcell --receipt PATH prepare"), false,
+                    "none", &["declared", "effective"], None,
+                ),
+                system_setting(
+                    "lifecycle.release_dispositions", "Release dispositions", "table",
+                    &owner_ref, &discovery_path, now,
+                    json!({ "dispositions": [
+                        { "disposition": "release", "supported": true },
+                        { "disposition": "preserve", "supported": true },
+                        { "disposition": "suspend", "supported": false, "reason": "host-process execution does not support suspend" },
+                        { "disposition": "snapshot", "supported": false, "reason": "host-process execution does not support snapshot" },
+                    ] }),
+                    json!({ "dispositions": [
+                        { "disposition": "release", "supported": true },
+                        { "disposition": "preserve", "supported": true },
+                        { "disposition": "suspend", "supported": false, "reason": "host-process execution does not support suspend" },
+                        { "disposition": "snapshot", "supported": false, "reason": "host-process execution does not support snapshot" },
+                    ] }),
+                    json!({ "dispositions": [
+                        { "disposition": "release", "supported": true },
+                        { "disposition": "preserve", "supported": true },
+                        { "disposition": "suspend", "supported": false, "reason": "host-process execution does not support suspend" },
+                        { "disposition": "snapshot", "supported": false, "reason": "host-process execution does not support snapshot" },
+                    ] }),
+                    None, false, Some("workcell --receipt PATH release"), false,
+                    "none", &["declared", "effective"], None,
+                ),
+            ],
+        }),
+    ];
+
+    let actions = vec![
+        system_action("workcell.status", "Summarise this Workcell", vec![], vec!["workcell.material"], "disclosed", &["workcell", "status", "--json"], &["workcell", "status", "--json"]),
+        system_action("workcell.discover", "Discover material offers", vec![], vec!["workcell.material"], "disclosed", &["workcell", "discover", "--json"], &["workcell", "discover", "--json"]),
+        system_action("workcell.providers", "List provider inventory", vec![], vec!["workcell.provider"], "disclosed", &["workcell", "providers", "--json"], &["workcell", "providers", "--json"]),
+        system_action("workcell.doctor", "Verify the zero-setup local baseline", vec![], vec!["workcell.material"], "disclosed", &["workcell", "doctor", "--json"], &["workcell", "doctor", "--json"]),
+        system_action("workcell.material", "Compose a material reading for a prepared world", vec![json!({"name": "receipt", "kind": "path"})], vec!["workcell.world"], "disclosed", &["workcell", "material", "--json"], &["workcell", "material", "--json"]),
+        system_action("workcell.plan", "Plan an ExecutionDemand", vec![json!({"name": "demand", "kind": "string"})], vec!["workcell.plan"], "disclosed", &["workcell", "plan", "--json"], &["workcell", "plan", "--json"]),
+        system_action("workcell.prepare", "Prepare a material world", vec![json!({"name": "demand", "kind": "string"})], vec!["workcell.world"], "disclosed", &["workcell", "prepare", "--json"], &["workcell", "prepare", "--json"]),
+        system_action("workcell.observe", "Observe a prepared world", vec![json!({"name": "receipt", "kind": "path"})], vec!["workcell.world"], "disclosed", &["workcell", "observe", "--json"], &["workcell", "observe", "--json"]),
+        system_action("workcell.expose", "Resolve prepared exposure surfaces", vec![json!({"name": "receipt", "kind": "path"})], vec!["workcell.world"], "disclosed", &["workcell", "expose", "--json"], &["workcell", "expose", "--json"]),
+        system_action("workcell.collect", "Collect prepared output channels", vec![json!({"name": "receipt", "kind": "path"})], vec!["workcell.world"], "disclosed", &["workcell", "collect", "--json"], &["workcell", "collect", "--json"]),
+        system_action("workcell.release", "Release or preserve a prepared world", vec![json!({"name": "receipt", "kind": "path"})], vec!["workcell.world"], "disclosed", &["workcell", "release", "--json"], &["workcell", "release", "--json"]),
+        system_action("workcell.reconcile", "Reconcile desired material state", vec![json!({"name": "desired", "kind": "string"})], vec!["workcell.world"], "disclosed", &["workcell", "reconcile", "--json"], &["workcell", "reconcile", "--json"]),
+        system_action("workcell.instances.list", "List registered harness instances", vec![], vec!["workcell.instance"], "disclosed", &["workcell", "instances", "list", "--json"], &["workcell", "instances", "list", "--json"]),
+        system_action("workcell.instances.scan", "Scan live harness instances", vec![], vec!["workcell.instance"], "disclosed", &["workcell", "instances", "scan", "--json"], &["workcell", "instances", "scan", "--json"]),
+        system_action("workcell.instances.usage", "Observe bounded resource usage of a live instance", vec![json!({"name": "instance_ref", "kind": "string"})], vec!["workcell.instance"], "disclosed", &["workcell", "instances", "usage", "--json"], &["workcell", "instances", "usage", "--json"]),
+        system_action("workcell.sandboxes.reconcile", "Reconcile OpenSandbox server-side sandboxes", vec![json!({"name": "server", "kind": "string"})], vec!["workcell.sandbox"], "disclosed", &["workcell", "sandboxes", "reconcile", "--json"], &["workcell", "sandboxes", "reconcile", "--json"]),
+        system_action("workcell.intent", "Preview a lifecycle change through the O:I kernel seam", vec![], vec!["workcell.world"], "missing_native_obligation", &["workcell", "intent"], &["workcell", "intent"]),
+        system_action("workcell.invoke", "Invoke a lifecycle change through the O:I kernel seam", vec![], vec!["workcell.world"], "missing_native_obligation", &["workcell", "invoke"], &["workcell", "invoke"]),
+    ];
+
+    let availability_state = match discovery.health {
+        HealthState::Healthy => "available",
+        HealthState::Degraded => "degraded",
+        HealthState::Unavailable => "unavailable",
+        HealthState::Unknown => "unknown",
+    };
+    let availability_reason = if availability_state == "available" {
+        None
+    } else {
+        Some("collapsed-local discovery reports non-healthy state")
+    };
+
+    let mut degradations = detections
+        .iter()
+        .map(|detection| {
+            json!({
+                "subject_ref": detection.subject_ref,
+                "state": detection.state,
+                "reason": detection.reason,
+                "native_error": null,
+            })
+        })
+        .collect::<Vec<_>>();
+    if remote_endpoint.is_none() {
+        degradations.push(json!({ "subject_ref": "placement.remote", "state": "unavailable", "reason": "no WORKCELL_CONTROL_ENDPOINT is set; no remote Workcell is configured", "native_error": null }));
+    }
+    if model_serving_active.is_empty() {
+        degradations.push(json!({ "subject_ref": "model-serving.active", "state": "unavailable", "reason": "no model-serving service is declared on this Workcell", "native_error": null }));
+    }
+
+    let obligations = vec![
+        "workcell.intent / workcell.invoke: lifecycle intent and invoke are not yet disclosed through the O:I kernel seam; they render as named obligations, not controls",
+        "remote Workcell settings disclosure through workcell.control/v1 is not yet implemented; `workcell --endpoint ... system` reports unavailable rather than a fabricated remote reading",
+        "accelerator (GPU) observation: no faculty exists to observe accelerators in collapsed-local",
+        "host hardware enumeration: no faculty exists to enumerate CPU/memory at the Workcell level",
+        "generic cross-host network reachability: host-process execution does not claim or enforce it, and no fabric provider is registered",
+    ];
+
+    let mut descriptor = json!({
+        "schema": "oi.product-settings-disclosure/v2",
+        "product_id": "workcell",
+        "contract_revision": "wave-5/system.1",
+        "disclosed_at_unix_ms": now,
+        "owner": {
+            "owner_id": "workcell",
+            "owner_ref": owner_ref,
+            "owner_version": env!("CARGO_PKG_VERSION"),
+            "reading_command": ["workcell", "system", "--json"],
+            "reading_digest": null,
+            "reading_digest_covers": "descriptor with every *_unix_ms field zeroed (disclosed_at_unix_ms, owner.observed_at_unix_ms, every axes.*.provenance.observed_at_unix_ms) and owner.reading_digest set to null",
+            "observed_at_unix_ms": now,
+        },
+        "about": "Workcell is the materialisation centre of the O:I field: it turns provider-neutral demand into a reachable, inspectable material world. This disclosure reports the collapsed-local operational domain — Workcell identity, providers/offers/capabilities, processes/services, storage/artifacts, fabric/reachability, local/remote placement, model-serving materialisation, hardware observations and lifecycle — with logical identity kept distinct from provider, process and material binding.",
+        "sections": sections,
+        "actions": actions,
+        "availability": { "state": availability_state, "reason": availability_reason },
+        "degradations": degradations,
+        "obligations": obligations,
+    });
+
+    let mut canonical = descriptor.clone();
+    zero_unix_ms(&mut canonical);
+    if let Some(owner) = canonical.get_mut("owner").and_then(Value::as_object_mut) {
+        owner.insert("reading_digest".into(), Value::Null);
+    }
+    let canonical_body = serde_json::to_string(&canonical).unwrap_or_default();
+    let digest = system_hex_digest(&Sha256::digest(canonical_body.as_bytes()));
+    if let Some(owner) = descriptor.get_mut("owner").and_then(Value::as_object_mut) {
+        owner.insert("reading_digest".into(), json!(digest));
+    }
+
+    if global.json {
+        emit_json(descriptor);
+    } else {
+        let availability = descriptor["availability"]["state"].as_str().unwrap_or("unknown");
+        println!(
+            "Workcell System disclosure (oi.product-settings-disclosure/v2)\n  product: workcell\n  availability: {availability}\n  sections: {}\n  actions: {}\n  degradations: {}\n  obligations: {}\n  reading digest: {}",
+            descriptor["sections"].as_array().map_or(0, Vec::len),
+            descriptor["actions"].as_array().map_or(0, Vec::len),
+            descriptor["degradations"].as_array().map_or(0, Vec::len),
+            descriptor["obligations"].as_array().map_or(0, Vec::len),
+            descriptor["owner"]["reading_digest"].as_str().unwrap_or("null"),
+        );
+    }
+    Ok(())
+}
+
 fn write_receipt(
     path: &Path,
     world: &epilogos_workcell_core::MaterialisedExecutionWorld,
@@ -1911,7 +2821,7 @@ fn print_help() {
         "Workcell — provider-neutral material execution control\n\n\
 Usage:\n  workcell [global options] <command> [command options]\n\n\
 Commands:\n  status       Summarise this local Workcell\n  discover     Discover material offers\n  plan         Plan an ExecutionDemand\n  prepare      Prepare a material world and persist a receipt\n  observe      Observe a prepared world from its receipt\n  expose       Resolve prepared exposure surfaces\n  collect      Collect prepared output channels\n  release      Release or preserve a prepared world\n  reconcile    Reconcile desired material state\n  instances    Live harness instances and bounded resource usage
-  sandboxes    OpenSandbox server-side material (reconcile)\n  providers    List provider inventory\n  doctor       Verify the zero-setup local baseline\n\n\
+  sandboxes    OpenSandbox server-side material (reconcile)\n  providers    List provider inventory\n  system       Emit this Workcell's System settings disclosure (oi.product-settings-disclosure/v2)\n  doctor       Verify the zero-setup local baseline\n\n\
 Global options:\n  --json                     Structured machine/agent output\n  --state-root PATH          Local Workcell state (default: $WORKCELL_HOME or ~/.workcell)\n  --workcell-ref REF         Workcell identity for new local operations\n  --receipt PATH             Material-world receipt for prepare/resume\n  --workspace-source PATH    Physical local source binding; never semantic identity\n  --services PATH            Operator-declared logical services (default: <state-root>/services.json)\n\n\
 Demand options for plan/prepare:\n  --demand-ref REF\n  --require VALUE | --prefer VALUE | --optional VALUE\n  --workspace writable|read-only [--workspace-ref REF] [--revision REV]\n  --project-runtime MODE\n  --connect VALUE | --prefer-connect VALUE | --optional-connect VALUE\n  --expose VALUE | --prefer-expose VALUE | --optional-expose VALUE\n  --output VALUE | --prefer-output VALUE | --optional-output VALUE\n  --resource key[=amount[:unit]]\n  --subject role=opaque-ref\n  --persistence SCOPE\n  --isolation VALUE\n  --retention release|preserve|suspend-if-supported|snapshot-if-supported\n  --extension key=value\n\n\
 Reconcile:\n  workcell --receipt WORLD.json reconcile --desired logical-ref=state"
