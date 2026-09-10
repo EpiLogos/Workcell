@@ -8,8 +8,8 @@ use std::{
 use epilogos_workcell_control::{ControlClient, ControlService, DirectTransport};
 use epilogos_workcell_core::{
     AffordanceRequirement, DemandRef, DesiredMaterialState, ExecutionDemand, ExternalRef,
-    OutputRequirement, PersistenceScope, RetentionExpectation, WorkspaceAccess,
-    WorkspaceRequirement, WorkcellRef,
+    OutputRequirement, PersistenceScope, RetentionExpectation, WorkcellRef, WorkspaceAccess,
+    WorkspaceRequirement,
 };
 use epilogos_workcell_runtime::{CollapsedLocalConfig, CollapsedLocalWorkcell};
 use epilogos_workcell_wire::decode_world;
@@ -108,7 +108,11 @@ fn development_world_is_inspectable_through_prepare_observe_collect_release_reco
             .get("path")
             .expect("artifact binding exposes material path"),
     );
-    fs::write(artifact_path.join("development-proof.txt"), "material evidence\n").unwrap();
+    fs::write(
+        artifact_path.join("development-proof.txt"),
+        "material evidence\n",
+    )
+    .unwrap();
 
     let observed = client.observe(&world_ref).unwrap();
     for observation in observed["observations"].as_array().unwrap() {
