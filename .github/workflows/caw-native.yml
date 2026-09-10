@@ -48,8 +48,11 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo test --locked -p epilogos-workcell-runtime --test write_boundary -- --nocapture 2>&1 | tee evidence/write-boundary.txt
+          cargo test --locked -p epilogos-workcell-runtime --test write_boundary --test write_boundary_protected_paths -- --nocapture 2>&1 | tee evidence/write-boundary.txt
           grep -q WRITE_BOUNDARY_EXECUTED evidence/write-boundary.txt
+          grep -q PROTECTED_PATHS_EXECUTED evidence/write-boundary.txt
+          cargo test --locked -p epilogos-workcell-cli --test write_boundary_protocol -- --nocapture 2>&1 | tee evidence/protocol-boundary.txt
+          grep -q PROTOCOL_BOUNDARY_EXECUTED evidence/protocol-boundary.txt
       - name: Build native operations
         run: |
           cargo build --locked -p epilogos-workcell-cli --bins

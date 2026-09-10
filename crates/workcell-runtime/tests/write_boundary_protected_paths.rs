@@ -72,7 +72,8 @@ fn exact_files_and_absent_paths_are_protected_in_native_execution() {
         );
         return;
     }
-    let boundary = PreparedWriteBoundary::prepare(request.clone(), "exact-policy-revision").unwrap();
+    let boundary =
+        PreparedWriteBoundary::prepare(request.clone(), "exact-policy-revision").unwrap();
     let inspection = boundary.inspect("exact-policy-revision").unwrap();
     assert_eq!(inspection["requirements"], request.as_json());
     assert_eq!(inspection["protected_objects"].as_array().unwrap().len(), 3);
