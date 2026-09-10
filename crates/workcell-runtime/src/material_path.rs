@@ -87,13 +87,16 @@ impl ProtectedPath {
                 }
             }
         }
-        let existing_ancestor = fs::canonicalize(existing)
-            .map_err(|error| WorkcellError::Unavailable(format!("resolve protected path: {error}")))?;
-        let metadata = fs::metadata(&existing_ancestor)
-            .map_err(|error| WorkcellError::Unavailable(format!("inspect protected object: {error}")))?;
+        let existing_ancestor = fs::canonicalize(existing).map_err(|error| {
+            WorkcellError::Unavailable(format!("resolve protected path: {error}"))
+        })?;
+        let metadata = fs::metadata(&existing_ancestor).map_err(|error| {
+            WorkcellError::Unavailable(format!("inspect protected object: {error}"))
+        })?;
         if !(metadata.is_dir() || metadata.is_file()) || (!tail.is_empty() && !metadata.is_dir()) {
             return Err(WorkcellError::InvalidDemand(
-                "protected object must be a regular file, directory or absent directory member".into(),
+                "protected object must be a regular file, directory or absent directory member"
+                    .into(),
             ));
         }
         let exists = tail.is_empty();
@@ -142,7 +145,10 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "workcell-protected-path-{}-{}",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         fs::create_dir(&root).unwrap();
         let file = root.join("human.json");
