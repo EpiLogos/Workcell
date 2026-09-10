@@ -34,7 +34,10 @@ pub fn execute(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         let current = boundary.inspect(&args[2])?;
         for field in ["requirements_digest", "objects", "protected_objects"] {
             if input[field] != current[field] {
-                return Err(format!("prepared protocol {field} changed; re-resolve before execution").into());
+                return Err(format!(
+                    "prepared protocol {field} changed; re-resolve before execution"
+                )
+                .into());
             }
         }
     }
