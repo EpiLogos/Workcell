@@ -5,7 +5,20 @@ use epilogos_workcell_runtime::{
 use serde_json::{json, Value};
 use std::{env, fs, process::Command, time::Duration};
 
+#[path = "../stdio_boundary.rs"]
+mod stdio_boundary;
+
 fn main() {
+    let args = env::args().skip(1).collect::<Vec<_>>();
+    if args.first().map(String::as_str) == Some("exec") {
+        if let Err(error) = stdio_boundary::execute(&args) {
+            eprintln!(
+                "{}",
+                json!({"schema":"workcell.write-boundary-result/v1","ok":false,"error":error.to_string(),"executed":false})
+            );
+        }
+        std::process::exit(2);
+    }
     match run() {
         Ok((value, code)) => {
             println!("{value}");
@@ -23,10 +36,14 @@ fn main() {
 fn run() -> Result<(Value, i32), Box<dyn std::error::Error>> {
     let args = env::args().skip(1).collect::<Vec<_>>();
     match args.first().map(String::as_str) {
-        Some("capabilities") if args.len() == 1 => return Ok((write_boundary_capabilities(), 0)),
+        Some("capabilities") if args.len() == 1 => {
+            let mut value = write_boundary_capabilities();
+            value["protocol_exec"] = json!({"operation":stdio_boundary::USAGE,"stdin_stdout":"inherited pipes or sockets only","provider_stderr":"discarded","session_lifetime":"owned by calling protocol host","limits":"no live revocation; admission is checked before exec"});
+            return Ok((value, 0));
+        }
         Some("--help" | "help") | None => {
             return Ok((
-                json!({"usage":"workcell-write-boundary capabilities | inspect REQUIREMENTS.json CURRENT_POLICY_REVISION | run REQUIREMENTS.json CURRENT_POLICY_REVISION TIMEOUT_MS -- PROGRAM [ARG...]","boundary":"explicit material requirements, not governance recognition; output is bounded to 64 KiB per stream; unknown coverage refuses execution"}),
+                json!({"usage":"workcell-write-boundary capabilities | inspect REQUIREMENTS.json CURRENT_POLICY_REVISION | run REQUIREMENTS.json CURRENT_POLICY_REVISION TIMEOUT_MS -- PROGRAM [ARG...]","protocol_exec":stdio_boundary::USAGE,"boundary":"explicit material requirements, not governance recognition; finite output is bounded to 64 KiB per stream; protocol exec preserves provider stdout; unknown coverage refuses execution"}),
                 0,
             ))
         }
