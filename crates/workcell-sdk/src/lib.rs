@@ -16,16 +16,16 @@ pub mod client {
 
 pub mod contract {
     pub use epilogos_workcell_core::{
-        AffordanceRequirement, Binding, BindingGraph, BindingPresence, BindingRef,
-        CollectionBundle, CollectedOutput, DemandRef, DesiredMaterialState, Discovery,
-        ExecutionDemand, Exposure, ExposureBundle, ExposureRequirement, ExternalRef, HealthState,
-        IsolationTrustRequirement, LogicalConnectionRequirement, MaterialObservation,
-        MaterialisationPlan, MaterialisedExecutionWorld, ObservationBundle, OutputRequirement,
-        PersistenceScope, PlanStatus, ProjectRuntimeRequirement, ProviderPortKind, ProviderRef,
-        ReconciliationDelta, ReconciliationResult, ReleaseDisposition, ReleaseResult,
-        RequirementNecessity, ResourceRequirement, RetentionExpectation, StorageAccess,
-        StorageRequirement, StorageSharing, Tiered, WorkcellControlPlane, WorkcellRef,
-        WorkspaceAccess, WorkspaceRequirement, WorldRef,
+        AffordanceRequirement, Binding, BindingGraph, BindingPresence, BindingRef, CollectedOutput,
+        CollectionBundle, DemandRef, DesiredMaterialState, Discovery, ExecutionDemand, Exposure,
+        ExposureBundle, ExposureRequirement, ExternalRef, HealthState, IsolationTrustRequirement,
+        LogicalConnectionRequirement, MaterialObservation, MaterialisationPlan,
+        MaterialisedExecutionWorld, ObservationBundle, OutputRequirement, PersistenceScope,
+        PlanStatus, ProjectRuntimeRequirement, ProviderPortKind, ProviderRef, ReconciliationDelta,
+        ReconciliationResult, ReleaseDisposition, ReleaseResult, RequirementNecessity,
+        ResourceRequirement, RetentionExpectation, StorageAccess, StorageRequirement,
+        StorageSharing, Tiered, WorkcellControlPlane, WorkcellRef, WorkspaceAccess,
+        WorkspaceRequirement, WorldRef,
     };
 }
 

@@ -89,7 +89,10 @@ fn development_world_is_inspectable_through_prepare_observe_collect_release_reco
         .iter()
         .map(|binding| binding.binding_ref.to_string())
         .collect::<BTreeSet<_>>();
-    assert_eq!(binding_refs.len(), inspected_world.binding_graph.bindings.len());
+    assert_eq!(
+        binding_refs.len(),
+        inspected_world.binding_graph.bindings.len()
+    );
     for binding in &inspected_world.binding_graph.bindings {
         assert!(!binding.provider_ref.as_str().is_empty());
         assert!(!binding.material_ref.is_empty());
@@ -155,7 +158,10 @@ fn development_world_is_inspectable_through_prepare_observe_collect_release_reco
             desired: "present".into(),
         }])
         .unwrap();
-    assert_eq!(before_release["deltas"][0]["action"], serde_json::Value::Null);
+    assert_eq!(
+        before_release["deltas"][0]["action"],
+        serde_json::Value::Null
+    );
 
     let release = client.release(&world_ref).unwrap();
     assert_eq!(release["disposition"], "released");
