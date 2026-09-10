@@ -5,18 +5,19 @@ use epilogos_workcell_runtime::{
 use serde_json::{json, Value};
 use std::{env, fs, process::Command, time::Duration};
 
+#[path = "../stdio_boundary.rs"]
+mod stdio_boundary;
+
 fn main() {
-    if env::args().nth(1).as_deref() == Some("exec") {
-        if let Err(error) = protocol_exec() {
-            // Stdout belongs exclusively to the hosted protocol, even on error.
+    let args = env::args().skip(1).collect::<Vec<_>>();
+    if args.first().map(String::as_str) == Some("exec") {
+        if let Err(error) = stdio_boundary::execute(&args) {
             eprintln!(
                 "{}",
-                json!({"schema":"workcell.write-boundary-result/v1",
-                    "ok":false,"executed":false,"error":error.to_string()})
+                json!({"schema":"workcell.write-boundary-result/v1","ok":false,"error":error.to_string(),"executed":false})
             );
-            std::process::exit(2);
         }
-        return;
+        std::process::exit(2);
     }
     match run() {
         Ok((value, code)) => {
@@ -37,13 +38,12 @@ fn run() -> Result<(Value, i32), Box<dyn std::error::Error>> {
     match args.first().map(String::as_str) {
         Some("capabilities") if args.len() == 1 => {
             let mut value = write_boundary_capabilities();
-            value["protocol_exec"] = json!(cfg!(target_os = "linux") && value["supported"] == true);
-            value["protocol_stdio"] = json!("inherited pipes/sockets only; no launcher stdout; PID preserved; owner-managed lifetime");
+            value["protocol_exec"] = json!({"operation":stdio_boundary::USAGE,"stdin_stdout":"inherited pipes or sockets only","provider_stderr":"discarded","session_lifetime":"owned by calling protocol host","limits":"no live revocation; admission is checked before exec"});
             return Ok((value, 0));
         }
         Some("--help" | "help") | None => {
             return Ok((
-                json!({"usage":"workcell-write-boundary capabilities | inspect REQUIREMENTS.json CURRENT_POLICY_REVISION | run REQUIREMENTS.json CURRENT_POLICY_REVISION TIMEOUT_MS -- PROGRAM [ARG...] | exec PREPARATION.json CURRENT_POLICY_REVISION -- PROGRAM [ARG...]","boundary":"explicit material requirements, not governance recognition; bounded run captures output, protocol exec retains owner pipes/lifetime; unknown coverage refuses execution"}),
+                json!({"usage":"workcell-write-boundary capabilities | inspect REQUIREMENTS.json CURRENT_POLICY_REVISION | run REQUIREMENTS.json CURRENT_POLICY_REVISION TIMEOUT_MS -- PROGRAM [ARG...]","protocol_exec":stdio_boundary::USAGE,"boundary":"explicit material requirements, not governance recognition; finite output is bounded to 64 KiB per stream; protocol exec preserves provider stdout; unknown coverage refuses execution"}),
                 0,
             ))
         }
@@ -74,32 +74,4 @@ fn run() -> Result<(Value, i32), Box<dyn std::error::Error>> {
         "stdout":String::from_utf8_lossy(&output.stdout),"stderr":String::from_utf8_lossy(&output.stderr),"capabilities":write_boundary_capabilities()}),
         if ok { 0 } else { 1 },
     ))
-}
-
-fn protocol_exec() -> Result<(), Box<dyn std::error::Error>> {
-    let args = env::args().skip(1).collect::<Vec<_>>();
-    if args.len() < 5 || args[3] != "--" {
-        return Err("expected exec PREPARATION.json CURRENT_POLICY_REVISION -- PROGRAM [ARG...]".into());
-    }
-    if fs::metadata(&args[1])?.len() > 1_048_576 {
-        return Err("requirements exceed 1 MiB".into());
-    }
-    let preparation: Value = serde_json::from_str(&fs::read_to_string(&args[1])?)?;
-    if preparation["schema"] != "workcell.prepared-write-boundary/v1"
-        || preparation["state"] != "prepared-not-executed"
-    {
-        return Err("protocol exec requires an exact native prepared-write-boundary reading".into());
-    }
-    let requirements = WriteBoundaryRequirements::from_json(&preparation["requirements"].to_string())?;
-    let boundary = PreparedWriteBoundary::prepare(requirements, &args[2])?;
-    let current = boundary.inspect(&args[2])?;
-    for field in ["requirements_digest", "objects", "protected_objects"] {
-        if preparation[field] != current[field] {
-            return Err(format!("prepared protocol {field} changed; re-resolve before execution").into());
-        }
-    }
-    let mut command = Command::new(&args[4]);
-    command.args(&args[5..]);
-    boundary.exec_protocol(command, &args[2])?;
-    Ok(())
 }

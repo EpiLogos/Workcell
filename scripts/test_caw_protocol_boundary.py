@@ -1,4 +1,4 @@
-"""Real native protocol exec: no wrapper reply, same PID, kernel-protected writes."""
+"""Native prepared protocol exec: exact objects, no wrapper reply, same PID."""
 import json
 import os
 from pathlib import Path
@@ -20,6 +20,7 @@ for line in sys.stdin:
         allowed = False
     print(json.dumps({'id': request['id'], 'pid': os.getpid(), 'allowed': allowed}), flush=True)
 '''
+
 
 class NativeProtocolBoundary(unittest.TestCase):
     def setUp(self):
@@ -56,7 +57,8 @@ class NativeProtocolBoundary(unittest.TestCase):
         self.path.write_text(json.dumps(self.preparation))
 
     def argv(self, revision='revision:1'):
-        return [self.binary, 'exec', str(self.path), revision, '--', sys.executable, '-u', '-c', BODY]
+        return [self.binary, 'exec', str(self.path), revision,
+                self.preparation['requirements_digest'], '--', sys.executable, '-u', '-c', BODY]
 
     def test_two_turns_use_same_process_and_cannot_write_protected_source(self):
         process = subprocess.Popen(self.argv(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -92,7 +94,7 @@ class NativeProtocolBoundary(unittest.TestCase):
                                     stderr=subprocess.PIPE, text=True, timeout=10)
         self.assertEqual(result.returncode, 2)
         self.assertEqual(log.read_bytes(), b'')
-        self.assertIn('pipe or socket', result.stderr)
+        self.assertIn('pipe/socket', result.stderr)
         self.assertEqual(self.source.read_text(), 'HUMAN_BYTES')
 
     def test_stale_and_expired_requests_never_execute_or_pollute_stdout(self):
@@ -108,6 +110,7 @@ class NativeProtocolBoundary(unittest.TestCase):
                 self.assertEqual(result.stdout, '')
                 self.assertFalse((self.now / 'forbidden.txt').exists())
                 self.assertFalse(json.loads(result.stderr)['executed'])
+
 
 if __name__ == '__main__':
     unittest.main()
