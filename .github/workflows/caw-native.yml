@@ -1,0 +1,51 @@
+name: CAW native material campaign
+
+on:
+  pull_request:
+    paths:
+      - 'Cargo.*'
+      - 'crates/**'
+      - 'scripts/**'
+      - '.github/workflows/caw-native.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.*'
+      - 'crates/**'
+      - 'scripts/**'
+      - '.github/workflows/caw-native.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  native-material:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Record exact public source and toolchain
+        run: |
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/source-commit.txt
+          rustc --version --verbose > evidence/toolchain.txt
+          git archive --format=tar.gz HEAD > evidence/source.tar.gz
+      - name: Native workspace tests
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --workspace --all-targets 2>&1 | tee evidence/native-tests.txt
+      - name: Build native campaign entrypoints
+        run: |
+          cargo build --locked -p epilogos-workcell-cli --bins
+          cp target/debug/workcell target/debug/workcell-control-service evidence/
+          sha256sum evidence/workcell evidence/workcell-control-service > evidence/binary-sha256.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: caw-native-${{ github.sha }}
+          path: evidence/
+          retention-days: 7
