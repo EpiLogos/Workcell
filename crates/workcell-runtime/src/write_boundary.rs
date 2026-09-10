@@ -203,7 +203,7 @@ impl PreparedWriteBoundary {
         let protected = requirements
             .protected_paths
             .iter()
-            .map(|p| MaterialPath::directory(p))
+            .map(|p| MaterialPath::protected_object(p))
             .collect::<Result<Vec<_>>>()?;
         for allowed in &paths {
             if allowed.canonical.parent().is_none()
@@ -212,7 +212,7 @@ impl PreparedWriteBoundary {
                     .any(|p| p.canonical.starts_with(&allowed.canonical))
             {
                 return Err(invalid(
-                    "writable directory includes a protected directory or filesystem root",
+                    "writable directory includes a protected object or filesystem root",
                 ));
             }
         }
@@ -230,7 +230,8 @@ impl PreparedWriteBoundary {
             json!({"schema": "workcell.prepared-write-boundary/v1", "state": "prepared-not-executed",
             "requirements_digest": self.requirements.digest(), "requirements": self.requirements.as_json(),
             "capabilities": write_boundary_capabilities(),
-            "objects": self.paths.iter().map(|p| json!({"path": p.canonical, "identity": p.identity})).collect::<Vec<_>>() }),
+            "objects": self.paths.iter().map(|p| json!({"path": p.canonical, "identity": p.identity})).collect::<Vec<_>>(),
+            "protected_objects": self.protected.iter().map(|p| json!({"path": p.canonical, "identity": p.identity})).collect::<Vec<_>>() }),
         )
     }
     pub fn revalidate(&self, current_policy_revision: &str) -> Result<()> {

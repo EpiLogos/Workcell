@@ -50,11 +50,21 @@ jobs:
           set -o pipefail
           cargo test --locked -p epilogos-workcell-runtime --test write_boundary -- --nocapture 2>&1 | tee evidence/write-boundary.txt
           grep -q WRITE_BOUNDARY_EXECUTED evidence/write-boundary.txt
+          grep -q PROTECTED_SOURCE_EXECUTED evidence/write-boundary.txt
       - name: Build native operations
         run: |
           cargo build --locked -p epilogos-workcell-cli --bins
           cp target/debug/workcell target/debug/workcell-control-service target/debug/workcell-write-boundary evidence/
           sha256sum evidence/workcell evidence/workcell-control-service evidence/workcell-write-boundary > evidence/binary-sha256.txt
+      - name: Compiled protected-source boundary
+        shell: bash
+        env:
+          WORKCELL_CAW_BOUNDARY: ${{ github.workspace }}/target/debug/workcell-write-boundary
+          WORKCELL_REQUIRE_LANDLOCK: '1'
+        run: |
+          set -o pipefail
+          python3 -m unittest -v scripts/test_caw_protected_sources.py 2>&1 | tee evidence/protected-sources.txt
+          grep -q PROTECTED_SOURCE_EXECUTED evidence/protected-sources.txt
       - name: Compiled service restart and provider substitution
         shell: bash
         run: |
