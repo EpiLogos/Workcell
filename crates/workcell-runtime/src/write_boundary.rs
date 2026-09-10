@@ -1,7 +1,7 @@
 //! Bounded material write protection, not an interpretation of placement law.
 //! Central/authority owners supply the exact paths, revision, expiry and required
 //! coverage. Unsupported coverage is refused rather than silently weakened.
-use crate::material_path::MaterialPath;
+use crate::material_path::{MaterialPath, ProtectedPath};
 use epilogos_workcell_core::{Result, WorkcellError};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -177,6 +177,7 @@ pub fn write_boundary_capabilities() -> Value {
         "coverage": if supported { WRITE_BOUNDARY_COVERAGE } else { &[] }, "uncovered": WRITE_BOUNDARY_UNCOVERED,
         "scope": "unprivileged launched process and descendants; regular filesystem writes only",
         "stdio": "null input and pipe output; other inherited descriptors close-on-exec",
+        "path_contract": {"writable": "existing-directories", "protected": "directories-regular-files-or-absent-paths", "writable_ancestor_of_protected": "unsupported"},
         "policy_authority": "supplied; Workcell does not recognise or interpret governance"})
 }
 
@@ -186,7 +187,7 @@ pub fn write_boundary_capabilities() -> Value {
 pub struct PreparedWriteBoundary {
     requirements: WriteBoundaryRequirements,
     paths: Vec<MaterialPath>,
-    protected: Vec<MaterialPath>,
+    protected: Vec<ProtectedPath>,
     platform: platform::Ruleset,
 }
 impl PreparedWriteBoundary {
@@ -203,7 +204,7 @@ impl PreparedWriteBoundary {
         let protected = requirements
             .protected_paths
             .iter()
-            .map(|p| MaterialPath::directory(p))
+            .map(|p| ProtectedPath::resolve(p))
             .collect::<Result<Vec<_>>>()?;
         for allowed in &paths {
             if allowed.canonical.parent().is_none()
@@ -212,7 +213,7 @@ impl PreparedWriteBoundary {
                     .any(|p| p.canonical.starts_with(&allowed.canonical))
             {
                 return Err(invalid(
-                    "writable directory includes a protected directory or filesystem root",
+                    "writable directory includes a protected path or filesystem root",
                 ));
             }
         }
@@ -230,13 +231,17 @@ impl PreparedWriteBoundary {
             json!({"schema": "workcell.prepared-write-boundary/v1", "state": "prepared-not-executed",
             "requirements_digest": self.requirements.digest(), "requirements": self.requirements.as_json(),
             "capabilities": write_boundary_capabilities(),
-            "objects": self.paths.iter().map(|p| json!({"path": p.canonical, "identity": p.identity})).collect::<Vec<_>>() }),
+            "objects": self.paths.iter().map(|p| json!({"path": p.canonical, "identity": p.identity})).collect::<Vec<_>>(),
+            "protected_objects": self.protected.iter().map(|p| json!({"path": p.canonical, "existing_ancestor": p.existing_ancestor, "identity": p.identity, "exists": p.exists})).collect::<Vec<_>>() }),
         )
     }
     pub fn revalidate(&self, current_policy_revision: &str) -> Result<()> {
         self.requirements.validate(current_policy_revision)?;
         platform::probe()?;
-        for path in self.paths.iter().chain(&self.protected) {
+        for path in &self.paths {
+            path.validate()?;
+        }
+        for path in &self.protected {
             path.validate()?;
         }
         Ok(())
