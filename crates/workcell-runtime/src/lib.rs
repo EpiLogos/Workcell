@@ -1,4 +1,5 @@
 mod write_boundary;
+mod write_boundary_protocol;
 pub use write_boundary::{
     write_boundary_capabilities, PreparedWriteBoundary, WriteBoundaryRequirements,
     WRITE_BOUNDARY_COVERAGE, WRITE_BOUNDARY_SCHEMA, WRITE_BOUNDARY_UNCOVERED,
