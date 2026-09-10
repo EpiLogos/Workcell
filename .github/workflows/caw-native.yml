@@ -2,72 +2,68 @@ name: CAW native material campaign
 
 on:
   pull_request:
-    paths:
-      - 'Cargo.*'
-      - 'crates/**'
-      - 'scripts/**'
-      - '.github/workflows/caw-native.yml'
+    paths: ['Cargo.*', 'crates/**', 'scripts/**', '.github/workflows/caw-native.yml']
   push:
     branches: [main]
-    paths:
-      - 'Cargo.*'
-      - 'crates/**'
-      - 'scripts/**'
-      - '.github/workflows/caw-native.yml'
+    paths: ['Cargo.*', 'crates/**', 'scripts/**', '.github/workflows/caw-native.yml']
 
 permissions:
   contents: read
 
+concurrency:
+  group: caw-native-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   native-material:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
-      - name: Record exact public source and toolchain
+        with:
+          components: rustfmt,clippy
+      - name: Record exact tested source and environment
         run: |
           mkdir -p evidence
           git rev-parse HEAD > evidence/source-commit.txt
+          printf '%s\n' '${{ github.event.pull_request.head.sha || github.sha }}' > evidence/pr-head.txt
           rustc --version --verbose > evidence/toolchain.txt
+          uname -a > evidence/kernel.txt
           git archive --format=tar.gz HEAD > evidence/source.tar.gz
-      - name: Pinned owner continuation and offline reproduction inputs
-        if: github.head_ref == 'agent/caw-w9-material-lifecycle'
+      - name: Formatting and lint
         run: |
-          git fetch --no-tags origin 499bf81be9d0eed8770f92e31ec7d29c15bce101
-          git archive --format=tar.gz FETCH_HEAD > evidence/service-owner-source.tar.gz
-          git fetch --no-tags origin fa47a29fa49a6636675d21309b00c269ac824abb
-          git archive --format=tar.gz FETCH_HEAD > evidence/service-merge-base.tar.gz
-          cargo vendor --locked offline-vendor > evidence/vendor-config.toml
-          tar -czf evidence/vendor.tar.gz offline-vendor
-          tar -czf evidence/toolchain.tar.gz -C "$(rustc --print sysroot)" bin lib
-      - uses: actions/upload-artifact@v4
-        with:
-          name: caw-reproduction-${{ github.sha }}
-          path: evidence/
-          retention-days: 1
+          cargo fmt --all -- --check
+          cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Native workspace tests
         shell: bash
         run: |
           set -o pipefail
           cargo test --locked --workspace --all-targets 2>&1 | tee evidence/native-tests.txt
-      - name: Build native campaign entrypoints
+      - name: Required positive kernel confinement
+        env:
+          WORKCELL_REQUIRE_LANDLOCK: '1'
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked -p epilogos-workcell-runtime --test write_boundary -- --nocapture 2>&1 | tee evidence/write-boundary.txt
+          grep -q WRITE_BOUNDARY_EXECUTED evidence/write-boundary.txt
+      - name: Build native operations
         run: |
           cargo build --locked -p epilogos-workcell-cli --bins
-          cp target/debug/workcell target/debug/workcell-control-service evidence/
-          sha256sum evidence/workcell evidence/workcell-control-service > evidence/binary-sha256.txt
+          cp target/debug/workcell target/debug/workcell-control-service target/debug/workcell-write-boundary evidence/
+          sha256sum evidence/workcell evidence/workcell-control-service evidence/workcell-write-boundary > evidence/binary-sha256.txt
+      - name: Compiled service restart and provider substitution
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 scripts/caw_native_campaign.py --bin-dir target/debug --output evidence/material-campaign.json 2>&1 | tee evidence/material-campaign.txt
+          python3 -m py_compile scripts/caw_installed_world.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: caw-native-${{ github.sha }}
-          path: |
-            evidence/source-commit.txt
-            evidence/toolchain.txt
-            evidence/source.tar.gz
-            evidence/native-tests.txt
-            evidence/workcell
-            evidence/workcell-control-service
-            evidence/binary-sha256.txt
+          path: evidence/
           retention-days: 7
