@@ -133,6 +133,11 @@ where
                 let world = self.control.prepare(&demand)?;
                 codec::prepared_world_value(&world)
             }
+            "inspect" => {
+                let world_ref = codec::decode_world_ref(payload)?;
+                let world = self.control.inspect(&world_ref)?;
+                codec::prepared_world_value(&world)
+            }
             "observe" => {
                 let world_ref = codec::decode_world_ref(payload)?;
                 self.control

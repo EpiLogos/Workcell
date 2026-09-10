@@ -386,6 +386,12 @@ impl WorkcellControlPlane for CollapsedLocalWorkcell {
         self.prepare_world(demand)
     }
 
+    fn inspect(&self, world: &WorldRef) -> Result<MaterialisedExecutionWorld> {
+        self.control.world(world).cloned().ok_or_else(|| {
+            WorkcellError::NotFound(format!("material world `{world}` is not registered"))
+        })
+    }
+
     fn observe(&self, world: &WorldRef) -> Result<ObservationBundle> {
         self.control.observe(world)
     }
