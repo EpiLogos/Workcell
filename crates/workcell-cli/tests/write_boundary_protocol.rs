@@ -16,7 +16,10 @@ impl World {
         let root = std::env::temp_dir().join(format!(
             "workcell-protocol-{}-{}",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         fs::create_dir_all(root.join("T")).unwrap();
         fs::write(root.join("human.txt"), "untouched human source").unwrap();
@@ -69,10 +72,20 @@ fn protocol_keeps_real_bidirectional_pipes_and_confines_the_provider_itself() {
         let output = world.command().stdin(Stdio::piped()).output().unwrap();
         assert!(!output.status.success());
         assert!(output.stdout.is_empty());
-        assert_ne!(std::env::var("WORKCELL_REQUIRE_LANDLOCK").ok().as_deref(), Some("1"), "{caps}");
+        assert_ne!(
+            std::env::var("WORKCELL_REQUIRE_LANDLOCK").ok().as_deref(),
+            Some("1"),
+            "{caps}"
+        );
         return;
     }
-    let mut child = world.command().stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut child = world
+        .command()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     let mut input = child.stdin.take().unwrap();
     let mut output = BufReader::new(child.stdout.take().unwrap());
     for sequence in 0..2 {
@@ -84,18 +97,28 @@ fn protocol_keeps_real_bidirectional_pipes_and_confines_the_provider_itself() {
         assert_eq!(response["pid"], child.id());
         assert_eq!(response["sequence"], sequence);
         assert_eq!(response["denied"], true);
-        assert_eq!(fs::read_to_string(world.0.join("T").join(sequence.to_string())).unwrap(), "actual artifact");
+        assert_eq!(
+            fs::read_to_string(world.0.join("T").join(sequence.to_string())).unwrap(),
+            "actual artifact"
+        );
     }
     drop(input);
     assert!(child.wait().unwrap().success());
-    assert_eq!(fs::read_to_string(world.0.join("human.txt")).unwrap(), "untouched human source");
+    assert_eq!(
+        fs::read_to_string(world.0.join("human.txt")).unwrap(),
+        "untouched human source"
+    );
     eprintln!("PROTOCOL_BOUNDARY_EXECUTED: actual provider PID, two bidirectional turns, protected source unchanged");
 }
 
 #[test]
 fn regular_file_input_is_not_a_protocol_pipe_and_never_starts_the_body() {
     let world = World::new();
-    let output = world.command().stdin(fs::File::open(world.0.join("human.txt")).unwrap()).output().unwrap();
+    let output = world
+        .command()
+        .stdin(fs::File::open(world.0.join("human.txt")).unwrap())
+        .output()
+        .unwrap();
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     assert_eq!(fs::read_dir(world.0.join("T")).unwrap().count(), 0);

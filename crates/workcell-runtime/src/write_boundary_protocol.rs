@@ -23,7 +23,10 @@ impl PreparedWriteBoundary {
         use std::os::unix::process::CommandExt;
         use std::process::Stdio;
         self.revalidate(current_policy_revision)?;
-        for (fd, direction) in [(libc::STDIN_FILENO, libc::O_RDONLY), (libc::STDOUT_FILENO, libc::O_WRONLY)] {
+        for (fd, direction) in [
+            (libc::STDIN_FILENO, libc::O_RDONLY),
+            (libc::STDOUT_FILENO, libc::O_WRONLY),
+        ] {
             let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
             // SAFETY: fstat initializes this local stat on success; no pointer
             // escapes. The access mode inspection neither duplicates nor closes
