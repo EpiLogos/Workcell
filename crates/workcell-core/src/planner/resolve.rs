@@ -30,9 +30,7 @@ pub(crate) fn resolve<'a>(
             }
             OfferMatch::Matched => {}
         }
-        if offer.availability == Availability::Unavailable
-            || offer.health == HealthState::Unavailable
-        {
+        if offer.availability == Availability::Unavailable {
             unavailable = true;
             continue;
         }

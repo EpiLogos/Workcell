@@ -111,6 +111,41 @@ These are ordinary material affordances. They do not imply a canonical `Gateway`
 
 An agent-hosting conformance fixture may compose these requirements to represent a realistic persistent agent workload. The fixture is a demand pattern, not a Workcell type.
 
+## Declaring the services a Workcell can materialise
+
+A Workcell offers a logical service only when an operator has told it about one.
+Both control shapes read the same declaration, because both compose the same
+collapsed-local Workcell:
+
+```bash
+workcell --state-root ~/.workcell plan --connect inference:my-chat
+workcell-control-service --listen 127.0.0.1:7777 --state-root /var/lib/workcell
+```
+
+Each reads `<state-root>/services.json`, or the file named by `--services PATH`.
+The format is specified in
+[`MODEL-SERVING-CONFORMANCE.md`](MODEL-SERVING-CONFORMANCE.md). Nothing is
+declared by default: an undeclared service is honestly unsatisfiable rather than
+quietly assumed.
+
+`--services` is refused on a remote invocation. A declaration names executables
+and endpoints on the machine that will run them, so it cannot be projected across
+`--endpoint`; declare the services on the Workcell that will materialise them.
+
+The two control shapes differ in what they can honestly promise about a service
+they start themselves:
+
+```text
+workcell prepare        one-shot process; a provider-owned child is reaped when
+                        the command returns, and the binding says so
+control service         long-running host; a provider-owned child lives as long
+                        as the daemon and is reaped on release
+```
+
+A service supervised outside Workcell (`lifetime: target-owned`) is unaffected by
+either: it is observed through its own status command, so any later invocation
+can re-enter and re-observe the binding.
+
 ## Communication surfaces versus material bindings
 
 A user may encounter one persistent agent through many surfaces:

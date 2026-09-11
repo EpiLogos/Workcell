@@ -342,11 +342,28 @@ struct ManagedServiceRecord {
     child: RefCell<Child>,
 }
 
+/// How long the process hosting a `ManagedHostServiceProvider` itself lives.
+///
+/// The provider always reaps its children on `Drop` — that part never changes.
+/// What changes is what the surrounding process's exit means: a one-shot CLI
+/// command drops (and reaps) within seconds of resolving the service, while the
+/// Workcell Control Service keeps the same provider, and therefore the same
+/// child, alive for as long as the daemon runs. A demand that expects a service
+/// to survive past the call that resolved it can only be honoured by the second
+/// shape.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HostLifetime {
+    #[default]
+    OneShotCommand,
+    PersistentHost,
+}
+
 pub struct ManagedHostServiceProvider {
     provider_ref: ProviderRef,
     services: BTreeMap<String, ManagedHostService>,
     records: BTreeMap<String, ManagedServiceRecord>,
     next_instance: u64,
+    host_lifetime: HostLifetime,
 }
 
 impl ManagedHostServiceProvider {
@@ -370,7 +387,16 @@ impl ManagedHostServiceProvider {
             services: by_ref,
             records: BTreeMap::new(),
             next_instance: 0,
+            host_lifetime: HostLifetime::OneShotCommand,
         })
+    }
+
+    /// Declare that this provider lives inside a persistent host (the Workcell
+    /// Control Service) rather than a one-shot CLI invocation, so a `Preserve`
+    /// retention can be honoured instead of refused up front.
+    pub fn with_host_lifetime(mut self, host_lifetime: HostLifetime) -> Self {
+        self.host_lifetime = host_lifetime;
+        self
     }
 
     fn record(&self, allocation: &ProviderAllocation) -> Result<&ManagedServiceRecord> {
@@ -468,6 +494,15 @@ impl ProviderPort for ManagedHostServiceProvider {
             metadata.insert("logical_ref".into(), service.logical_ref.clone());
             metadata.insert("program".into(), service.program.clone());
             metadata.insert("endpoint".into(), service.endpoint.clone());
+            metadata.insert("lifetime".into(), "provider-process-scoped".into());
+            metadata.insert(
+                "physical_acceptance".into(),
+                if available {
+                    "executable-present-not-started".into()
+                } else {
+                    "executable-absent".to_owned()
+                },
+            );
             offers.push(OperationalOffer {
                 offer_ref: OfferRef::new(format!(
                     "offer:{}:managed-service:{}",
@@ -509,6 +544,16 @@ impl ServiceProvider for ManagedHostServiceProvider {
                 service.program
             )));
         }
+        if self.host_lifetime == HostLifetime::OneShotCommand
+            && request.retention == RetentionExpectation::Preserve
+        {
+            return Err(WorkcellError::UnsatisfiedDemand(format!(
+                "managed service `{logical_ref}` is provider-process-scoped: a one-shot \
+                 command cannot honestly preserve it past its own exit, so `retention: \
+                 preserve` is refused rather than claimed; declare it `target-owned` or \
+                 resolve it through the Workcell Control Service instead"
+            )));
+        }
 
         let mut child = Self::spawn(&service)?;
         if let Err(error) = Self::wait_until_ready(&service, &mut child) {
@@ -530,8 +575,14 @@ impl ServiceProvider for ManagedHostServiceProvider {
         properties.insert("endpoint".into(), service.endpoint.clone());
         properties.insert("program".into(), service.program.clone());
         properties.insert("pid".into(), child.id().to_string());
+        // The child belongs to this provider, and this provider belongs to this
+        // process. A one-shot command's service dies when the command returns;
+        // a long-running host keeps it. Say so in the binding rather than let a
+        // receipt imply a service that outlives its parent.
+        properties.insert("lifetime".into(), "provider-process-scoped".into());
         let mut provenance = BTreeMap::new();
         provenance.insert("implementation".into(), "managed-host-service".into());
+        provenance.insert("lifetime".into(), "provider-process-scoped".into());
         provenance.insert("logical_ref".into(), logical_ref.into());
         provenance.insert("provider_ref".into(), self.provider_ref.to_string());
         provenance.insert("program".into(), service.program.clone());

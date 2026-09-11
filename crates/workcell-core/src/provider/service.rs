@@ -8,6 +8,7 @@ pub struct ServiceMaterialRequest {
     pub demand_ref: DemandRef,
     pub connection: LogicalConnectionRequirement,
     pub persistence: Option<PersistenceScope>,
+    pub retention: RetentionExpectation,
 }
 
 pub trait ServiceProvider: ProviderPort {

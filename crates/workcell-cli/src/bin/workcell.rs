@@ -25,6 +25,7 @@ mod local_cli {
             state_root: global.state_root,
             receipt: global.receipt,
             workspace_source: global.workspace_source,
+            services: global.services,
             remaining: global.remaining,
         })
     }
@@ -65,6 +66,7 @@ struct RemoteGlobal {
     state_root: PathBuf,
     receipt: Option<PathBuf>,
     workspace_source: Option<PathBuf>,
+    services: Option<PathBuf>,
     remaining: Vec<String>,
 }
 
@@ -188,6 +190,14 @@ fn run_remote(
     if global.workspace_source.is_some() {
         return Err(WorkcellError::InvalidDemand(
             "--workspace-source is a local material binding and cannot be projected onto a remote Workcell; bind the source on the remote Workcell instead"
+                .into(),
+        )
+        .into());
+    }
+
+    if global.services.is_some() {
+        return Err(WorkcellError::InvalidDemand(
+            "--services declares local material services and cannot be projected onto a remote Workcell; declare the services on the remote Workcell instead"
                 .into(),
         )
         .into());
