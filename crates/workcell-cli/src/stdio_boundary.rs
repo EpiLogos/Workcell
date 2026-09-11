@@ -1,10 +1,11 @@
 //! Protocol-preserving entry into the existing material write boundary.
 //! This replaces this launcher, not the protocol host or its session identity.
 use epilogos_workcell_runtime::{PreparedWriteBoundary, WriteBoundaryRequirements};
+use serde_json::Value;
 use std::{fs, process::Command};
 
 pub const USAGE: &str =
-    "exec REQUIREMENTS.json CURRENT_POLICY_REVISION EXPECTED_DIGEST -- PROGRAM [ARG...]";
+    "exec REQUIREMENTS_OR_PREPARATION.json CURRENT_POLICY_REVISION EXPECTED_DIGEST -- PROGRAM [ARG...]";
 
 pub fn execute(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if args.len() < 6 || args[4] != "--" {
@@ -13,13 +14,33 @@ pub fn execute(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if fs::metadata(&args[1])?.len() > 1_048_576 {
         return Err("requirements exceed 1 MiB".into());
     }
-    let requirements = WriteBoundaryRequirements::from_json(&fs::read_to_string(&args[1])?)?;
+    let input: Value = serde_json::from_str(&fs::read_to_string(&args[1])?)?;
+    let prepared = input["schema"] == "workcell.prepared-write-boundary/v1";
+    let requirements = if prepared {
+        if input["state"] != "prepared-not-executed" {
+            return Err("expected the exact native prepared boundary reading".into());
+        }
+        WriteBoundaryRequirements::from_json(&input["requirements"].to_string())?
+    } else {
+        WriteBoundaryRequirements::from_json(&input.to_string())?
+    };
     if requirements.digest() != args[3] {
         return Err(
             "write boundary changed since native preparation; re-resolve before launch".into(),
         );
     }
     let boundary = PreparedWriteBoundary::prepare(requirements, &args[2])?;
+    if prepared {
+        let current = boundary.inspect(&args[2])?;
+        for field in ["requirements_digest", "objects", "protected_objects"] {
+            if input[field] != current[field] {
+                return Err(format!(
+                    "prepared protocol {field} changed; re-resolve before execution"
+                )
+                .into());
+            }
+        }
+    }
     let mut command = Command::new(&args[5]);
     command.args(&args[6..]);
     boundary.configure_command(&mut command, &args[2])?;

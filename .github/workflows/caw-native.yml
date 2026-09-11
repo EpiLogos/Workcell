@@ -56,16 +56,17 @@ jobs:
           cargo build --locked -p epilogos-workcell-cli --bins
           cp target/debug/workcell target/debug/workcell-control-service target/debug/workcell-write-boundary evidence/
           sha256sum evidence/workcell evidence/workcell-control-service evidence/workcell-write-boundary > evidence/binary-sha256.txt
-      - name: Compiled protected-source and protocol boundaries
+      - name: Compiled protected-source and stdio boundaries
         shell: bash
         env:
           WORKCELL_CAW_BOUNDARY: ${{ github.workspace }}/target/debug/workcell-write-boundary
           WORKCELL_REQUIRE_LANDLOCK: '1'
         run: |
           set -o pipefail
-          python3 -m unittest -v scripts/test_caw_protected_sources.py scripts/test_caw_stdio_boundary.py 2>&1 | tee evidence/protected-sources.txt
+          python3 -m unittest -v scripts/test_caw_protected_sources.py scripts/test_caw_stdio_boundary.py scripts/test_caw_protocol_boundary.py 2>&1 | tee evidence/protected-sources.txt
           grep -q PROTECTED_SOURCE_EXECUTED evidence/protected-sources.txt
-          grep -q PROTOCOL_BOUNDARY_EXECUTED evidence/protected-sources.txt
+          grep -q STDIO_BOUNDARY_EXECUTED evidence/protected-sources.txt
+          grep -q PROTECTED_PROTOCOL_EXECUTED evidence/protected-sources.txt
       - name: Compiled service restart and provider substitution
         shell: bash
         run: |
