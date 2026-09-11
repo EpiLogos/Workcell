@@ -87,7 +87,6 @@ impl CollapsedLocalConfig {
         self.directories.push(directory);
         self
     }
-
     /// Declare that this Workcell is composed inside a persistent host (the
     /// Workcell Control Service), not a one-shot CLI command, so a
     /// provider-process-scoped service may honour `retention: preserve`.
@@ -259,7 +258,6 @@ impl<P: StorageProvider> StorageProvider for SharedProvider<P> {
             .release_storage(allocation, retention)
     }
 }
-
 impl<P> ServiceProvider for SharedProvider<P>
 where
     P: ServiceProvider,
@@ -364,7 +362,6 @@ impl CollapsedLocalWorkcell {
             ProviderRef::new(DIRECTORY_STORAGE_PROVIDER_REF).unwrap(),
             directory_declarations,
         )?);
-
         let workspace = SharedProvider::new(DirectoryWorkspaceProvider::new(
             ProviderRef::new("provider:collapsed-local-workspace").unwrap(),
             config.state_root.join("workspaces"),
@@ -401,7 +398,6 @@ impl CollapsedLocalWorkcell {
         control.register_service_provider(managed_services.clone())?;
         control.register_service_provider(target_services.clone())?;
         control.register_storage_provider(directories.clone())?;
-
         Ok(Self {
             workcell_ref: config.workcell_ref,
             workspace_source: config.workspace_source,
@@ -796,7 +792,6 @@ fn allocation_of(binding: &epilogos_workcell_core::Binding) -> ProviderAllocatio
         provenance: binding.provenance.clone(),
     }
 }
-
 #[cfg(test)]
 mod tests {
     use std::{
