@@ -27,3 +27,4 @@ epilogos-workcell-opensandbox = { path = "../workcell-opensandbox" }
 epilogos-workcell-runtime = { path = "../workcell-runtime" }
 epilogos-workcell-wire = { path = "../workcell-wire" }
 serde_json = "1"
+sha2 = "0.10"

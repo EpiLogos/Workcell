@@ -220,6 +220,7 @@ fn run_remote(
         "collect" => remote_world_operation(&global, &mut client, RemoteWorldOperation::Collect),
         "release" => remote_world_operation(&global, &mut client, RemoteWorldOperation::Release),
         "reconcile" => remote_reconcile(&global, command_args, &mut client),
+        "system" => remote_system(&global, &endpoint),
         other => Err(WorkcellError::InvalidDemand(format!(
             "unknown command `{other}`; run `workcell help`"
         ))
@@ -383,6 +384,48 @@ fn remote_reconcile(
     let _world_ref = receipt_world_ref(global)?;
     let desired = local_cli::parse_remote_desired(args)?;
     remote_value(global, client.reconcile(&desired)?)
+}
+
+/// An honest System reading for a remote Workcell. The Workcell Control Service
+/// does not yet disclose a settings descriptor through `workcell.control/v1`, so
+/// this reports `unavailable` with the named obligation rather than fabricating
+/// a remote reading.
+fn remote_system(global: &RemoteGlobal, endpoint: &str) -> Result<(), CliError> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    let owner_ref = format!("workcell:remote:{endpoint}");
+    let reason = "the Workcell Control Service does not yet disclose a settings descriptor through workcell.control/v1; run `workcell system --json` on the Workcell host";
+    let descriptor = json!({
+        "schema": "oi.product-settings-disclosure/v2",
+        "product_id": "workcell",
+        "contract_revision": "wave-5/system.1",
+        "disclosed_at_unix_ms": now,
+        "owner": {
+            "owner_id": "workcell",
+            "owner_ref": owner_ref,
+            "owner_version": env!("CARGO_PKG_VERSION"),
+            "reading_command": ["workcell", "--endpoint", endpoint, "system", "--json"],
+            "reading_digest": null,
+            "observed_at_unix_ms": now,
+        },
+        "about": "Remote Workcell material reading. The Workcell Control Service does not yet disclose a settings descriptor through workcell.control/v1, so this reading is unavailable rather than fabricated.",
+        "sections": [],
+        "actions": [],
+        "availability": { "state": "unavailable", "reason": reason },
+        "degradations": [ { "subject_ref": owner_ref, "state": "unavailable", "reason": reason, "native_error": null } ],
+        "obligations": [ "remote Workcell settings disclosure through workcell.control/v1 is not yet implemented" ],
+    });
+
+    if global.json {
+        emit_json(descriptor);
+    } else {
+        println!("Workcell System disclosure: unavailable (remote settings disclosure through workcell.control/v1 is not yet implemented)");
+    }
+    Ok(())
 }
 
 fn receipt_world_ref(global: &RemoteGlobal) -> Result<WorldRef, CliError> {
