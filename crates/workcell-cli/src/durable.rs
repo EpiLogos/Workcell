@@ -340,13 +340,15 @@ mod tests {
         AffordanceRequirement, DemandRef, ReleaseDisposition, WorkcellRef,
     };
     fn root() -> PathBuf {
+        static TEST_ROOT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         std::env::temp_dir().join(format!(
-            "workcell-durable-{}-{}",
+            "workcell-durable-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            TEST_ROOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ))
     }
     fn config(root: &Path) -> CollapsedLocalConfig {
