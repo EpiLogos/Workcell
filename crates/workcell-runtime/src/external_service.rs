@@ -1,7 +1,9 @@
 use std::{
     cell::RefCell,
     collections::BTreeMap,
-    process::{Command, Output},
+    process::{Command, ExitStatus, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
 use epilogos_workcell_core::{
@@ -11,6 +13,7 @@ use epilogos_workcell_core::{
 };
 
 use crate::support::stable_key;
+use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExternalServiceCommand {
@@ -50,18 +53,42 @@ impl ExternalServiceCommand {
         Ok(self)
     }
 
-    fn run(&self) -> std::io::Result<Output> {
-        Command::new(&self.program)
+    fn run(&self) -> std::io::Result<ExitStatus> {
+        let mut command = Command::new(&self.program);
+        command
             .args(&self.args)
             .envs(&self.environment)
-            .output()
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let mut child = command.spawn()?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return Ok(status);
+            }
+            if Instant::now() >= deadline {
+                #[cfg(unix)]
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "target-native command exceeded 10 second bound; effects may need reconciliation"));
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
     }
 
+    // Command arguments, environment and output may contain private data. None
+    // is copied into observations, errors, allocation receipts or discovery.
     fn display(&self) -> String {
-        std::iter::once(self.program.as_str())
-            .chain(self.args.iter().map(String::as_str))
-            .collect::<Vec<_>>()
-            .join(" ")
+        self.program.clone()
     }
 }
 
@@ -115,6 +142,13 @@ impl ExternalManagedService {
             acquisition: ExternalServiceAcquisition::ObserveExisting,
             metadata: BTreeMap::new(),
         })
+    }
+
+    fn fingerprint(&self) -> String {
+        format!(
+            "sha256:{:x}",
+            Sha256::digest(format!("{self:?}").as_bytes())
+        )
     }
 
     pub fn with_readiness(mut self, command: ExternalServiceCommand) -> Self {
@@ -191,6 +225,48 @@ impl ExternalManagedServiceProvider {
             services: by_ref,
             records: RefCell::new(BTreeMap::new()),
         })
+    }
+
+    /// Restore receipt ownership without probing or starting the target.
+    pub fn restore_allocation(&self, allocation: &ProviderAllocation) -> Result<()> {
+        self.record(allocation).map(|_| ())
+    }
+
+    pub fn recover_service(&self, allocation: &ProviderAllocation) -> Result<ProviderAllocation> {
+        let record = self.record(allocation)?;
+        if self.observe_record(allocation, &record)?.health == HealthState::Healthy {
+            return Ok(allocation.clone());
+        }
+        if !record.started_by_provider
+            || record.service.acquisition != ExternalServiceAcquisition::EnsureRunning
+        {
+            return Err(WorkcellError::Unsupported("observed target service is not owned for restart; re-resolve with its lifecycle owner".into()));
+        }
+        let status = run_probe(&record.service.status);
+        let command = if status == HealthState::Healthy {
+            record.service.restart.as_ref()
+        } else {
+            record.service.start.as_ref()
+        }
+        .ok_or_else(|| {
+            WorkcellError::Unsupported(
+                "target does not declare the required recovery command".into(),
+            )
+        })?;
+        run_required(command, "recover external service")?;
+        let observed = self.observe_record(allocation, &record)?;
+        if observed.health != HealthState::Healthy {
+            return Err(WorkcellError::Unavailable(
+                "target-native recovery did not restore readiness".into(),
+            ));
+        }
+        let mut recovered = allocation.clone();
+        recovered.health = observed.health;
+        recovered.provenance.insert(
+            "recovery".into(),
+            "target-native-command; process/session identity not asserted".into(),
+        );
+        Ok(recovered)
     }
 
     pub fn restart_service(&self, allocation: &ProviderAllocation) -> Result<ProviderObservation> {
@@ -350,13 +426,31 @@ impl ProviderPort for ExternalManagedServiceProvider {
 impl ServiceProvider for ExternalManagedServiceProvider {
     fn resolve_service(&mut self, request: &ServiceMaterialRequest) -> Result<ProviderAllocation> {
         let logical_ref = request.connection.as_str();
+        if matches!(
+            request.retention,
+            RetentionExpectation::SnapshotIfSupported | RetentionExpectation::SuspendIfSupported
+        ) {
+            return Err(WorkcellError::Unsupported(
+                "external service cannot generically suspend or snapshot".into(),
+            ));
+        }
         let service = self.services.get(logical_ref).cloned().ok_or_else(|| {
             WorkcellError::UnsatisfiedDemand(format!(
                 "logical service `{logical_ref}` is not offered"
             ))
         })?;
 
-        let mut started_by_provider = false;
+        let binding_key = format!(
+            "service:external:{}",
+            stable_key(&[request.demand_ref.as_str(), logical_ref, &service.endpoint])
+        );
+        // Repeated resolution must not turn an owned service into an unowned
+        // observation merely because the first start made it healthy.
+        let mut started_by_provider = self
+            .records
+            .borrow()
+            .get(&binding_key)
+            .is_some_and(|record| record.started_by_provider);
         if run_probe(&service.status) == HealthState::Unavailable {
             match service.acquisition {
                 ExternalServiceAcquisition::ObserveExisting => {
@@ -370,6 +464,9 @@ impl ServiceProvider for ExternalManagedServiceProvider {
                             "logical service `{logical_ref}` cannot be ensured running without a target-native start command"
                         ))
                     })?;
+                    if service.stop.is_none() {
+                        return Err(WorkcellError::Unsupported("ensure-running requires a declared stop operation for owned-effect reconciliation".into()));
+                    }
                     run_required(start, "start external service")?;
                     started_by_provider = true;
                     if run_probe(&service.status) == HealthState::Unavailable {
@@ -402,6 +499,7 @@ impl ServiceProvider for ExternalManagedServiceProvider {
             "started_by_provider".into(),
             started_by_provider.to_string(),
         );
+        properties.insert("declaration_digest".into(), service.fingerprint());
         let mut provenance = service.metadata.clone();
         provenance.insert("implementation".into(), "external-managed-service".into());
         provenance.insert("lifetime".into(), "target-owned".into());
@@ -442,9 +540,19 @@ impl ServiceProvider for ExternalManagedServiceProvider {
                 disposition: ReleaseDisposition::Preserved,
                 changed: false,
             }),
-            _ => {
+            RetentionExpectation::SuspendIfSupported
+            | RetentionExpectation::SnapshotIfSupported => Err(WorkcellError::Unsupported(
+                "external service cannot generically suspend or snapshot".into(),
+            )),
+            RetentionExpectation::Release => {
                 let mut changed = false;
                 if record.started_by_provider {
+                    if self.records.borrow().iter().any(|(reference, other)| {
+                        reference != &allocation.material_ref
+                            && other.service.logical_ref == record.service.logical_ref
+                    }) {
+                        return Err(WorkcellError::OperationFailed("target service still has other material bindings; detach them before stopping the owner binding".into()));
+                    }
                     if let Some(stop) = &record.service.stop {
                         run_required(stop, "stop external service")?;
                         changed = true;
@@ -464,31 +572,24 @@ impl ServiceProvider for ExternalManagedServiceProvider {
 
 fn run_probe(command: &ExternalServiceCommand) -> HealthState {
     match command.run() {
-        Ok(output) if output.status.success() => HealthState::Healthy,
+        Ok(status) if status.success() => HealthState::Healthy,
         Ok(_) => HealthState::Unavailable,
         Err(_) => HealthState::Unavailable,
     }
 }
 
 fn run_required(command: &ExternalServiceCommand, action: &str) -> Result<()> {
-    let output = command.run().map_err(|error| {
+    let status = command.run().map_err(|error| {
         WorkcellError::Unavailable(format!(
-            "{action} via `{}` failed to execute: {error}",
+            "{action} via `{}` failed: {error}",
             command.display()
         ))
     })?;
-    if output.status.success() {
+    if status.success() {
         return Ok(());
     }
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     Err(WorkcellError::OperationFailed(format!(
-        "{action} via `{}` exited {}{}",
-        command.display(),
-        output.status,
-        if stderr.is_empty() {
-            String::new()
-        } else {
-            format!(": {stderr}")
-        }
+        "{action} via `{}` exited {status}; command output withheld",
+        command.display()
     )))
 }

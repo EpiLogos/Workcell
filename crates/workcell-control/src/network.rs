@@ -1,7 +1,7 @@
 use std::{
     io::{self, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use epilogos_workcell_core::WorkcellControlPlane;
@@ -67,6 +67,7 @@ impl ControlTransport for TcpControlTransport {
 pub struct TcpControlServer<C> {
     listener: TcpListener,
     service: ControlService<C>,
+    connection_timeout: Duration,
 }
 
 impl<C> TcpControlServer<C>
@@ -77,7 +78,19 @@ where
         Ok(Self {
             listener: TcpListener::bind(address)?,
             service,
+            connection_timeout: Duration::from_secs(2),
         })
+    }
+
+    pub fn with_connection_timeout(mut self, timeout: Duration) -> io::Result<Self> {
+        if timeout.is_zero() || timeout > Duration::from_secs(60) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "control frame timeout must be in (0,60s]",
+            ));
+        }
+        self.connection_timeout = timeout;
+        Ok(self)
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -114,7 +127,19 @@ where
     }
 
     fn handle_stream(&mut self, stream: &mut TcpStream) -> io::Result<()> {
-        let request = read_frame(stream)?;
+        let deadline = Instant::now() + self.connection_timeout;
+        let mut prefix = [0u8; 4];
+        read_exact_before(stream, &mut prefix, deadline)?;
+        let size = u32::from_be_bytes(prefix) as usize;
+        if size > MAX_CONTROL_FRAME_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "control frame exceeds material transport limit",
+            ));
+        }
+        let mut request = vec![0u8; size];
+        read_exact_before(stream, &mut request, deadline)?;
+        stream.set_write_timeout(Some(self.connection_timeout))?;
         let response = self.service.handle_bytes(&request);
         write_frame(stream, &response)?;
         stream.flush()
@@ -161,4 +186,33 @@ fn read_frame(reader: &mut impl Read) -> io::Result<Vec<u8>> {
     let mut payload = vec![0_u8; length];
     reader.read_exact(&mut payload)?;
     Ok(payload)
+}
+
+fn read_exact_before(
+    stream: &mut TcpStream,
+    mut bytes: &mut [u8],
+    deadline: Instant,
+) -> io::Result<()> {
+    while !bytes.is_empty() {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::TimedOut, "control frame deadline exceeded")
+            })?;
+        stream.set_read_timeout(Some(remaining))?;
+        match stream.read(bytes) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "control client disconnected before completing frame",
+                ))
+            }
+            Ok(n) => {
+                bytes = &mut bytes[n..];
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }

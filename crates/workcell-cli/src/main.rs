@@ -79,6 +79,8 @@ fn run(args: Vec<String>) -> Result<(), WorkcellError> {
         "plan" => command_plan(&global, command_args),
         "prepare" => command_prepare(&global, command_args),
         "observe" => command_observe(&global),
+        "inspect" => command_material(&global),
+        "recover" => command_recover(&global),
         "expose" => command_expose(&global),
         "material" => command_material(&global),
         "collect" => command_collect(&global),
@@ -423,6 +425,16 @@ fn command_prepare(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellE
     Ok(())
 }
 
+fn command_recover(global: &GlobalArgs) -> Result<(), WorkcellError> {
+    let (mut workcell, world, _) = resume(global)?;
+    let recovered = workcell.recover(&world.world_ref)?;
+    let receipt = default_receipt_path(&global.state_root, recovered.world_ref.as_str());
+    write_receipt(&receipt, &recovered)?;
+    if global.json { emit_json(json!({"ok":true,"receipt":receipt,"world":world_value(&recovered)?})); }
+    else { println!("material recovery: {} -> {}; receipt {}", world.world_ref, recovered.world_ref, receipt.display()); }
+    Ok(())
+}
+
 fn command_observe(global: &GlobalArgs) -> Result<(), WorkcellError> {
     let (workcell, world, _) = resume(global)?;
     let result = workcell.observe(&world.world_ref)?;
@@ -586,6 +598,15 @@ fn command_reconcile(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
 }
 
 fn parse_demand(args: &[String]) -> Result<ExecutionDemand, WorkcellError> {
+    if args.first().map(String::as_str) == Some("--demand-json") {
+        if args.len() != 2 { return Err(WorkcellError::InvalidDemand("--demand-json requires exactly one file and cannot be mixed with requirement flags".into())); }
+        let raw = fs::read(&args[1]).map_err(|e| WorkcellError::InvalidDemand(format!("read demand JSON: {e}")))?;
+        if raw.len() > 1_048_576 { return Err(WorkcellError::InvalidDemand("demand JSON exceeds 1 MiB".into())); }
+        let value = serde_json::from_slice(&raw).map_err(|e| WorkcellError::InvalidDemand(format!("parse demand JSON: {e}")))?;
+        let demand = epilogos_workcell_control::codec::decode_demand(&value)?;
+        demand.validate()?;
+        return Ok(demand);
+    }
     let mut demand_ref = DEFAULT_DEMAND_REF.to_owned();
     let mut affordances = Tiered::default();
     let mut connectivity = Tiered::default();
@@ -1907,6 +1928,7 @@ fn exit_code(error: &WorkcellError) -> u8 {
 }
 
 fn print_help() {
+    println!("CAW material operations: inspect / recover --receipt FILE; plan / prepare --demand-json FILE (full native demand including storage). Write restrictions: workcell-write-boundary capabilities / inspect / run. These do not create semantic sessions or execute Factory work.");
     println!(
         "Workcell — provider-neutral material execution control\n\n\
 Usage:\n  workcell [global options] <command> [command options]\n\n\

@@ -1,0 +1,70 @@
+name: CAW native material campaign
+
+on:
+  pull_request:
+    paths: ['Cargo.*', 'crates/**', 'scripts/**', '.github/workflows/caw-native.yml']
+  push:
+    branches: [main]
+    paths: ['Cargo.*', 'crates/**', 'scripts/**', '.github/workflows/caw-native.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: caw-native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-material:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt,clippy
+      - name: Record exact tested source and environment
+        run: |
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/source-commit.txt
+          printf '%s\n' '${{ github.event.pull_request.head.sha || github.sha }}' > evidence/pr-head.txt
+          rustc --version --verbose > evidence/toolchain.txt
+          uname -a > evidence/kernel.txt
+          git archive --format=tar.gz HEAD > evidence/source.tar.gz
+      - name: Formatting and lint
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Native workspace tests
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --workspace --all-targets 2>&1 | tee evidence/native-tests.txt
+      - name: Required positive kernel confinement
+        env:
+          WORKCELL_REQUIRE_LANDLOCK: '1'
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked -p epilogos-workcell-runtime --test write_boundary -- --nocapture 2>&1 | tee evidence/write-boundary.txt
+          grep -q WRITE_BOUNDARY_EXECUTED evidence/write-boundary.txt
+      - name: Build native operations
+        run: |
+          cargo build --locked -p epilogos-workcell-cli --bins
+          cp target/debug/workcell target/debug/workcell-control-service target/debug/workcell-write-boundary evidence/
+          sha256sum evidence/workcell evidence/workcell-control-service evidence/workcell-write-boundary > evidence/binary-sha256.txt
+      - name: Compiled service restart and provider substitution
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 scripts/caw_native_campaign.py --bin-dir target/debug --output evidence/material-campaign.json 2>&1 | tee evidence/material-campaign.txt
+          python3 -m py_compile scripts/caw_installed_world.py
+          PYTHONPATH=scripts python3 -m unittest -v scripts/test_caw_installed_world.py 2>&1 | tee evidence/procedure-safety.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: caw-native-${{ github.sha }}
+          path: evidence/
+          retention-days: 7

@@ -215,6 +215,8 @@ fn run_remote(
         "doctor" => remote_doctor(&global, &endpoint, &mut client),
         "plan" => remote_plan(&global, command_args, &mut client),
         "prepare" => remote_prepare(&global, command_args, &mut client),
+        "recover" => remote_recover(&global, &mut client),
+        "inspect" | "material" => remote_world_operation(&global, &mut client, RemoteWorldOperation::Inspect),
         "observe" => remote_world_operation(&global, &mut client, RemoteWorldOperation::Observe),
         "expose" => remote_world_operation(&global, &mut client, RemoteWorldOperation::Expose),
         "collect" => remote_world_operation(&global, &mut client, RemoteWorldOperation::Collect),
@@ -354,6 +356,7 @@ fn remote_prepare(
 
 #[derive(Clone, Copy)]
 enum RemoteWorldOperation {
+    Inspect,
     Observe,
     Expose,
     Collect,
@@ -367,12 +370,22 @@ fn remote_world_operation(
 ) -> Result<(), CliError> {
     let world_ref = receipt_world_ref(global)?;
     let value = match operation {
+        RemoteWorldOperation::Inspect => client.inspect(&world_ref)?,
         RemoteWorldOperation::Observe => client.observe(&world_ref)?,
         RemoteWorldOperation::Expose => client.expose(&world_ref)?,
         RemoteWorldOperation::Collect => client.collect(&world_ref)?,
         RemoteWorldOperation::Release => client.release(&world_ref)?,
     };
     remote_value(global, value)
+}
+
+fn remote_recover(global: &RemoteGlobal, client: &mut RemoteClient) -> Result<(), CliError> {
+    let prior = receipt_world_ref(global)?;
+    let value = client.recover(&prior)?;
+    let world = decode_remote_world(&value)?;
+    let receipt = local_cli::receipt_path(&global.state_root, world.world_ref.as_str());
+    local_cli::persist_receipt(&receipt, &world)?;
+    remote_value(global, json!({"world":value,"receipt":receipt,"previous_world_ref":prior.as_str()}))
 }
 
 fn remote_reconcile(

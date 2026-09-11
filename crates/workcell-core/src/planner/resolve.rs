@@ -118,6 +118,24 @@ fn capacity_match(
 }
 
 fn storage_match(offer: &OperationalOffer, requirement: &StorageRequirement) -> OfferMatch {
+    // A named attachment must not accidentally select a different logical store.
+    if offer
+        .metadata
+        .get("logical_ref")
+        .is_some_and(|r| r != &requirement.logical_ref)
+        || (requirement.access == StorageAccess::ReadOnly
+            && offer
+                .metadata
+                .get("storage:read-only")
+                .is_some_and(|v| v == "unsupported"))
+        || (requirement.sharing == StorageSharing::Exclusive
+            && offer
+                .metadata
+                .get("storage:exclusive")
+                .is_some_and(|v| v == "unsupported"))
+    {
+        return OfferMatch::Unsupported;
+    }
     if offer.port != "storage"
         || !offer
             .affordances

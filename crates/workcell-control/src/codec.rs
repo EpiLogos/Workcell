@@ -6,7 +6,8 @@ use epilogos_workcell_core::{
     LogicalConnectionRequirement, MaterialisationPlan, ObservationBundle, OutputRequirement,
     PersistenceScope, PlanOmission, PlanStatus, ProjectRuntimeRequirement, ReconciliationResult,
     ReleaseDisposition, ReleaseResult, RequirementNecessity, ResourceRequirement,
-    RetentionExpectation, Tiered, WorkcellError, WorkspaceAccess, WorkspaceRequirement,
+    RetentionExpectation, StorageAccess, StorageRequirement, StorageSharing, Tiered, WorkcellError,
+    WorkspaceAccess, WorkspaceRequirement,
 };
 use epilogos_workcell_wire::world_value;
 use serde_json::{json, Map, Value};
@@ -20,6 +21,11 @@ pub fn demand_value(demand: &ExecutionDemand) -> Value {
             demand.affordances.preferred.iter().map(|value| value.as_str()),
             demand.affordances.optional.iter().map(|value| value.as_str()),
         ),
+        "storage": {
+            "required": demand.storage.required.iter().map(storage_value).collect::<Vec<_>>(),
+            "preferred": demand.storage.preferred.iter().map(storage_value).collect::<Vec<_>>(),
+            "optional": demand.storage.optional.iter().map(storage_value).collect::<Vec<_>>(),
+        },
         "workspace": demand.workspace.as_ref().map(|workspace| json!({
             "source": workspace.source.as_ref().map(ToString::to_string),
             "revision": workspace.revision,
@@ -72,6 +78,22 @@ pub fn decode_demand(value: &Value) -> Result<ExecutionDemand, WorkcellError> {
     demand.affordances = decode_tiered(object_field(payload, "affordances")?, |value| {
         AffordanceRequirement::new(value)
     })?;
+    // Absent storage preserves older v1 clients. Present requirements are never
+    // discarded: every tier/access/retention field participates in the demand.
+    if let Some(value) = payload.get("storage") {
+        let tiers = object(value, "storage")?;
+        let read = |name| {
+            array_field(tiers, name)?
+                .iter()
+                .map(decode_storage)
+                .collect::<Result<Vec<_>, WorkcellError>>()
+        };
+        demand.storage = Tiered {
+            required: read("required")?,
+            preferred: read("preferred")?,
+            optional: read("optional")?,
+        };
+    }
     demand.workspace = match payload
         .get("workspace")
         .ok_or_else(|| missing("workspace"))?
@@ -525,4 +547,69 @@ fn missing(key: &str) -> WorkcellError {
 
 fn invalid(message: String) -> WorkcellError {
     WorkcellError::InvalidDemand(message)
+}
+
+fn storage_value(storage: &StorageRequirement) -> Value {
+    json!({"logical_ref":storage.logical_ref,
+        "access":match storage.access { StorageAccess::ReadOnly=>"read-only", StorageAccess::Writable=>"writable" },
+        "sharing":match storage.sharing { StorageSharing::Exclusive=>"exclusive", StorageSharing::Shared=>"shared" },
+        "minimum_capacity":storage.minimum_capacity,"unit":storage.unit,
+        "persistence":storage.persistence.as_ref().map(persistence),"retention":retention(&storage.retention)})
+}
+fn decode_storage(value: &Value) -> Result<StorageRequirement, WorkcellError> {
+    let item = object(value, "storage requirement")?;
+    let mut storage = StorageRequirement::new(string_field(item, "logical_ref")?)?;
+    storage.access = match string_field(item, "access")? {
+        "read-only" => StorageAccess::ReadOnly,
+        "writable" => StorageAccess::Writable,
+        _ => {
+            return Err(WorkcellError::InvalidDemand(
+                "unknown storage access".into(),
+            ))
+        }
+    };
+    storage.sharing = match string_field(item, "sharing")? {
+        "exclusive" => StorageSharing::Exclusive,
+        "shared" => StorageSharing::Shared,
+        _ => {
+            return Err(WorkcellError::InvalidDemand(
+                "unknown storage sharing".into(),
+            ))
+        }
+    };
+    storage.minimum_capacity = optional_u64_field(item, "minimum_capacity")?;
+    storage.unit = optional_string_field(item, "unit")?.map(str::to_owned);
+    storage.persistence = optional_string_field(item, "persistence")?
+        .map(parse_persistence)
+        .transpose()?;
+    storage.retention = parse_retention(string_field(item, "retention")?)?;
+    storage.validate()?;
+    Ok(storage)
+}
+
+#[cfg(test)]
+mod storage_transport_tests {
+    use super::*;
+    #[test]
+    fn storage_requirements_survive_control_transport_and_affect_basis() {
+        let mut demand = ExecutionDemand::new(
+            epilogos_workcell_core::DemandRef::new("demand:storage-codec").unwrap(),
+        );
+        let mut storage = StorageRequirement::new("now:opaque").unwrap();
+        storage.sharing = StorageSharing::Shared;
+        storage.persistence = Some(PersistenceScope::External);
+        storage.retention = RetentionExpectation::Preserve;
+        demand.storage.required.push(storage.clone());
+        storage.logical_ref = "now:preferred".into();
+        demand.storage.preferred.push(storage.clone());
+        storage.logical_ref = "now:optional".into();
+        demand.storage.optional.push(storage);
+        assert_eq!(decode_demand(&demand_value(&demand)).unwrap(), demand);
+        let mut malformed = demand_value(&demand);
+        malformed["storage"]["required"][0]["access"] = json!("advisory-read-only");
+        assert!(decode_demand(&malformed).is_err());
+        let mut stripped = demand_value(&demand);
+        stripped.as_object_mut().unwrap().remove("storage");
+        assert_ne!(decode_demand(&stripped).unwrap(), demand); // deliberately missing connection is rejected by equality
+    }
 }

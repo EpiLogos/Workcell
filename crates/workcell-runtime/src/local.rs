@@ -2,22 +2,25 @@ use std::{cell::RefCell, collections::BTreeMap, fs, path::PathBuf, rc::Rc};
 
 use epilogos_workcell_artifact::DirectoryArtifactStorageProvider;
 use epilogos_workcell_core::{
-    compose_world, ArtifactChannelRequest, ArtifactStorageProvider, CollectionBundle,
-    DesiredMaterialState, Discovery, ExecutionDemand, ExecutionMaterialRequest, ExecutionProvider,
-    ExposureBundle, LogicalConnectionRequirement, MaterialisationPlan, MaterialisedExecutionWorld,
+    compose_world, rebind_material_world, ArtifactChannelRequest, ArtifactStorageProvider,
+    AttachedStorageRequest, BindingPresence, CollectionBundle, DesiredMaterialState, Discovery,
+    ExecutionDemand, ExecutionMaterialRequest, ExecutionProvider, ExposureBundle, HealthState,
+    LogicalConnectionRequirement, MaterialisationPlan, MaterialisedExecutionWorld,
     ObservationBundle, PlanStatus, PlannedAllocation, PreparedWorldControlPlane,
     ProviderAllocation, ProviderObservation, ProviderPort, ProviderPortKind, ProviderRef,
     ProviderReleaseResult, ReconciliationResult, ReleaseResult, Result, RetentionExpectation,
-    ServiceMaterialRequest, ServiceProvider, WorkcellControlPlane, WorkcellError, WorkcellRef,
-    WorkspaceAccess, WorkspaceMaterialRequest, WorkspaceMaterialSource, WorkspaceProvider,
-    WorldRef,
+    ServiceMaterialRequest, ServiceProvider, StorageProvider, WorkcellControlPlane, WorkcellError,
+    WorkcellRef, WorkspaceAccess, WorkspaceMaterialRequest, WorkspaceMaterialSource,
+    WorkspaceProvider, WorldRef,
 };
 use epilogos_workcell_workspace::DirectoryWorkspaceProvider;
 
 use crate::{
+    read_directory_storage,
     service_declaration::{read_service_declarations, read_state_root_service_declarations},
-    DeclaredServices, ExternalManagedService, ExternalManagedServiceProvider, HostLifetime,
-    HostProcessExecutionProvider, ManagedHostService, ManagedHostServiceProvider,
+    DeclaredServices, DirectoryStorage, DirectoryStorageProvider, ExternalManagedService,
+    ExternalManagedServiceProvider, HostLifetime, HostProcessExecutionProvider, ManagedHostService,
+    ManagedHostServiceProvider, DIRECTORY_STORAGE_FILE, DIRECTORY_STORAGE_PROVIDER_REF,
 };
 
 /// Provider identity for operator-declared services whose material process is a
@@ -62,6 +65,8 @@ pub struct CollapsedLocalConfig {
     /// Defaults to `OneShotCommand`: the honest assumption unless a persistent
     /// host explicitly says otherwise. See [`HostLifetime`].
     pub host_lifetime: HostLifetime,
+    /// Explicit existing NOW/state paths, not semantic allocation instructions.
+    pub directories: Vec<DirectoryStorage>,
 }
 
 impl CollapsedLocalConfig {
@@ -74,9 +79,14 @@ impl CollapsedLocalConfig {
             services: DeclaredServices::default(),
             service_declaration: ServiceDeclarationSource::StateRoot,
             host_lifetime: HostLifetime::OneShotCommand,
+            directories: Vec::new(),
         }
     }
 
+    pub fn with_directory_storage(mut self, directory: DirectoryStorage) -> Self {
+        self.directories.push(directory);
+        self
+    }
     /// Declare that this Workcell is composed inside a persistent host (the
     /// Workcell Control Service), not a one-shot CLI command, so a
     /// provider-process-scoped service may honour `retention: preserve`.
@@ -231,6 +241,23 @@ where
     }
 }
 
+impl<P: StorageProvider> StorageProvider for SharedProvider<P> {
+    fn prepare_storage(&mut self, request: &AttachedStorageRequest) -> Result<ProviderAllocation> {
+        self.inner.borrow_mut().prepare_storage(request)
+    }
+    fn observe_storage(&self, allocation: &ProviderAllocation) -> Result<ProviderObservation> {
+        self.inner.borrow().observe_storage(allocation)
+    }
+    fn release_storage(
+        &mut self,
+        allocation: &ProviderAllocation,
+        retention: &RetentionExpectation,
+    ) -> Result<ProviderReleaseResult> {
+        self.inner
+            .borrow_mut()
+            .release_storage(allocation, retention)
+    }
+}
 impl<P> ServiceProvider for SharedProvider<P>
 where
     P: ServiceProvider,
@@ -305,6 +332,7 @@ pub struct CollapsedLocalWorkcell {
     artifacts: SharedProvider<DirectoryArtifactStorageProvider>,
     managed_services: SharedProvider<ManagedHostServiceProvider>,
     target_services: SharedProvider<ExternalManagedServiceProvider>,
+    directories: SharedProvider<DirectoryStorageProvider>,
 }
 
 impl CollapsedLocalWorkcell {
@@ -319,7 +347,21 @@ impl CollapsedLocalWorkcell {
         })?;
 
         let declared = config.resolve_services()?;
-
+        let mut directory_declarations = config.directories.clone();
+        let storage_file = config.state_root.join(DIRECTORY_STORAGE_FILE);
+        match fs::symlink_metadata(&storage_file) {
+            Ok(_) => directory_declarations.extend(read_directory_storage(&storage_file)?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(WorkcellError::Unavailable(format!(
+                    "inspect storage declaration: {e}"
+                )))
+            }
+        }
+        let directories = SharedProvider::new(DirectoryStorageProvider::new(
+            ProviderRef::new(DIRECTORY_STORAGE_PROVIDER_REF).unwrap(),
+            directory_declarations,
+        )?);
         let workspace = SharedProvider::new(DirectoryWorkspaceProvider::new(
             ProviderRef::new("provider:collapsed-local-workspace").unwrap(),
             config.state_root.join("workspaces"),
@@ -355,7 +397,7 @@ impl CollapsedLocalWorkcell {
         control.register_artifact_provider(artifacts.clone())?;
         control.register_service_provider(managed_services.clone())?;
         control.register_service_provider(target_services.clone())?;
-
+        control.register_storage_provider(directories.clone())?;
         Ok(Self {
             workcell_ref: config.workcell_ref,
             workspace_source: config.workspace_source,
@@ -365,6 +407,7 @@ impl CollapsedLocalWorkcell {
             artifacts,
             managed_services,
             target_services,
+            directories,
         })
     }
 
@@ -376,6 +419,19 @@ impl CollapsedLocalWorkcell {
     /// provenance. The world's semantic and material identities are preserved;
     /// providers reconstruct their process-local records from the bindings.
     pub fn register_world(&mut self, world: MaterialisedExecutionWorld) -> Result<()> {
+        if !world.provenance.contains_key("superseded_by") {
+            for binding in &world.binding_graph.bindings {
+                if binding.provider_ref == *self.target_services.provider_ref()
+                    && binding.presence != BindingPresence::Released
+                {
+                    let _ = self
+                        .target_services
+                        .inner
+                        .borrow()
+                        .restore_allocation(&allocation_of(binding));
+                }
+            }
+        }
         self.control.register_world(world)
     }
 
@@ -515,6 +571,25 @@ impl CollapsedLocalWorkcell {
                 } else {
                     self.target_services.resolve_service(&request)?
                 }
+            } else if binding.provider_ref == *self.directories.provider_ref() {
+                let requirement = demand
+                    .storage
+                    .required
+                    .iter()
+                    .chain(&demand.storage.preferred)
+                    .chain(&demand.storage.optional)
+                    .find(|r| binding.logical_ref == format!("storage:{}", r.logical_ref))
+                    .ok_or_else(|| {
+                        WorkcellError::InvalidDemand(
+                            "storage binding has no matching demand requirement".into(),
+                        )
+                    })?;
+                self.directories.prepare_storage(&AttachedStorageRequest {
+                    demand_ref: demand.demand_ref.clone(),
+                    requirement: requirement.clone(),
+                    persistence: demand.persistence.clone(),
+                    retention: demand.retention.clone(),
+                })?
             } else if binding.provider_ref == artifact_ref {
                 if !binding.logical_ref.starts_with("output:") {
                     return Err(WorkcellError::OperationFailed(format!(
@@ -574,6 +649,98 @@ impl WorkcellControlPlane for CollapsedLocalWorkcell {
         })
     }
 
+    fn recover(&mut self, world: &WorldRef) -> Result<MaterialisedExecutionWorld> {
+        let snapshot = self.inspect(world)?;
+        if snapshot.provenance.contains_key("superseded_by")
+            || snapshot.binding_graph.bindings.iter().any(|b| {
+                matches!(
+                    b.presence,
+                    BindingPresence::Released
+                        | BindingPresence::Suspended
+                        | BindingPresence::Snapshotted
+                )
+            })
+        {
+            return Err(WorkcellError::OperationFailed(
+                "terminal/superseded material cannot be revived by recovery".into(),
+            ));
+        }
+        // Check existing source/storage before changing any executable service.
+        for binding in &snapshot.binding_graph.bindings {
+            let allocation = allocation_of(binding);
+            let observed = match binding.port {
+                ProviderPortKind::Workspace => Some(self.workspace.observe_workspace(&allocation)?),
+                ProviderPortKind::Storage => Some(self.directories.observe_storage(&allocation)?),
+                ProviderPortKind::Execution => Some(self.execution.observe_execution(&allocation)?),
+                ProviderPortKind::ArtifactStorage => {
+                    Some(self.artifacts.observe_artifact_channel(&allocation)?)
+                }
+                ProviderPortKind::Service => None,
+                _ => {
+                    return Err(WorkcellError::Unsupported(
+                        "collapsed-local recovery has no registered provider for this binding"
+                            .into(),
+                    ))
+                }
+            };
+            if observed.is_some_and(|o| o.health != HealthState::Healthy) {
+                return Err(WorkcellError::Unavailable("source/storage/execution material is unavailable; obtain a new owner allocation, not an inferred replacement".into()));
+            }
+        }
+        let mut replacements = BTreeMap::new();
+        let mut recovered_allocations: BTreeMap<String, ProviderAllocation> = BTreeMap::new();
+        for binding in &snapshot.binding_graph.bindings {
+            if binding.port != ProviderPortKind::Service {
+                continue;
+            }
+            let allocation = allocation_of(binding);
+            let recovered = if let Some(value) = recovered_allocations.get(&binding.material_ref) {
+                value.clone()
+            } else if binding.provider_ref == *self.managed_services.provider_ref() {
+                self.managed_services.inner.borrow_mut().recover_service(
+                    &allocation,
+                    &ServiceMaterialRequest {
+                        demand_ref: snapshot.demand_ref.clone(),
+                        connection: LogicalConnectionRequirement::new(
+                            binding
+                                .properties
+                                .get("logical_ref")
+                                .ok_or_else(|| {
+                                    WorkcellError::InvalidDemand(
+                                        "service receipt has no logical ref".into(),
+                                    )
+                                })?
+                                .clone(),
+                        )?,
+                        persistence: snapshot.persistence.clone(),
+                        retention: snapshot.retention.clone(),
+                    },
+                )?
+            } else if binding.provider_ref == *self.target_services.provider_ref() {
+                self.target_services
+                    .inner
+                    .borrow()
+                    .recover_service(&allocation)?
+            } else {
+                return Err(WorkcellError::Unsupported(
+                    "unknown recovery service provider".into(),
+                ));
+            };
+            recovered_allocations.insert(binding.material_ref.clone(), recovered.clone());
+            replacements.insert(binding.logical_ref.clone(), recovered);
+        }
+        let recovered = rebind_material_world(&snapshot, &replacements)?;
+        if recovered.world_ref != snapshot.world_ref {
+            let mut history = snapshot;
+            history
+                .provenance
+                .insert("superseded_by".into(), recovered.world_ref.to_string());
+            self.control.register_world(history)?;
+        }
+        self.control.register_world(recovered.clone())?;
+        Ok(recovered)
+    }
+
     fn observe(&self, world: &WorldRef) -> Result<ObservationBundle> {
         self.control.observe(world)
     }
@@ -587,6 +754,11 @@ impl WorkcellControlPlane for CollapsedLocalWorkcell {
     }
 
     fn release(&mut self, world: &WorldRef) -> Result<ReleaseResult> {
+        if let Some(successor) = self.inspect(world)?.provenance.get("superseded_by") {
+            return Err(WorkcellError::OperationFailed(format!(
+                "world superseded by `{successor}`; release the current binding explicitly"
+            )));
+        }
         self.control.release(world)
     }
 
@@ -610,6 +782,16 @@ fn service_connection(
     LogicalConnectionRequirement::new(binding.requirement.clone())
 }
 
+fn allocation_of(binding: &epilogos_workcell_core::Binding) -> ProviderAllocation {
+    ProviderAllocation {
+        provider_ref: binding.provider_ref.clone(),
+        port: binding.port,
+        material_ref: binding.material_ref.clone(),
+        health: binding.health.clone(),
+        properties: binding.properties.clone(),
+        provenance: binding.provenance.clone(),
+    }
+}
 #[cfg(test)]
 mod tests {
     use std::{

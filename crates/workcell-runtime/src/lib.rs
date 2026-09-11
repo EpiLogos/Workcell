@@ -1,3 +1,14 @@
+mod write_boundary;
+pub use write_boundary::{
+    write_boundary_capabilities, PreparedWriteBoundary, WriteBoundaryRequirements,
+    WRITE_BOUNDARY_COVERAGE, WRITE_BOUNDARY_SCHEMA, WRITE_BOUNDARY_UNCOVERED,
+};
+mod directory_storage;
+mod material_path;
+pub use directory_storage::{
+    read_directory_storage, DirectoryStorage, DirectoryStorageProvider, DIRECTORY_STORAGE_FILE,
+    DIRECTORY_STORAGE_PROVIDER_REF, DIRECTORY_STORAGE_SCHEMA,
+};
 mod external_service;
 mod host;
 mod instance_projection;
@@ -61,3 +72,6 @@ pub use service_declaration::{
     read_state_root_service_declarations, DeclaredServices, ServiceLifetime,
     SERVICE_DECLARATION_FILE, SERVICE_DECLARATION_SCHEMA,
 };
+
+mod bounded_process;
+pub use bounded_process::{run_bounded_process, BoundedProcessOutput};

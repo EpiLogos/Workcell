@@ -25,6 +25,14 @@ pub trait WorkcellControlPlane {
         ))
     }
 
+    /// Explicit material re-entry/recovery, never replay of an Agent operation.
+    /// Providers lacking this lifecycle must refuse rather than fabricate it.
+    fn recover(&mut self, _world: &WorldRef) -> Result<MaterialisedExecutionWorld> {
+        Err(WorkcellError::Unsupported(
+            "material recovery is not supported by this control plane".into(),
+        ))
+    }
+
     fn observe(&self, world: &WorldRef) -> Result<ObservationBundle>;
     fn expose(&self, world: &WorldRef) -> Result<ExposureBundle>;
     fn collect(&self, world: &WorldRef) -> Result<CollectionBundle>;
