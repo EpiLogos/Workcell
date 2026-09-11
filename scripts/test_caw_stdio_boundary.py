@@ -72,4 +72,4 @@ print(json.dumps({'reply':request,'denied':denied,'pid':os.getpid()}),flush=True
                     denied = subprocess.run(negative, input="{}\n", capture_output=True, text=True, timeout=10)
                 self.assertNotEqual(denied.returncode, 0, change)
                 self.assertEqual(denied.stdout, "", change)
-            print("PROTOCOL_BOUNDARY_EXECUTED", flush=True)
+            print("STDIO_BOUNDARY_EXECUTED", flush=True)
