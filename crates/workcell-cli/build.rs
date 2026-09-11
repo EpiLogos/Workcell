@@ -6,10 +6,7 @@ fn main() {
     // workflow- or docs-only commit keeps the older stamp, which remains true.
     // SUITE_BUILD_REVISION overrides the probe for reproducible out-of-tree
     // builds where no .git exists.
-    println!(
-        "cargo:rustc-env=SUITE_BUILD_REVISION={}",
-        build_revision()
-    );
+    println!("cargo:rustc-env=SUITE_BUILD_REVISION={}", build_revision());
 }
 
 fn build_revision() -> String {
