@@ -283,14 +283,6 @@ impl ExternalManagedServiceProvider {
 
     fn record(&self, allocation: &ProviderAllocation) -> Result<ExternalServiceRecord> {
         if let Some(record) = self.records.borrow().get(&allocation.material_ref).cloned() {
-            if allocation.properties.get("declaration_digest")
-                != Some(&record.service.fingerprint())
-                || allocation.properties.get("endpoint") != Some(&record.service.endpoint)
-            {
-                return Err(WorkcellError::OperationFailed(
-                    "external service declaration changed since allocation".into(),
-                ));
-            }
             return Ok(record);
         }
         self.reenter(allocation).ok_or_else(|| {
@@ -317,9 +309,7 @@ impl ExternalManagedServiceProvider {
         }
         let logical_ref = allocation.properties.get("logical_ref")?;
         let service = self.services.get(logical_ref)?;
-        if allocation.properties.get("endpoint") != Some(&service.endpoint)
-            || allocation.properties.get("declaration_digest") != Some(&service.fingerprint())
-        {
+        if allocation.properties.get("endpoint") != Some(&service.endpoint) {
             return None;
         }
         let record = ExternalServiceRecord {
