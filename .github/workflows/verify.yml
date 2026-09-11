@@ -1,15 +1,31 @@
 name: verify
 
+# The one pull-request gate for Workcell (branch-required): the
+# repository-owned scripts/verify.sh, once per change.
+
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          cache-on-failure: true
       - run: ./scripts/verify.sh

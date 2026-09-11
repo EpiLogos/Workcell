@@ -1,13 +1,9 @@
 name: Pre-local build
 
+# Attested workcell artifacts from main. verify.yml already gated the merge;
+# this workflow does not test again.
+
 on:
-  pull_request:
-    paths:
-      - '.oi/product.json'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'crates/**'
-      - '.github/workflows/prelocal-build.yml'
   push:
     branches: [main]
     paths:
@@ -16,21 +12,13 @@ on:
       - 'Cargo.lock'
       - 'crates/**'
       - '.github/workflows/prelocal-build.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  verify:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --workspace --all-targets --locked
-
   artifact:
-    if: github.event_name == 'push'
-    needs: verify
     permissions:
       contents: read
       id-token: write

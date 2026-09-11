@@ -450,7 +450,6 @@ impl ManagedHostServiceProvider {
         }
         self.resolve_service(request)
     }
-
     fn record(&self, allocation: &ProviderAllocation) -> Result<&ManagedServiceRecord> {
         self.records.get(&allocation.material_ref).ok_or_else(|| {
             WorkcellError::NotFound(format!(
