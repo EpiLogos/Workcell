@@ -115,3 +115,73 @@ assert h.read_text()=='protected'; print(json.dumps({'executed_denials':denied,'
         .is_err());
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn protected_source_files_retain_identity_without_broadening_writable_grants() {
+    let root = root();
+    fs::create_dir_all(root.join("Work/NOW")).unwrap();
+    fs::create_dir(root.join("Work/project")).unwrap();
+    let source = root.join("now.json");
+    fs::write(&source, "retained NOW source").unwrap();
+    let mut r = requirements(&root);
+    r.protected_paths.push(source.clone());
+    let caps = write_boundary_capabilities();
+    if caps["supported"] != true {
+        let error = PreparedWriteBoundary::prepare(r, "revision:1").unwrap_err();
+        assert!(
+            !error.to_string().contains("existing directory"),
+            "valid protected source file was refused before platform eligibility: {error}"
+        );
+        eprintln!("PROTECTED_SOURCE_PLATFORM_UNAVAILABLE: {caps}; no execution claimed");
+        fs::remove_dir_all(root).unwrap();
+        assert_ne!(
+            std::env::var("WORKCELL_REQUIRE_LANDLOCK").ok().as_deref(),
+            Some("1")
+        );
+        return;
+    }
+    let boundary = PreparedWriteBoundary::prepare(r, "revision:1").unwrap();
+    let inspected = boundary.inspect("revision:1").unwrap();
+    assert!(inspected["protected_objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["path"].as_str() == source.to_str() && p["identity"].as_str().is_some()));
+    let mut command = Command::new("python3");
+    command.args(["-c", "import sys; from pathlib import Path; p=Path(sys.argv[1]);\ntry: p.write_text('escape')\nexcept PermissionError: print('protected-source-denied')\nelse: raise AssertionError('protected source overwritten')", source.to_str().unwrap()]);
+    boundary
+        .configure_command(&mut command, "revision:1")
+        .unwrap();
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read_to_string(&source).unwrap(), "retained NOW source");
+    fs::rename(&source, root.join("retained-now.json")).unwrap();
+    fs::write(&source, "replacement").unwrap();
+    assert!(boundary.inspect("revision:1").is_err());
+    eprintln!("PROTECTED_SOURCE_EXECUTED: denial and identity-drift refusal");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn protected_file_under_writable_directory_is_not_silently_dropped() {
+    let root = root();
+    fs::create_dir_all(root.join("Work/NOW")).unwrap();
+    fs::create_dir(root.join("Work/project")).unwrap();
+    let source = root.join("Work/NOW/protected.json");
+    fs::write(&source, "retained").unwrap();
+    let mut r = requirements(&root);
+    r.protected_paths.push(source.clone());
+    let error = PreparedWriteBoundary::prepare(r, "revision:1").unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("writable directory includes a protected object"),
+        "{error}"
+    );
+    assert_eq!(fs::read_to_string(source).unwrap(), "retained");
+    fs::remove_dir_all(root).unwrap();
+}
