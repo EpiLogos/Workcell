@@ -22,7 +22,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The sdk_conformance and material_world tests run in verify.yml's
+      # whole-workspace test; only the Skills check is unique here.
       - run: bash scripts/verify-native-skills.sh
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test -p epilogos-workcell-sdk --test sdk_conformance
-      - run: cargo test -p epilogos-workcell-core --test material_world
