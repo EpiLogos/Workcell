@@ -47,6 +47,8 @@ fn now_directory_is_attached_not_minted_copied_or_deleted() {
     let now = root.join("NOW");
     let wrong = root.join("other");
     fs::create_dir_all(&now).unwrap();
+    // the runtime reports the canonical path (/var -> /private/var on macOS)
+    let now = fs::canonicalize(&now).unwrap();
     fs::create_dir_all(&wrong).unwrap();
     fs::write(now.join("authored.md"), "unaltered authored bytes").unwrap();
     let make = || {
