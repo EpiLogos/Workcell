@@ -37,7 +37,11 @@ fn version_requested(args: &[String]) -> bool {
 fn main() -> ExitCode {
     let args = env::args().skip(1).collect::<Vec<_>>();
     if version_requested(&args) {
-        println!("workcell {}", env!("CARGO_PKG_VERSION"));
+        println!(
+            "workcell {} ({})",
+            env!("CARGO_PKG_VERSION"),
+            option_env!("SUITE_BUILD_REVISION").unwrap_or("unknown")
+        );
         return ExitCode::SUCCESS;
     }
     combined::invoke()
