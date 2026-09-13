@@ -88,6 +88,9 @@ fn run(args: Vec<String>) -> Result<(), WorkcellError> {
         "reconcile" => command_reconcile(&global, command_args),
         "instances" => command_instances(&global, command_args),
         "sandboxes" => command_sandboxes(&global, command_args),
+        other if other.starts_with('-') => Err(WorkcellError::InvalidDemand(format!(
+            "unknown option `{other}`; run `workcell help`"
+        ))),
         other => Err(WorkcellError::InvalidDemand(format!(
             "unknown command `{other}`; run `workcell help`"
         ))),

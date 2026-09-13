@@ -222,6 +222,10 @@ fn run_remote(
         "collect" => remote_world_operation(&global, &mut client, RemoteWorldOperation::Collect),
         "release" => remote_world_operation(&global, &mut client, RemoteWorldOperation::Release),
         "reconcile" => remote_reconcile(&global, command_args, &mut client),
+        other if other.starts_with('-') => Err(WorkcellError::InvalidDemand(format!(
+            "unknown option `{other}`; run `workcell help`"
+        ))
+        .into()),
         other => Err(WorkcellError::InvalidDemand(format!(
             "unknown command `{other}`; run `workcell help`"
         ))
