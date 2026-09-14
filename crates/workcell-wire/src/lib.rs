@@ -1,3 +1,12 @@
+pub mod connection;
+
+pub use connection::{
+    connection_value, decode_connection, decode_connection_value, decode_grant_value,
+    encode_connection, grant_value, ConnectionGrant, ConnectionRecord,
+    CONNECTION_GRANT_WIRE_VERSION, CONNECTION_STATES, CONNECTION_WIRE_VERSION, GRANT_STATE_ACTIVE,
+    GRANT_STATE_REVOKED,
+};
+
 use std::collections::BTreeMap;
 
 use epilogos_workcell_core::{
