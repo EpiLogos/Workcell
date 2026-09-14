@@ -72,6 +72,9 @@ pub fn project_record(record: &Value, target: &WorkcellRef) -> Result<Value> {
     let mut projected = record.clone();
     projected["workcell_ref"] = target.to_string().into();
     projected["pids"] = json!([]);
+    // Per-execution start evidence is host-bound observation, exactly like
+    // the pids: the target's own re-detection scan must supply it.
+    projected["executions"] = json!([]);
     projected["observed_at"] = "pending-redetection".into();
     Ok(projected)
 }
@@ -347,7 +350,11 @@ mod tests {
     fn scan_inputs(slug: &str, sha: &str, pid: u32) -> ScanInputs {
         ScanInputs {
             detection: detection(slug, sha),
-            processes: vec![(pid, slug.to_owned())],
+            processes: vec![instance_scan::ObservedProcess {
+                pid,
+                start_marker: "Thu Sep 14 00:01:50 2026".into(),
+                comm: slug.to_owned(),
+            }],
             gateway_answering: false,
         }
     }
@@ -386,6 +393,7 @@ mod tests {
                 executable: PathBuf::from("/usr/local/bin/hermes"),
                 executable_sha256: SHA.to_owned(),
                 identity_material: "/usr/local/bin/hermes".into(),
+                executions: vec![],
                 pids: vec![1],
                 evidence_grade: EVIDENCE_LIVE_PID.into(),
                 seams: vec![],
@@ -398,6 +406,7 @@ mod tests {
                 executable: PathBuf::from("/usr/local/bin/codex"),
                 executable_sha256: SHA.to_owned(),
                 identity_material: "/usr/local/bin/codex".into(),
+                executions: vec![],
                 pids: vec![],
                 evidence_grade: EVIDENCE_GATEWAY_CONFIRMED.into(),
                 seams: vec![],
@@ -410,6 +419,7 @@ mod tests {
                 executable: PathBuf::from("/usr/local/bin/pi"),
                 executable_sha256: SHA.to_owned(),
                 identity_material: "declared:pi".into(),
+                executions: vec![],
                 pids: vec![],
                 evidence_grade: EVIDENCE_DECLARED_UNVERIFIED.into(),
                 seams: vec![],
@@ -481,7 +491,10 @@ mod tests {
             .collect();
         for field in &drift {
             assert!(
-                matches!(*field, "workcell_ref" | "pids" | "observed_at"),
+                matches!(
+                    *field,
+                    "workcell_ref" | "pids" | "executions" | "observed_at"
+                ),
                 "re-placement invariance: `{field}` must not drift"
             );
         }
@@ -493,6 +506,20 @@ mod tests {
             drift.contains(&"pids"),
             "the pid observation must be the target's own"
         );
+        // The target's own re-detection supplies its start evidence; the
+        // projected expectation carried none.
+        assert_eq!(
+            redetected["executions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|execution| execution["pid"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![202]
+        );
+        assert!(redetected["executions"][0]["process_start_marker"]
+            .as_str()
+            .is_some_and(|marker| !marker.is_empty()));
 
         // The target registry now holds the record; the source is untouched.
         let target_registry = InstanceRegistry::new(&target_root, target);

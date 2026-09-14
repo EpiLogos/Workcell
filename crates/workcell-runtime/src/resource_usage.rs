@@ -16,7 +16,9 @@ use epilogos_workcell_core::{Result, WorkcellError, WorkcellRef};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::instance_registry::{validate_instance_record, InstanceRegistry, LIVENESS_LIVE};
+use crate::instance_registry::{
+    recorded_start_marker, validate_instance_record, InstanceRegistry, LIVENESS_LIVE,
+};
 
 pub const RESOURCE_USAGE_SCHEMA: &str = "workcell.resource-usage/v1";
 pub const DEFAULT_INTERVAL: Duration = Duration::from_millis(100);
@@ -79,6 +81,22 @@ pub fn observe_resource_usage(
     let started_at = unix_millis()?;
     let first = sample_process(pid)?;
     validate_process_binding(&before_record, &first)?;
+    // Start-identity law: when the record holds a process start marker for
+    // this pid, the live sample must match it. A mismatch means the host
+    // recycled the pid between the recording scan and this observation — the
+    // recorded process generation was replaced, and the observation is
+    // refused rather than merged onto the wrong process. A record without
+    // start evidence discloses that gap by skipping the check.
+    if let Some(recorded_marker) = recorded_start_marker(&before_record, pid) {
+        if recorded_marker != first.start_marker {
+            return Err(WorkcellError::Unavailable(format!(
+                "stale binding: pid {pid} bound to `{instance_ref}` was recorded with process \
+                 start marker `{recorded_marker}` but now carries `{}` — the recorded process \
+                 generation was replaced; re-scan the instance instead of observing a recycled pid",
+                first.start_marker
+            )));
+        }
+    }
     thread::sleep(interval);
     let second = sample_process(pid)?;
     let ended_at = unix_millis()?;
@@ -835,10 +853,27 @@ mod tests {
     }
 
     fn live_self_registry(label: &str) -> (PathBuf, InstanceRegistry, String) {
+        live_self_registry_with_marker(label, None)
+    }
+
+    /// Register this test process as a live instance, optionally claiming a
+    /// per-execution start marker for its pid.
+    fn live_self_registry_with_marker(
+        label: &str,
+        claimed_marker: Option<&str>,
+    ) -> (PathBuf, InstanceRegistry, String) {
         let root = temp_root(label);
         let workcell_ref = WorkcellRef::new("workcell:test-owner-machine").unwrap();
         let registry = InstanceRegistry::new(&root, workcell_ref.clone());
         let executable = std::env::current_exe().unwrap();
+        let executions = claimed_marker
+            .map(|marker| {
+                vec![crate::instance_registry::ProcessExecution {
+                    pid: std::process::id(),
+                    process_start_marker: marker.to_owned(),
+                }]
+            })
+            .unwrap_or_default();
         let record = build_instance_record(
             &workcell_ref,
             &InstanceObservation {
@@ -847,6 +882,7 @@ mod tests {
                 executable_sha256: "real-test-process".into(),
                 identity_material: executable.display().to_string(),
                 pids: vec![std::process::id()],
+                executions,
                 evidence_grade: EVIDENCE_LIVE_PID.into(),
                 seams: vec![],
             },
@@ -857,6 +893,56 @@ mod tests {
             RegisterOutcome::Registered
         );
         (root, registry, reference)
+    }
+
+    #[test]
+    fn recorded_start_marker_mismatch_rejects_a_replaced_pid() {
+        // A live process observed through a record whose recorded start
+        // marker cannot match the real one: the pid was recycled between the
+        // recording scan and this observation, so the observation is refused
+        // as a stale binding instead of merging onto the wrong process
+        // generation.
+        let (_, registry, reference) =
+            live_self_registry_with_marker("stale-binding", Some("Sat Jan 1 00:00:00 2001"));
+        let error = observe_resource_usage(
+            &registry,
+            &reference,
+            Some(std::process::id()),
+            Duration::from_millis(5),
+            vec![],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("stale binding"), "{error}");
+        assert!(error.contains("Sat Jan 1 00:00:00 2001"), "{error}");
+    }
+
+    #[test]
+    fn scan_collected_start_marker_validates_a_live_observation() {
+        // Continuity proven by start identity: the marker the pid table
+        // records for this process is the marker the usage observation
+        // samples again, so the recorded binding passes the check.
+        let myself = crate::instance_scan::read_pid_table()
+            .unwrap()
+            .into_iter()
+            .find(|process| process.pid == std::process::id())
+            .expect("this test process appears in the host pid table");
+        assert!(!myself.start_marker.is_empty());
+        let (_, registry, reference) =
+            live_self_registry_with_marker("matching-marker", Some(&myself.start_marker));
+        let report = observe_resource_usage(
+            &registry,
+            &reference,
+            Some(std::process::id()),
+            Duration::from_millis(5),
+            vec![],
+        )
+        .unwrap()
+        .as_json();
+        assert_eq!(
+            report["material_binding"]["process_start_marker"],
+            myself.start_marker.as_str()
+        );
     }
 
     #[test]

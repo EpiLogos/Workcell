@@ -18,7 +18,7 @@
 //! distinct live instances.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -44,6 +44,17 @@ pub const EVIDENCE_GRADES: [&str; 3] = [
 pub const LIVENESS_LIVE: &str = "live";
 pub const LIVENESS_STALE: &str = "stale";
 pub const LIVENESS_STATES: [&str; 2] = [LIVENESS_LIVE, LIVENESS_STALE];
+
+/// One observed execution of a harness executable: the pid and the OS
+/// process start marker that scoped it. A pid number alone is not process
+/// identity — hosts recycle pids — so a continuation claim across
+/// observations must agree on the start marker too (M2, start-identity
+/// discipline shared with `resource_usage`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessExecution {
+    pub pid: u32,
+    pub process_start_marker: String,
+}
 
 /// Outcome of a registration attempt, mirroring the byte-identical
 /// `outcome: unchanged` law used by Central adoptions.
@@ -159,9 +170,10 @@ impl InstanceRegistry {
                 return Ok(RegisterOutcome::Unchanged);
             }
             // Same identity hash but different bytes: refresh the observation
-            // fields (pids, observed_at, seams) in place; identity is stable.
+            // fields (executions, pids, observed_at, seams) in place; identity
+            // is stable.
             let mut updated = existing.clone();
-            for key in ["pids", "observed_at", "seams", "liveness"] {
+            for key in ["pids", "executions", "observed_at", "seams", "liveness"] {
                 if let Some(value) = record.get(key) {
                     updated[key] = value.clone();
                 }
@@ -209,6 +221,7 @@ impl InstanceRegistry {
                 executable_sha256: sha256.clone(),
                 identity_material: identity_material.to_owned(),
                 pids: Vec::new(),
+                executions: Vec::new(),
                 evidence_grade: EVIDENCE_DECLARED_UNVERIFIED.to_owned(),
                 seams: Vec::new(),
             },
@@ -304,7 +317,14 @@ impl InstanceRegistry {
                 return Ok(RegisterOutcome::Unchanged);
             }
             let mut updated = declared.clone();
-            for key in ["pids", "observed_at", "seams", "liveness", "evidence_grade"] {
+            for key in [
+                "pids",
+                "executions",
+                "observed_at",
+                "seams",
+                "liveness",
+                "evidence_grade",
+            ] {
                 if let Some(value) = observed.get(key) {
                     updated[key] = value.clone();
                 }
@@ -387,7 +407,10 @@ pub fn identity_hash(executable_sha256: &str, identity_material: &str) -> String
 ///
 /// `pids` holds every live process observation for this identity this scan:
 /// multi-execution is the default paradigm — one contract identity, many
-/// simultaneous executions, each named.
+/// simultaneous executions, each named. `executions` carries the same
+/// executions with their OS process start markers when the host supplied
+/// them; a record without start evidence discloses that gap by carrying an
+/// empty `executions` array.
 pub struct InstanceObservation {
     pub slug: String,
     pub executable: PathBuf,
@@ -396,6 +419,7 @@ pub struct InstanceObservation {
     /// path at first observation). Never a pid.
     pub identity_material: String,
     pub pids: Vec<u32>,
+    pub executions: Vec<ProcessExecution>,
     pub evidence_grade: String,
     pub seams: Vec<Value>,
 }
@@ -416,12 +440,23 @@ pub fn build_instance_record(
     } else {
         LIVENESS_LIVE
     };
+    let executions: Vec<Value> = observation
+        .executions
+        .iter()
+        .map(|execution| {
+            json!({
+                "pid": execution.pid,
+                "process_start_marker": execution.process_start_marker,
+            })
+        })
+        .collect();
     json!({
         "schema": HARNESS_INSTANCE_SCHEMA,
         "instance_ref": format!("instance:{}:{stable_hash}", observation.slug),
         "harness_ref": format!("harness/{}", observation.slug),
         "workcell_ref": workcell_ref.to_string(),
         "pids": observation.pids,
+        "executions": executions,
         "executable": {
             "path": observation.executable.display().to_string(),
             "sha256": observation.executable_sha256,
@@ -432,6 +467,25 @@ pub fn build_instance_record(
         "consecutive_misses": 0,
         "observed_at": observed_now(),
     })
+}
+
+/// The recorded process start marker for `pid` in an instance record, when
+/// the observation that wrote the record carried start evidence. `None` means
+/// the record holds no start evidence for this pid — an observation gap, not
+/// proof of continuity.
+pub fn recorded_start_marker(record: &Value, pid: u32) -> Option<String> {
+    record
+        .get("executions")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|execution| execution.get("pid").and_then(Value::as_u64) == Some(u64::from(pid)))
+        .and_then(|execution| {
+            execution
+                .get("process_start_marker")
+                .and_then(Value::as_str)
+                .filter(|marker| !marker.is_empty())
+                .map(str::to_owned)
+        })
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -642,6 +696,62 @@ pub fn validate_instance_record(record: &Value) -> Result<()> {
         }
     }
 
+    // Start evidence is recorded when the observation carried it; a record
+    // without an `executions` array is an older/declaration-shaped record,
+    // and an empty array is a disclosed evidence gap (e.g. a manual
+    // registration). When present, every execution must name a pid the
+    // record actually claims — a start marker for an unclaimed pid is a
+    // corrupt binding, never admissible evidence.
+    if let Some(executions) = record.get("executions") {
+        let executions = executions.as_array().ok_or_else(|| {
+            WorkcellError::InvalidDemand(
+                "instance record `executions` must be an array when present".into(),
+            )
+        })?;
+        let recorded_pids: BTreeSet<u64> = record
+            .get("pids")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_u64)
+            .collect();
+        let mut seen_pids = BTreeSet::new();
+        for execution in executions {
+            let object = execution.as_object().ok_or_else(|| {
+                WorkcellError::InvalidDemand("each execution must be an object".into())
+            })?;
+            let pid = object
+                .get("pid")
+                .and_then(Value::as_u64)
+                .filter(|pid| *pid > 0 && *pid <= u32::MAX as u64)
+                .ok_or_else(|| {
+                    WorkcellError::InvalidDemand(
+                        "each execution requires a positive numeric `pid`".into(),
+                    )
+                })?;
+            if object
+                .get("process_start_marker")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            {
+                return Err(WorkcellError::InvalidDemand(
+                    "each execution requires a non-empty `process_start_marker`".into(),
+                ));
+            }
+            if !recorded_pids.contains(&pid) {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "instance record `executions` names pid {pid}, which the record's \
+                     `pids` do not claim"
+                )));
+            }
+            if !seen_pids.insert(pid) {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "instance record `executions` names pid {pid} twice"
+                )));
+            }
+        }
+    }
+
     required_str(record, "observed_at")?;
     Ok(())
 }
@@ -716,6 +826,14 @@ mod tests {
                 executable_sha256: sha.to_owned(),
                 identity_material: executable.display().to_string(),
                 pids: pid.into_iter().collect(),
+                executions: pid
+                    .map(|pid| {
+                        vec![ProcessExecution {
+                            pid,
+                            process_start_marker: "Mon Jan 1 00:00:00 2001".into(),
+                        }]
+                    })
+                    .unwrap_or_default(),
                 evidence_grade: if pid.is_some() {
                     EVIDENCE_LIVE_PID.into()
                 } else {
@@ -859,5 +977,62 @@ mod tests {
         let third = identity_hash("ab", "/usr/local/bin/hermes");
         assert_eq!(first, second);
         assert_ne!(first, third);
+    }
+
+    #[test]
+    fn executions_persist_and_may_only_name_recorded_pids() {
+        let root = temp_root("executions");
+        let registry = InstanceRegistry::new(&root, WorkcellRef::new("workcell:local").unwrap());
+        let record = sample_record(&root, "hermes", "aa".repeat(32).as_str(), Some(42));
+        assert_eq!(
+            record["executions"],
+            json!([
+                {"pid": 42, "process_start_marker": "Mon Jan 1 00:00:00 2001"}
+            ])
+        );
+        registry.register(record.clone()).unwrap();
+
+        // The start evidence survives the registry roundtrip on disk.
+        let reloaded = InstanceRegistry::new(&root, WorkcellRef::new("workcell:local").unwrap());
+        let reference = record["instance_ref"].as_str().unwrap();
+        assert_eq!(
+            recorded_start_marker(&reloaded.show(reference).unwrap(), 42).as_deref(),
+            Some("Mon Jan 1 00:00:00 2001")
+        );
+        assert_eq!(
+            recorded_start_marker(&reloaded.show(reference).unwrap(), 43),
+            None
+        );
+
+        // A start marker for a pid the record does not claim is refused.
+        let mut drifted = record.clone();
+        drifted["executions"] = json!([
+            {"pid": 43, "process_start_marker": "Mon Jan 1 00:00:00 2001"}
+        ]);
+        let error = validate_instance_record(&drifted).unwrap_err().to_string();
+        assert!(error.contains("do not claim"), "{error}");
+
+        // An empty start marker is not evidence.
+        let mut blank = record;
+        blank["executions"] = json!([
+            {"pid": 42, "process_start_marker": ""}
+        ]);
+        let error = validate_instance_record(&blank).unwrap_err().to_string();
+        assert!(error.contains("process_start_marker"), "{error}");
+    }
+
+    #[test]
+    fn record_without_executions_field_is_a_disclosed_gap_not_an_error() {
+        // Older records predate start evidence; they validate, and the
+        // helper answers None — an observation gap, never a continuity claim.
+        let root = temp_root("legacy");
+        let mut record = sample_record(&root, "pi", "bb".repeat(32).as_str(), Some(5));
+        record
+            .as_object_mut()
+            .unwrap()
+            .remove("executions")
+            .unwrap();
+        validate_instance_record(&record).unwrap();
+        assert_eq!(recorded_start_marker(&record, 5), None);
     }
 }

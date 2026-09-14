@@ -177,6 +177,24 @@ bounded CPU/RSS intervals, instance/PID/start-identity checks, opaque correlatio
 and explicit unknown/unsupported metrics. No fabricated GPU/network/cost totals,
 argv or environment inventory are introduced by this work.
 
+### Per-execution process identity (start evidence)
+
+Instance records carry per-execution start evidence alongside `pids`:
+`"executions": [{"pid": <n>, "process_start_marker": "<ps lstart>"}]`. The start
+marker is the same OS evidence `resource_usage` samples, so a recycled pid is a
+**new process generation**, not a continuing one. `instances scan` records the
+marker for every observed pid, names a same-pid/different-marker event as a
+`generation_replacements` entry in the scan report, and never merges it into a
+continuity claim. `instances usage` refuses an observation whose live sample
+marker differs from the recorded one (stale binding) instead of attributing the
+sample to a replaced process. A record without start evidence (manual
+registration, older record) discloses the gap with an empty `executions` array;
+the check is skipped rather than pretended. Executable aggregation still keeps
+simultaneous executions distinct — one contract identity, one execution entry
+per observed process. Start markers are host-local scheduling facts: they
+correlate executions within one machine's observations and are never a global
+identity, a semantic session proof, or work continuity by themselves.
+
 ## Reproduction and local proving
 
 ```bash

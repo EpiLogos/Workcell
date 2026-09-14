@@ -1340,6 +1340,10 @@ fn command_instances(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
                     executable_sha256: sha256.clone(),
                     identity_material: executable.to_string_lossy().into_owned(),
                     pids,
+                    // A manual registration declares live pids without a
+                    // sampled start marker; `instances scan` records the
+                    // host's start evidence instead.
+                    executions: Vec::new(),
                     evidence_grade: evidence_grade.to_owned(),
                     seams,
                 },
