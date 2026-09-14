@@ -1,7 +1,9 @@
 use std::{env, error::Error, path::PathBuf};
 
 use epilogos_workcell_cli::DurableCollapsedLocalWorkcell;
-use epilogos_workcell_control::{ControlService, TcpControlServer};
+use epilogos_workcell_control::{
+    ConnectionGrants, ControlService, TcpControlServer, CONTROL_PROTOCOL_VERSION,
+};
 use epilogos_workcell_core::WorkcellRef;
 use epilogos_workcell_runtime::CollapsedLocalConfig;
 
@@ -56,26 +58,35 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    let mut config = CollapsedLocalConfig::new(WorkcellRef::new(workcell_ref)?, state_root)
+    let workcell_ref = WorkcellRef::new(workcell_ref.clone())?;
+    let mut config = CollapsedLocalConfig::new(workcell_ref.clone(), &state_root)
         .with_persistent_host_lifetime();
     if let Some(path) = services {
         config = config.with_service_declaration_file(path);
     }
     let declared = config.resolve_services()?.len();
     let workcell = DurableCollapsedLocalWorkcell::new(config)?;
+    // Connection grants are enforced per request against the state root's
+    // registry, so `workcell authorise`/`workcell revoke` in another
+    // process take effect at the connecting client's next use.
+    let grants = ConnectionGrants::new(&state_root, workcell_ref);
+    let active_grants = grants.active_count()?;
     let service = match authorization {
-        Some(token) => ControlService::new(workcell).with_authorization(token),
-        None => ControlService::new(workcell),
+        Some(token) => ControlService::new(workcell)
+            .with_authorization(token)
+            .with_connection_grants(grants),
+        None => ControlService::new(workcell).with_connection_grants(grants),
     };
     let mut server = TcpControlServer::bind(&listen, service)?;
     eprintln!(
         "Workcell Control Service listening on {} using {}",
         server.local_addr()?,
-        epilogos_workcell_control::CONTROL_PROTOCOL_VERSION
+        CONTROL_PROTOCOL_VERSION
     );
     eprintln!(
         "Declared logical services: {declared}. A declaration is not physical acceptance: each service is offered only when its executable or status command actually answers."
     );
+    eprintln!("Active connection grants: {active_grants}.");
     server.serve()?;
     Ok(())
 }

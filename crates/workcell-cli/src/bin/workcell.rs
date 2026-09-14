@@ -118,6 +118,17 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // The connection lifecycle commands manage THIS cell's connection state
+    // (its grants registry, its outbound connections). `connect` even takes
+    // its own `--endpoint`. They are definitionally local, so they are never
+    // routed through the `--endpoint` remote selector.
+    if matches!(
+        first_command(&original_args),
+        Some("serve" | "authorise" | "revoke" | "connect" | "connections")
+    ) {
+        return local_cli::invoke();
+    }
+
     let json_requested = original_args.iter().any(|arg| arg == "--json");
     let selection = match extract_remote_selection(&original_args) {
         Ok(selection) => selection,
@@ -132,6 +143,38 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => report_error(error, json_requested),
     }
+}
+
+/// Find the command word, skipping value-taking global flags so a flag value
+/// is never mistaken for the command.
+fn first_command(args: &[String]) -> Option<&str> {
+    const VALUE_TAKING: [&str; 7] = [
+        "--state-root",
+        "--workcell-ref",
+        "--receipt",
+        "--workspace-source",
+        "--services",
+        "--endpoint",
+        "--authorization",
+    ];
+    let mut index = 0;
+    while index < args.len() {
+        let argument = args[index].as_str();
+        if VALUE_TAKING.contains(&argument) {
+            index += 2;
+            continue;
+        }
+        if argument == "--json" {
+            index += 1;
+            continue;
+        }
+        if argument.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        return Some(argument);
+    }
+    None
 }
 
 fn extract_remote_selection(args: &[String]) -> Result<RemoteSelection, CliError> {

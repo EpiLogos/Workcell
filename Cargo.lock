@@ -101,6 +101,7 @@ version = "0.1.0"
 dependencies = [
  "epilogos-workcell-control",
  "epilogos-workcell-core",
+ "epilogos-workcell-keychain",
  "epilogos-workcell-opensandbox",
  "epilogos-workcell-runtime",
  "epilogos-workcell-wire",
@@ -116,6 +117,7 @@ dependencies = [
  "epilogos-workcell-runtime",
  "epilogos-workcell-wire",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

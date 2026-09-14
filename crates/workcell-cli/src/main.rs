@@ -6,6 +6,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use epilogos_workcell_control::{
+    check_compatibility, credential_sha256, generate_credential, grant_ref_for, software_version,
+    validate_label, ConnectionGrants, ControlClient, ControlClientError, ControlService,
+    CreateOutcome, TcpControlServer, TcpControlTransport, CONTROL_OPERATIONS,
+    CONTROL_PROTOCOL_VERSION, GRANTS_FILE,
+};
 use epilogos_workcell_core::{
     AffordanceRequirement, Availability, CollectionBundle, Degradation, DemandRef,
     DesiredMaterialState, Discovery, ExecutionDemand, ExposureBundle, ExposureRequirement,
@@ -16,8 +22,14 @@ use epilogos_workcell_core::{
     RetentionExpectation, Tiered, WorkcellControlPlane, WorkcellError, WorkcellRef,
     WorkspaceAccess, WorkspaceRequirement,
 };
+use epilogos_workcell_keychain::{
+    store_bootstrap_material, KeychainAclPolicy, KeychainSecretProvider,
+};
 use epilogos_workcell_runtime::{CollapsedLocalConfig, CollapsedLocalWorkcell};
-use epilogos_workcell_wire::{decode_world, encode_world, world_value};
+use epilogos_workcell_wire::{
+    connection_value, decode_connection, decode_world, encode_connection, encode_world,
+    world_value, ConnectionGrant, ConnectionRecord,
+};
 use serde_json::{json, Value};
 
 const DEFAULT_WORKCELL_REF: &str = "workcell:local";
@@ -88,6 +100,11 @@ fn run(args: Vec<String>) -> Result<(), WorkcellError> {
         "reconcile" => command_reconcile(&global, command_args),
         "instances" => command_instances(&global, command_args),
         "sandboxes" => command_sandboxes(&global, command_args),
+        "serve" => command_serve(&global, command_args),
+        "authorise" => command_authorise(&global, command_args),
+        "revoke" => command_revoke(&global, command_args),
+        "connect" => command_connect(&global, command_args),
+        "connections" => command_connections(&global, command_args),
         other if other.starts_with('-') => Err(WorkcellError::InvalidDemand(format!(
             "unknown option `{other}`; run `workcell help`"
         ))),
@@ -163,6 +180,8 @@ fn command_status(global: &GlobalArgs) -> Result<(), WorkcellError> {
     )?;
     let discovery = workcell.discover()?;
     let receipts = receipt_count(&global.state_root)?;
+    let connections = list_connection_records(&global.state_root)?;
+    let grants_summary = grants_status_summary(global)?;
     if global.json {
         emit_json(json!({
             "ok": true,
@@ -171,6 +190,11 @@ fn command_status(global: &GlobalArgs) -> Result<(), WorkcellError> {
             "providers": provider_count(&discovery),
             "offers": discovery.offers.len(),
             "persisted_world_receipts": receipts,
+            "connections": connections.iter().map(connection_status_json).collect::<Vec<_>>(),
+            "connection_grants": grants_summary.map(|(active, revoked)| json!({
+                "active": active,
+                "revoked": revoked,
+            })),
             "state_root": global.state_root,
         }));
     } else {
@@ -179,9 +203,47 @@ fn command_status(global: &GlobalArgs) -> Result<(), WorkcellError> {
         println!("providers: {}", provider_count(&discovery));
         println!("offers: {}", discovery.offers.len());
         println!("persisted worlds: {receipts}");
+        if connections.is_empty() {
+            println!("connections: none");
+        } else {
+            println!("connections: {}", connections.len());
+            for record in &connections {
+                println!(
+                    "  {} [{}] -> {} ({})",
+                    record.label,
+                    record.state,
+                    record.endpoint,
+                    record.remote_workcell_ref.as_deref().unwrap_or("remote identity unknown"),
+                );
+            }
+        }
+        if let Some((active, revoked)) = grants_summary {
+            println!("connection grants: {active} active, {revoked} revoked");
+        }
         println!("state root: {}", global.state_root.display());
     }
     Ok(())
+}
+
+fn connection_status_json(record: &ConnectionRecord) -> Value {
+    json!({
+        "label": record.label,
+        "state": record.state,
+        "endpoint": record.endpoint,
+        "protocol": record.protocol,
+        "remote_workcell_ref": record.remote_workcell_ref,
+    })
+}
+
+/// Active/revoked grant counts when this state root holds a grants registry.
+fn grants_status_summary(global: &GlobalArgs) -> Result<Option<(usize, usize)>, WorkcellError> {
+    let registry = ConnectionGrants::new(&global.state_root, parse_workcell_ref(&global.workcell_ref)?);
+    if !registry.path().exists() {
+        return Ok(None);
+    }
+    let grants = registry.list()?;
+    let active = grants.iter().filter(|grant| grant.is_active()).count();
+    Ok(Some((active, grants.len() - active)))
 }
 
 fn command_discover(global: &GlobalArgs) -> Result<(), WorkcellError> {
@@ -1651,6 +1713,849 @@ fn command_sandboxes(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Cross-cell connection lifecycle
+//
+// A connection is a durable, revocable, permissioned relation between two
+// cells. `serve` exposes this cell behind the connection grants registry;
+// `authorise`/`revoke` manage grants (receipted, auditable, revocation takes
+// effect at the next use); `connect` establishes the client side with an
+// explicit compatibility handshake. Capability advertisement is not
+// authorisation: discovery discloses, grants permit, and the two are
+// reported separately everywhere.
+// ---------------------------------------------------------------------------
+
+fn command_serve(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    let mut listen = "127.0.0.1:7777".to_owned();
+    let mut authorization = env::var("WORKCELL_CONTROL_TOKEN").ok();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--listen" => {
+                listen = require_value(args, index, "--listen")?.to_owned();
+                index += 2;
+            }
+            "--authorization" => {
+                authorization = Some(require_value(args, index, "--authorization")?.to_owned());
+                index += 2;
+            }
+            other => {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "unknown serve option `{other}`; expected `--listen HOST:PORT` or `--authorization TOKEN`"
+                )))
+            }
+        }
+    }
+
+    let workcell_ref = parse_workcell_ref(&global.workcell_ref)?;
+    let grants = ConnectionGrants::new(&global.state_root, workcell_ref.clone());
+    let active_grants = grants.active_count()?;
+    if !is_loopback_listener(&listen) && authorization.is_none() && active_grants == 0 {
+        return Err(WorkcellError::Unavailable(
+            "a non-loopback `workcell serve` requires an authorization token or at least one active connection grant; run `workcell authorise` first".into(),
+        ));
+    }
+
+    let mut config = with_declared_services(
+        CollapsedLocalConfig::new(workcell_ref, &global.state_root)
+            .with_persistent_host_lifetime(),
+        global,
+    );
+    if let Some(source) = &global.workspace_source {
+        config = config.with_workspace_source(source);
+    }
+    let workcell = epilogos_workcell_cli::DurableCollapsedLocalWorkcell::new(config)?;
+    let service = match authorization {
+        Some(token) => ControlService::new(workcell)
+            .with_authorization(token)
+            .with_connection_grants(grants),
+        None => ControlService::new(workcell).with_connection_grants(grants),
+    };
+    let mut server =
+        TcpControlServer::bind(&listen, service).map_err(|error| {
+            WorkcellError::OperationFailed(format!("bind serve endpoint: {error}"))
+        })?;
+    let bound = server.local_addr().map_err(|error| {
+        WorkcellError::OperationFailed(format!("read bound serve endpoint: {error}"))
+    })?;
+
+    if global.json {
+        emit_json(json!({
+            "ok": true,
+            "listening": bound.to_string(),
+            "protocol": CONTROL_PROTOCOL_VERSION,
+            "software": software_version(),
+            "active_grants": active_grants,
+        }));
+    } else {
+        println!("serving {}", bound);
+        println!("protocol: {CONTROL_PROTOCOL_VERSION}");
+        println!("software: {}", software_version());
+        println!("active connection grants: {active_grants}");
+    }
+    eprintln!(
+        "workcell serve: listening on {} ({}) — authorisation is enforced per request from the grants registry",
+        bound, CONTROL_PROTOCOL_VERSION
+    );
+    server.serve().map_err(|error| {
+        WorkcellError::OperationFailed(format!("serve connection endpoint: {error}"))
+    })
+}
+
+fn command_authorise(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    let mut client_label = None;
+    let mut operations: Vec<String> = Vec::new();
+    let mut advertise: Vec<String> = Vec::new();
+    let mut store_credential = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--client" => {
+                client_label = Some(require_value(args, index, "--client")?.to_owned());
+                index += 2;
+            }
+            "--allow" => {
+                operations.push(require_value(args, index, "--allow")?.to_owned());
+                index += 2;
+            }
+            "--advertise" => {
+                advertise.push(require_value(args, index, "--advertise")?.to_owned());
+                index += 2;
+            }
+            "--store-credential" => {
+                store_credential = true;
+                index += 1;
+            }
+            other => {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "unknown authorise option `{other}`"
+                )))
+            }
+        }
+    }
+    let label = client_label.ok_or_else(|| {
+        WorkcellError::InvalidDemand(
+            "usage: workcell authorise --client <label> --allow <operation>... [--advertise <port>...] [--store-credential]".into(),
+        )
+    })?;
+    validate_label(&label)?;
+    if operations.is_empty() {
+        return Err(WorkcellError::InvalidDemand(
+            "authorise requires at least one `--allow <operation>`; a grant must say exactly what it permits".into(),
+        ));
+    }
+    for operation in &operations {
+        if !CONTROL_OPERATIONS.contains(&operation.as_str()) {
+            return Err(WorkcellError::InvalidDemand(format!(
+                "unknown control operation `{operation}`; known operations are {}",
+                CONTROL_OPERATIONS.join(", ")
+            )));
+        }
+    }
+
+    let credential = generate_credential()?;
+    let credential_ref = if store_credential {
+        Some(store_connection_credential(&label, &credential)?)
+    } else {
+        None
+    };
+
+    let workcell_ref = parse_workcell_ref(&global.workcell_ref)?;
+    let grants = ConnectionGrants::new(&global.state_root, workcell_ref);
+    let grant = ConnectionGrant {
+        grant_ref: grant_ref_for(&label, &credential),
+        client_label: label.clone(),
+        protocol: CONTROL_PROTOCOL_VERSION.to_owned(),
+        operations: operations.clone(),
+        advertise: advertise.clone(),
+        credential_sha256: credential_sha256(&credential),
+        credential_ref: credential_ref.clone(),
+        created_at_unix_ms: now_unix_ms(),
+        state: "active".to_owned(),
+        revoked_at_unix_ms: None,
+        provenance: BTreeMap::from([("created_by".to_owned(), "workcell authorise".to_owned())]),
+    };
+    let grant_ref = grant.grant_ref.clone();
+    match grants.create(grant)? {
+        CreateOutcome::Registered => {}
+        CreateOutcome::Conflict { existing } => {
+            return Err(WorkcellError::InvalidDemand(format!(
+                "an active grant `{}` already holds this credential for client `{}`; revoke it first with `workcell revoke --grant {}`",
+                existing.grant_ref, existing.client_label, existing.grant_ref
+            )));
+        }
+    }
+
+    if global.json {
+        emit_json(json!({
+            "ok": true,
+            "grant_ref": grant_ref,
+            "client": label,
+            "operations": operations,
+            "advertise": advertise,
+            "credential": credential,
+            "credential_ref": credential_ref,
+            "note": "the credential is shown once and stored nowhere; only its SHA-256 is kept",
+        }));
+    } else {
+        println!("granted {grant_ref} to client `{label}`");
+        println!("operations: {}", operations.join(", "));
+        if !advertise.is_empty() {
+            println!("advertised ports: {}", advertise.join(", "));
+        }
+        println!("credential: {credential}");
+        println!(
+            "store this credential now; it is not shown again and only its SHA-256 is kept{}",
+            match &credential_ref {
+                Some(reference) => format!(" (a copy is in {reference})"),
+                None => String::new(),
+            }
+        );
+    }
+    Ok(())
+}
+
+fn command_revoke(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    let mut client = None;
+    let mut grant_ref = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--client" => {
+                client = Some(require_value(args, index, "--client")?.to_owned());
+                index += 2;
+            }
+            "--grant" => {
+                grant_ref = Some(require_value(args, index, "--grant")?.to_owned());
+                index += 2;
+            }
+            other => {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "unknown revoke option `{other}`"
+                )))
+            }
+        }
+    }
+    let target = match (client, grant_ref) {
+        (Some(client), None) => client,
+        (None, Some(grant_ref)) => grant_ref,
+        _ => {
+            return Err(WorkcellError::InvalidDemand(
+                "usage: workcell revoke --client <label> | --grant <ref> (exactly one)".into(),
+            ))
+        }
+    };
+    let workcell_ref = parse_workcell_ref(&global.workcell_ref)?;
+    let grants = ConnectionGrants::new(&global.state_root, workcell_ref);
+    let revoked = grants.revoke(&target)?;
+    if global.json {
+        emit_json(json!({
+            "ok": true,
+            "revoked": revoked.iter().map(|grant| json!({
+                "grant_ref": grant.grant_ref,
+                "client": grant.client_label,
+            })).collect::<Vec<_>>(),
+        }));
+    } else {
+        for grant in &revoked {
+            println!(
+                "revoked {} (client `{}`); the grant record is kept as audit evidence",
+                grant.grant_ref, grant.client_label
+            );
+        }
+    }
+    Ok(())
+}
+
+fn command_connect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    let mut endpoint = None;
+    let mut label = None;
+    let mut authorization = None;
+    let mut store_credential = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--endpoint" => {
+                endpoint = Some(require_value(args, index, "--endpoint")?.to_owned());
+                index += 2;
+            }
+            "--connection" => {
+                label = Some(require_value(args, index, "--connection")?.to_owned());
+                index += 2;
+            }
+            "--authorization" => {
+                authorization = Some(require_value(args, index, "--authorization")?.to_owned());
+                index += 2;
+            }
+            "--store-credential" => {
+                store_credential = true;
+                index += 1;
+            }
+            other => {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "unknown connect option `{other}`"
+                )))
+            }
+        }
+    }
+    let endpoint = endpoint.ok_or_else(|| {
+        WorkcellError::InvalidDemand(
+            "usage: workcell connect --endpoint HOST:PORT [--connection <label>] [--authorization TOKEN] [--store-credential]".into(),
+        )
+    })?;
+    let label = label.unwrap_or_else(|| safe_filename(&endpoint));
+    validate_label(&label)?;
+    let existing = load_connection_record(&global.state_root, &label)?;
+    let credential = resolve_connection_credential(
+        authorization.as_deref(),
+        existing
+            .as_ref()
+            .and_then(|record| record.credential_ref.as_deref()),
+    )?;
+
+    let mut client = ControlClient::new(TcpControlTransport::new(endpoint.clone()));
+    if let Some(token) = &credential {
+        client = client.with_authorization(token);
+    }
+
+    // 1. Handshake. A refused or unreachable handshake still updates the
+    //    local record honestly before the loud refusal is returned.
+    let handshake = match client.handshake(&label) {
+        Ok(value) => value,
+        Err(ControlClientError::ProtocolIncompatible(message)) => {
+            store_connection_record(
+                &global.state_root,
+                reconciled_record(&existing, |record| {
+                    record.label = label.clone();
+                    record.endpoint = endpoint.clone();
+                    record.state = "incompatible".to_owned();
+                    record.detail = Some(message.clone());
+                }),
+                &label,
+            )?;
+            return Err(WorkcellError::Unsupported(message));
+        }
+        Err(ControlClientError::TransportUnavailable(message)) => {
+            store_connection_record(
+                &global.state_root,
+                reconciled_record(&existing, |record| {
+                    record.label = label.clone();
+                    record.endpoint = endpoint.clone();
+                    record.state = "disconnected".to_owned();
+                    record.detail = Some(format!("endpoint unreachable: {message}"));
+                }),
+                &label,
+            )?;
+            return Err(WorkcellError::Unavailable(format!(
+                "connect `{label}`: endpoint {endpoint} is unreachable: {message}"
+            )));
+        }
+        Err(other) => return Err(*control_client_error(other)),
+    };
+
+    // 2. Compatibility. The protocol version is the contract; software
+    //    revisions are reported, never refused on and never updated.
+    let protocol = handshake["protocol"].as_str().unwrap_or("unknown").to_owned();
+    let remote_software = handshake["software"].as_str().map(str::to_owned);
+    let compatibility = match check_compatibility(
+        &protocol,
+        remote_software.as_deref().unwrap_or("unknown"),
+    ) {
+        Ok(report) => report,
+        Err(error) => {
+            store_connection_record(
+                &global.state_root,
+                reconciled_record(&existing, |record| {
+                    record.label = label.clone();
+                    record.endpoint = endpoint.clone();
+                    record.protocol = protocol.clone();
+                    record.remote_software = remote_software.clone();
+                    record.state = "incompatible".to_owned();
+                    record.detail = Some(error.to_string());
+                }),
+                &label,
+            )?;
+            return Err(error);
+        }
+    };
+
+    let authorised = handshake["authorised"].as_bool().unwrap_or(false);
+    if !authorised {
+        let reason = handshake["reason"]
+            .as_str()
+            .unwrap_or("the remote cell did not authorise this connection")
+            .to_owned();
+        store_connection_record(
+            &global.state_root,
+            reconciled_record(&existing, |record| {
+                record.label = label.clone();
+                record.endpoint = endpoint.clone();
+                record.protocol = protocol.clone();
+                record.remote_software = remote_software.clone();
+                record.state = "refused".to_owned();
+                record.detail = Some(reason.clone());
+                record.granted_operations = Vec::new();
+            }),
+            &label,
+        )?;
+        return Err(WorkcellError::Unavailable(format!(
+            "connection refused by the remote cell: {reason}"
+        )));
+    }
+
+    // 3. Granted scope. A null grant means the cell granted full access
+    //    through its operator token; otherwise the grant names the truth.
+    let grant_payload = handshake.get("grant").filter(|value| !value.is_null());
+    let granted_operations: Vec<String> = grant_payload
+        .and_then(|grant| grant["operations"].as_array())
+        .map(|operations| {
+            operations
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_else(|| CONTROL_OPERATIONS.iter().map(|value| value.to_string()).collect());
+
+    // 4. Probes under the grant: identity and, when discovery is granted,
+    //    what the cell advertises to this connection specifically.
+    let status = client
+        .status()
+        .map_err(|error| *control_client_error(error))?;
+    let remote_workcell_ref = status["workcell_ref"]
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| handshake["workcell_ref"].as_str().map(str::to_owned));
+    let discovery = if granted_operations.iter().any(|operation| operation == "discover") {
+        Some(
+            client
+                .discover()
+                .map_err(|error| *control_client_error(error))?,
+        )
+    } else {
+        None
+    };
+    let advertised_ports: Vec<String> = discovery
+        .as_ref()
+        .and_then(|value| value["offers"].as_array())
+        .map(|offers| {
+            offers
+                .iter()
+                .filter_map(|offer| offer["port"].as_str())
+                .map(str::to_owned)
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let advertised_offers = discovery
+        .as_ref()
+        .and_then(|value| value["offers"].as_array())
+        .map(Vec::len)
+        .unwrap_or(0);
+
+    // 5. Optional keychain storage of the credential material.
+    let mut credential_ref =
+        existing.as_ref().and_then(|record| record.credential_ref.clone());
+    if store_credential {
+        let credential = credential.as_deref().ok_or_else(|| {
+            WorkcellError::InvalidDemand(
+                "--store-credential requires a credential (pass --authorization or set WORKCELL_CONTROL_TOKEN)".into(),
+            )
+        })?;
+        credential_ref = Some(store_connection_credential(&label, credential)?);
+    }
+
+    // 6. Reconciliation notes: what changed since the last connection.
+    //    Reconnecting reports; it never overwrites source or software.
+    let mut notes = compatibility.notes.clone();
+    if let Some(previous) = &existing {
+        if let Some(previous_ref) = &previous.remote_workcell_ref {
+            if Some(previous_ref.as_str()) != remote_workcell_ref.as_deref() {
+                notes.push(format!(
+                    "the endpoint now identifies as `{}`, previously `{previous_ref}`",
+                    remote_workcell_ref.as_deref().unwrap_or("unknown"),
+                ));
+            }
+        }
+        if let Some(previous_software) = &previous.remote_software {
+            if Some(previous_software.as_str()) != remote_software.as_deref() {
+                notes.push(format!(
+                    "remote software changed since the last connection: `{previous_software}` -> `{}`; reported only, nothing was updated",
+                    remote_software.as_deref().unwrap_or("unknown"),
+                ));
+            }
+        }
+    }
+
+    // 7. Durable client-side receipt.
+    let now = now_unix_ms();
+    let record = ConnectionRecord {
+        connection_ref: format!("connection:{label}"),
+        label: label.clone(),
+        endpoint: endpoint.clone(),
+        protocol,
+        remote_workcell_ref: remote_workcell_ref.clone(),
+        remote_software: remote_software.clone(),
+        local_software: software_version(),
+        granted_operations: granted_operations.clone(),
+        credential_ref: credential_ref.clone(),
+        state: "connected".to_owned(),
+        detail: if notes.is_empty() {
+            None
+        } else {
+            Some(notes.join("; "))
+        },
+        connected_at_unix_ms: existing
+            .as_ref()
+            .and_then(|record| record.connected_at_unix_ms)
+            .or(Some(now)),
+        last_reconciled_at_unix_ms: now,
+        provenance: existing
+            .as_ref()
+            .map(|record| record.provenance.clone())
+            .unwrap_or_else(|| {
+                BTreeMap::from([("created_by".to_owned(), "workcell connect".to_owned())])
+            }),
+    };
+    store_connection_record(&global.state_root, record, &label)?;
+
+    // 8. Report.
+    if global.json {
+        emit_json(json!({
+            "ok": true,
+            "connection": {
+                "label": label,
+                "endpoint": endpoint,
+                "state": "connected",
+                "protocol": compatibility.server_protocol,
+                "remote_workcell_ref": remote_workcell_ref,
+                "granted_operations": granted_operations,
+                "advertised_ports": advertised_ports,
+                "advertised_offers": advertised_offers,
+                "credential_ref": credential_ref,
+            },
+            "compatibility": {
+                "client_protocol": compatibility.client_protocol,
+                "server_protocol": compatibility.server_protocol,
+                "client_software": compatibility.client_software,
+                "server_software": compatibility.server_software,
+            },
+            "notes": notes,
+        }));
+    } else {
+        println!(
+            "{} `{label}` -> {endpoint}",
+            if existing.is_some() { "reconnected" } else { "connected" },
+        );
+        println!(
+            "compatibility: protocol {} on both cells",
+            compatibility.server_protocol
+        );
+        println!(
+            "software: local `{}` / remote `{}`",
+            compatibility.client_software, compatibility.server_software
+        );
+        if let Some(workcell_ref) = &remote_workcell_ref {
+            println!("remote workcell: {workcell_ref}");
+        }
+        println!("granted operations: {}", granted_operations.join(", "));
+        if granted_operations.iter().any(|operation| operation == "discover") {
+            println!(
+                "advertised capabilities: {advertised_offers} offer(s) across ports: {}",
+                if advertised_ports.is_empty() {
+                    "none".to_owned()
+                } else {
+                    advertised_ports.join(", ")
+                }
+            );
+        } else {
+            println!("advertised capabilities: discovery is not granted by this connection");
+        }
+        println!(
+            "execution location: operations through this connection run on {} at {endpoint}, not on this machine",
+            remote_workcell_ref.as_deref().unwrap_or("the remote cell"),
+        );
+        for note in &notes {
+            println!("note: {note}");
+        }
+    }
+    Ok(())
+}
+
+fn command_connections(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    let Some(subcommand) = args.first().map(String::as_str) else {
+        return Err(WorkcellError::InvalidDemand(
+            "usage: workcell connections <list|show|disconnect> [label]".into(),
+        ));
+    };
+    match subcommand {
+        "list" => {
+            let records = list_connection_records(&global.state_root)?;
+            if global.json {
+                emit_json(json!({
+                    "ok": true,
+                    "connections": records.iter().map(connection_status_json).collect::<Vec<_>>(),
+                }));
+            } else {
+                if records.is_empty() {
+                    println!("no cross-cell connections recorded");
+                }
+                for record in &records {
+                    println!(
+                        "{} [{}] -> {} ({})",
+                        record.label,
+                        record.state,
+                        record.endpoint,
+                        record.remote_workcell_ref.as_deref().unwrap_or("remote identity unknown"),
+                    );
+                }
+            }
+            Ok(())
+        }
+        "show" => {
+            let Some(label) = args.get(1) else {
+                return Err(WorkcellError::InvalidDemand(
+                    "usage: workcell connections show <label>".into(),
+                ));
+            };
+            let record = load_connection_record(&global.state_root, label)?.ok_or_else(|| {
+                WorkcellError::NotFound(format!("no connection record named `{label}`"))
+            })?;
+            if global.json {
+                emit_json(json!({ "ok": true, "connection": connection_value(&record)? }));
+            } else {
+                println!("{}", encode_connection(&record)?);
+            }
+            Ok(())
+        }
+        "disconnect" => {
+            let Some(label) = args.get(1) else {
+                return Err(WorkcellError::InvalidDemand(
+                    "usage: workcell connections disconnect <label>".into(),
+                ));
+            };
+            let existing = load_connection_record(&global.state_root, label)?.ok_or_else(|| {
+                WorkcellError::NotFound(format!("no connection record named `{label}`"))
+            })?;
+            if existing.state != "connected" {
+                if global.json {
+                    emit_json(json!({
+                        "ok": true,
+                        "label": label,
+                        "state": existing.state,
+                        "changed": false,
+                    }));
+                } else {
+                    println!("`{label}` is `{}`, not connected", existing.state);
+                }
+                return Ok(());
+            }
+            let record = reconciled_record(&Some(existing), |record| {
+                record.state = "disconnected".to_owned();
+                record.detail = Some("disconnected by operator".to_owned());
+                record.last_reconciled_at_unix_ms = now_unix_ms();
+            });
+            store_connection_record(&global.state_root, record, label)?;
+            if global.json {
+                emit_json(json!({ "ok": true, "label": label, "state": "disconnected", "changed": true }));
+            } else {
+                println!("disconnected `{label}`; the connection record is kept");
+            }
+            Ok(())
+        }
+        other => Err(WorkcellError::InvalidDemand(format!(
+            "unknown connections subcommand `{other}`; expected list|show|disconnect"
+        ))),
+    }
+}
+
+/// Apply reconciliation changes to an existing record, or start a fresh one
+/// when no record exists yet.
+fn reconciled_record(
+    existing: &Option<ConnectionRecord>,
+    apply: impl FnOnce(&mut ConnectionRecord),
+) -> ConnectionRecord {
+    let mut record = existing
+        .clone()
+        .unwrap_or_else(|| ConnectionRecord {
+            connection_ref: String::new(),
+            label: String::new(),
+            endpoint: String::new(),
+            protocol: CONTROL_PROTOCOL_VERSION.to_owned(),
+            remote_workcell_ref: None,
+            remote_software: None,
+            local_software: software_version(),
+            granted_operations: Vec::new(),
+            credential_ref: None,
+            state: "disconnected".to_owned(),
+            detail: None,
+            connected_at_unix_ms: None,
+            last_reconciled_at_unix_ms: now_unix_ms(),
+            provenance: BTreeMap::from([(
+                "created_by".to_owned(),
+                "workcell connect".to_owned(),
+            )]),
+        });
+    apply(&mut record);
+    record.connection_ref = format!("connection:{}", record.label);
+    record.local_software = software_version();
+    record.last_reconciled_at_unix_ms = now_unix_ms();
+    record
+}
+
+fn connection_record_path(state_root: &Path, label: &str) -> PathBuf {
+    state_root.join("connections").join(format!("{label}.json"))
+}
+
+fn load_connection_record(
+    state_root: &Path,
+    label: &str,
+) -> Result<Option<ConnectionRecord>, WorkcellError> {
+    let path = connection_record_path(state_root, label);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let encoded = fs::read_to_string(&path).map_err(|error| {
+        WorkcellError::NotFound(format!(
+            "read connection record `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    decode_connection(&encoded)
+        .map(Some)
+        .map_err(|error| WorkcellError::OperationFailed(format!(
+            "connection record `{}` is invalid: {error}",
+            path.display()
+        )))
+}
+
+fn store_connection_record(
+    state_root: &Path,
+    record: ConnectionRecord,
+    label: &str,
+) -> Result<(), WorkcellError> {
+    let path = connection_record_path(state_root, label);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            WorkcellError::OperationFailed(format!(
+                "create connections directory `{}`: {error}",
+                parent.display()
+            ))
+        })?;
+    }
+    fs::write(&path, encode_connection(&record)?).map_err(|error| {
+        WorkcellError::OperationFailed(format!(
+            "write connection record `{}`: {error}",
+            path.display()
+        ))
+    })
+}
+
+fn list_connection_records(state_root: &Path) -> Result<Vec<ConnectionRecord>, WorkcellError> {
+    let directory = state_root.join("connections");
+    if !directory.exists() {
+        return Ok(Vec::new());
+    }
+    let mut records = Vec::new();
+    let entries = fs::read_dir(&directory).map_err(|error| {
+        WorkcellError::OperationFailed(format!("read connections directory: {error}"))
+    })?;
+    for entry in entries {
+        let path = entry
+            .map_err(|error| {
+                WorkcellError::OperationFailed(format!("read connections entry: {error}"))
+            })?
+            .path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        if path.file_name().and_then(|value| value.to_str()) == Some(GRANTS_FILE) {
+            continue;
+        }
+        let encoded = fs::read_to_string(&path).map_err(|error| {
+            WorkcellError::OperationFailed(format!(
+                "read connection record `{}`: {error}",
+                path.display()
+            ))
+        })?;
+        let record = decode_connection(&encoded).map_err(|error| {
+            WorkcellError::OperationFailed(format!(
+                "connection record `{}` is invalid: {error}",
+                path.display()
+            ))
+        })?;
+        records.push(record);
+    }
+    records.sort_by(|left, right| left.label.cmp(&right.label));
+    Ok(records)
+}
+
+/// Credential resolution order for `connect`: explicit `--authorization`
+/// wins, then the environment, then the keychain location recorded on the
+/// connection receipt. Only locations are recorded, never material.
+fn resolve_connection_credential(
+    explicit: Option<&str>,
+    record_credential_ref: Option<&str>,
+) -> Result<Option<String>, WorkcellError> {
+    if let Some(value) = explicit.filter(|value| !value.is_empty()) {
+        return Ok(Some(value.to_owned()));
+    }
+    if let Ok(value) = env::var("WORKCELL_CONTROL_TOKEN") {
+        if !value.is_empty() {
+            return Ok(Some(value));
+        }
+    }
+    if let Some(reference) = record_credential_ref {
+        use epilogos_workcell_core::SecretProvider;
+        let provider = KeychainSecretProvider::new(KeychainAclPolicy::ThisDeviceUnlocked)?;
+        let material = provider.resolve(&ExternalRef::new(reference).map_err(WorkcellError::from)?)?;
+        return Ok(Some(material.value.expose_for_materialisation().to_owned()));
+    }
+    Ok(None)
+}
+
+/// Keep the credential material in the keychain under a stable
+/// `keychain://workcell-connection/<label>` location.
+fn store_connection_credential(label: &str, credential: &str) -> Result<String, WorkcellError> {
+    let reference = format!("keychain://workcell-connection/{label}");
+    let external = ExternalRef::new(&reference).map_err(WorkcellError::from)?;
+    let provider = KeychainSecretProvider::new(KeychainAclPolicy::ThisDeviceUnlocked)?;
+    store_bootstrap_material(&provider, &external, credential.as_bytes())?;
+    Ok(reference)
+}
+
+fn control_client_error(error: ControlClientError) -> Box<WorkcellError> {
+    match error {
+        ControlClientError::TransportUnavailable(message) => {
+            Box::new(WorkcellError::Unavailable(message))
+        }
+        ControlClientError::ProtocolIncompatible(message) => {
+            Box::new(WorkcellError::Unsupported(message))
+        }
+        ControlClientError::AuthenticationFailed(message) => {
+            Box::new(WorkcellError::Unavailable(message))
+        }
+        ControlClientError::Remote(error) => Box::new(error),
+        ControlClientError::InvalidResponse(message) => {
+            Box::new(WorkcellError::OperationFailed(message))
+        }
+    }
+}
+
+fn is_loopback_listener(address: &str) -> bool {
+    address.starts_with("127.")
+        || address.starts_with("localhost:")
+        || address.starts_with("[::1]:")
+}
+
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 fn write_receipt(
     path: &Path,
     world: &epilogos_workcell_core::MaterialisedExecutionWorld,
@@ -1936,7 +2841,8 @@ fn print_help() {
         "Workcell — provider-neutral material execution control\n\n\
 Usage:\n  workcell [global options] <command> [command options]\n\n\
 Commands:\n  status       Summarise this local Workcell\n  discover     Discover material offers\n  plan         Plan an ExecutionDemand\n  prepare      Prepare a material world and persist a receipt\n  observe      Observe a prepared world from its receipt\n  expose       Resolve prepared exposure surfaces\n  collect      Collect prepared output channels\n  release      Release or preserve a prepared world\n  reconcile    Reconcile desired material state\n  instances    Live harness instances and bounded resource usage
-  sandboxes    OpenSandbox server-side material (reconcile)\n  providers    List provider inventory\n  doctor       Verify the zero-setup local baseline\n\n\
+  sandboxes    OpenSandbox server-side material (reconcile)\n  connections  Cross-cell connection records (list/show/disconnect)\n  providers    List provider inventory\n  doctor       Verify the zero-setup local baseline\n\n\
+Cross-cell connection lifecycle:\n  workcell serve --listen HOST:PORT [--authorization TOKEN]\n      Serve this cell's control plane; grants are enforced per request.\n      Non-loopback listeners require a token or at least one active grant.\n  workcell authorise --client <label> --allow <operation>... [--advertise <port>...] [--store-credential]\n      Grant a connecting client named operations; the credential is shown once.\n  workcell revoke --client <label> | --grant <ref>\n      Revoke grants; takes effect at the connecting client's next use.\n  workcell connect --endpoint HOST:PORT [--connection <label>] [--authorization TOKEN] [--store-credential]\n      Establish or reconnect the client side; reports both cells' protocol\n      and software, refuses unsupported combinations loudly.\n\n\
 Global options:\n  --json                     Structured machine/agent output\n  --state-root PATH          Local Workcell state (default: $WORKCELL_HOME or ~/.workcell)\n  --workcell-ref REF         Workcell identity for new local operations\n  --receipt PATH             Material-world receipt for prepare/resume\n  --workspace-source PATH    Physical local source binding; never semantic identity\n  --services PATH            Operator-declared logical services (default: <state-root>/services.json)\n\n\
 Demand options for plan/prepare:\n  --demand-ref REF\n  --require VALUE | --prefer VALUE | --optional VALUE\n  --workspace writable|read-only [--workspace-ref REF] [--revision REV]\n  --project-runtime MODE\n  --connect VALUE | --prefer-connect VALUE | --optional-connect VALUE\n  --expose VALUE | --prefer-expose VALUE | --optional-expose VALUE\n  --output VALUE | --prefer-output VALUE | --optional-output VALUE\n  --resource key[=amount[:unit]]\n  --subject role=opaque-ref\n  --persistence SCOPE\n  --isolation VALUE\n  --retention release|preserve|suspend-if-supported|snapshot-if-supported\n  --extension key=value\n\n\
 Reconcile:\n  workcell --receipt WORLD.json reconcile --desired logical-ref=state"
