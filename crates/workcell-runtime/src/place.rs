@@ -363,6 +363,18 @@ fn herdr_server_reachable() -> bool {
         .unwrap_or(false)
 }
 
+/// Whether a failed `tmux has-session` stderr means the name is free.
+/// Server-down and session-absent both mean free: tmux words the cold case
+/// differently by version — "no server running on …" (older) or "error
+/// connecting to … (No such file or directory)" (3.6+/3.7+, observed on a
+/// rebooted host). Anything else is a provider error, never silently free.
+fn tmux_name_is_free(has_stderr: &str) -> bool {
+    has_stderr.contains("no server running")
+        || has_stderr.contains("can't find session")
+        || (has_stderr.contains("error connecting to")
+            && has_stderr.contains("No such file or directory"))
+}
+
 /// tmux request: refuse an existing session by name (`already-exists`), then
 /// exactly one detached `new-session`, then read-only observation of the
 /// created pane.
@@ -375,8 +387,12 @@ pub fn request_tmux_place(name: &str) -> Result<PlaceGrant, PlaceRefusal> {
     })?;
 
     // has-session is read-only. Exit 0 = the name is taken (refuse, never
-    // adopt). "no server running" / "can't find session" both mean the name
-    // is free. Any other failure is named and stops the request.
+    // adopt). Server-down and session-absent both mean the name is free:
+    // tmux words the cold case differently by version — "no server running
+    // on …" (older) or "error connecting to … (No such file or directory)"
+    // (3.6+/3.7+, observed on a rebooted host). `new-session -d` below then
+    // starts the server as tmux itself defines cold bootstrap. Any other
+    // failure is named and stops the request.
     let has = Command::new("tmux")
         .args(["has-session", "-t", name])
         .stdin(Stdio::null())
@@ -402,8 +418,7 @@ pub fn request_tmux_place(name: &str) -> Result<PlaceGrant, PlaceRefusal> {
             }),
         });
     }
-    let name_free =
-        has_stderr.contains("no server running") || has_stderr.contains("can't find session");
+    let name_free = tmux_name_is_free(&has_stderr);
     if !name_free {
         return Err(PlaceRefusal {
             kind: REFUSAL_PROVIDER_ERROR,
@@ -1199,6 +1214,29 @@ mod tests {
     #[test]
     fn schema_is_the_published_contract() {
         assert_eq!(PLACE_GRANT_VERSION, "workcell.place-grant/v1");
+    }
+
+    #[test]
+    fn a_cold_tmux_server_means_the_name_is_free_not_a_provider_error() {
+        // Found live on the rebooted Omarchy host (tmux 3.7c) during the
+        // commissioned TM02-R re-test: `place request` on a machine whose
+        // tmux server is down used to refuse with provider-error instead of
+        // creating the session (and starting the server, as tmux defines
+        // cold bootstrap).
+        let cold_omarchy = "error connecting to /tmp/tmux-1000/default (No such file or directory)";
+        assert!(tmux_name_is_free(cold_omarchy));
+        // Older tmux wording for the same cold fact.
+        assert!(tmux_name_is_free(
+            "no server running on /tmp/tmux-1000/default"
+        ));
+        // Session-absent with a live server.
+        assert!(tmux_name_is_free("can't find session: agent-1"));
+        // A genuinely unexpected failure must never read as "free".
+        assert!(!tmux_name_is_free("protocol version mismatch"));
+        assert!(!tmux_name_is_free(
+            "error connecting to /tmp/tmux-1000/default: permission denied"
+        ));
+        assert!(!tmux_name_is_free(""));
     }
 
     #[test]
