@@ -97,6 +97,18 @@ scopes the grant to one process generation.
   refusal is a typed document (`already-exists`, `stale-binding`,
   `no-provider`, `provider-cannot-create`, `place-mismatch`, …) with
   evidence, because error paths must explain.
+- A tmux server that is merely **not yet running** is a cold bootstrap, not
+  an error: the name-free probe accepts both of tmux's wordings for the
+  cold case (`no server running on …` on older releases; `error connecting
+  to … (No such file or directory)` on 3.6+ — found live on a rebooted
+  host during the commissioned TM02-R re-test), and `new-session -d` then
+  starts the server as tmux itself defines cold bootstrap. A genuinely
+  unexpected tmux failure still stops the request as `provider-error`.
+  Open policy question, recorded deliberately: the herdr leg answers
+  `no-provider` when its server is down — request never auto-starts a
+  provider service. Whether a place *request* may start a found provider
+  (as tmux's own CLI effectively does) is an owner decision, not something
+  this release decides silently.
 - If a place of that name already exists, the request is **refused** with
   `already-exists` evidence. Adopting an existing place is a separate,
   explicit operation, never a silent side effect of asking for a new one —
