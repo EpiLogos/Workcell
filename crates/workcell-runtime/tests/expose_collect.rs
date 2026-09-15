@@ -16,12 +16,19 @@ use epilogos_workcell_core::{
 use epilogos_workcell_runtime::{ReferenceProjectRuntimeProvider, RuntimeMode};
 
 fn temp_path(label: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Timestamps alone can collide when parallel test threads in this
+    // process read the clock together; a monotonic counter keeps each
+    // caller's temp root distinct so one test's cleanup can never remove
+    // another test's artifact channel.
+    static UNIQUE: AtomicU64 = AtomicU64::new(0);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
+    let unique = UNIQUE.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "epilogos-workcell-{label}-{}-{nonce}",
+        "epilogos-workcell-{label}-{}-{nonce}-{unique}",
         std::process::id()
     ))
 }

@@ -23,6 +23,7 @@ path = "src/bin/workcell-control-client.rs"
 [dependencies]
 epilogos-workcell-control = { path = "../workcell-control" }
 epilogos-workcell-core = { path = "../workcell-core" }
+epilogos-workcell-keychain = { path = "../workcell-keychain" }
 epilogos-workcell-opensandbox = { path = "../workcell-opensandbox" }
 epilogos-workcell-runtime = { path = "../workcell-runtime" }
 epilogos-workcell-wire = { path = "../workcell-wire" }

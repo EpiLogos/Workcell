@@ -359,3 +359,22 @@ fn material_reading_composes_receipt_observation_and_exposure_without_rebinding(
 
     let _ = fs::remove_dir_all(state);
 }
+
+#[test]
+fn unknown_flags_are_named_as_options_not_commands() {
+    let flag = run(&["--bogus-flag"]);
+    assert!(!flag.status.success());
+    let stderr = String::from_utf8(flag.stderr).unwrap();
+    assert!(
+        stderr.contains("unknown option `--bogus-flag`"),
+        "a leading-dash token is an option, not a command: {stderr}"
+    );
+
+    let command = run(&["bogus-command"]);
+    assert!(!command.status.success());
+    let stderr = String::from_utf8(command.stderr).unwrap();
+    assert!(
+        stderr.contains("unknown command `bogus-command`"),
+        "a bare token stays a command: {stderr}"
+    );
+}

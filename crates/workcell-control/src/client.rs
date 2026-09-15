@@ -152,6 +152,24 @@ where
         self.invoke("status", Value::Null)
     }
 
+    /// The cross-cell compatibility disclosure. Discloses this client's
+    /// protocol and software to the remote cell and carries back the
+    /// remote's, plus whether the presented credential is authorised. No
+    /// capability and no workcell identity are disclosed to a refused
+    /// client.
+    pub fn handshake(&mut self, client_label: &str) -> Result<Value, ControlClientError> {
+        self.invoke(
+            crate::CONNECTION_HANDSHAKE_OPERATION,
+            json!({
+                "connection": {
+                    "label": client_label,
+                    "protocol": self.protocol_version,
+                    "software": crate::software_version(),
+                }
+            }),
+        )
+    }
+
     pub fn discover(&mut self) -> Result<Value, ControlClientError> {
         self.invoke("discover", Value::Null)
     }
