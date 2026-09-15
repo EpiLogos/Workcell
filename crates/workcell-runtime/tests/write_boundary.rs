@@ -6,13 +6,20 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 fn root() -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Timestamps alone can collide when parallel test threads in this
+    // process read the clock together; a monotonic counter keeps each
+    // caller's temp root distinct (the same discipline expose_collect uses).
+    static UNIQUE: AtomicU64 = AtomicU64::new(0);
+    let unique = UNIQUE.fetch_add(1, Ordering::Relaxed);
     let p = std::env::temp_dir().join(format!(
-        "workcell-boundary-{}-{}",
+        "workcell-boundary-{}-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        unique
     ));
     fs::create_dir(&p).unwrap();
     p
