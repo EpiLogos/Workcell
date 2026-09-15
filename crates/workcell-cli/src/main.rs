@@ -1594,11 +1594,12 @@ fn command_place_request(_global: &GlobalArgs, args: &[String]) -> Result<(), Wo
 
     match epilogos_workcell_runtime::request_place_live(policy, name) {
         Ok(grant) => {
-            emit_json(json!({
-                "ok": true,
-                "requested": true,
-                "grant": grant.to_json(),
-            }));
+            // Success stdout is exactly the published grant document — the
+            // contract artifact itself, flat and self-describing — so a
+            // consumer can pin and parse `workcell.place-grant/v1` without
+            // unwrapping a command envelope. Refusals keep the typed refusal
+            // document on stdout with a non-zero exit.
+            emit_json(grant.to_json());
             Ok(())
         }
         Err(refusal) => {

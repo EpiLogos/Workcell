@@ -73,13 +73,17 @@ pub struct PlaceGrant {
     pub pane_pid: u32,
     pub process_start_marker: String,
     pub created_utc: String,
-    pub grant_version: &'static str,
+    pub schema: &'static str,
 }
 
 impl PlaceGrant {
+    /// The grant document is the contract itself: a flat, self-describing
+    /// `workcell.place-grant/v1` payload, published verbatim on stdout.
+    /// `workspace_id` is omitted when absent so consumers with closed-world
+    /// parsers are not handed null padding for another provider's field.
     pub fn to_json(&self) -> Value {
-        json!({
-            "grant_version": self.grant_version,
+        let mut value = json!({
+            "schema": self.schema,
             "place_ref": self.place_ref,
             "provider": self.provider,
             "session_name": self.session_name,
@@ -88,19 +92,26 @@ impl PlaceGrant {
             "pane_pid": self.pane_pid,
             "process_start_marker": self.process_start_marker,
             "created_utc": self.created_utc,
-        })
+        });
+        if self.workspace_id.is_none() {
+            value
+                .as_object_mut()
+                .expect("grant document is an object")
+                .remove("workspace_id");
+        }
+        value
     }
 
     pub fn from_json(value: &Value) -> Result<Self, WorkcellError> {
-        let grant_version = value
-            .get("grant_version")
+        let schema = value
+            .get("schema")
             .and_then(Value::as_str)
             .ok_or_else(|| {
-                WorkcellError::InvalidDemand("place grant requires a string `grant_version`".into())
+                WorkcellError::InvalidDemand("place grant requires a string `schema`".into())
             })?;
-        if grant_version != PLACE_GRANT_VERSION {
+        if schema != PLACE_GRANT_VERSION {
             return Err(WorkcellError::InvalidDemand(format!(
-                "place grant version `{grant_version}` must be `{PLACE_GRANT_VERSION}`"
+                "place grant version `{schema}` must be `{PLACE_GRANT_VERSION}`"
             )));
         }
         let place_ref = required_str(value, "place_ref")?;
@@ -137,7 +148,7 @@ impl PlaceGrant {
                 })?,
             process_start_marker: required_str(value, "process_start_marker")?,
             created_utc: required_str(value, "created_utc")?,
-            grant_version: PLACE_GRANT_VERSION,
+            schema: PLACE_GRANT_VERSION,
         })
     }
 }
@@ -484,7 +495,7 @@ pub fn request_tmux_place(name: &str) -> Result<PlaceGrant, PlaceRefusal> {
         pane_pid,
         process_start_marker: start_marker,
         created_utc: utc_now_rfc3339(),
-        grant_version: PLACE_GRANT_VERSION,
+        schema: PLACE_GRANT_VERSION,
     })
 }
 
@@ -676,7 +687,7 @@ pub fn request_herdr_place(name: &str) -> Result<PlaceGrant, PlaceRefusal> {
         pane_pid,
         process_start_marker: start_marker,
         created_utc: utc_now_rfc3339(),
-        grant_version: PLACE_GRANT_VERSION,
+        schema: PLACE_GRANT_VERSION,
     })
 }
 
@@ -1189,7 +1200,7 @@ mod tests {
     }
 
     #[test]
-    fn grant_version_is_the_published_contract() {
+    fn schema_is_the_published_contract() {
         assert_eq!(PLACE_GRANT_VERSION, "workcell.place-grant/v1");
     }
 
@@ -1251,18 +1262,20 @@ mod tests {
             pane_pid: 4242,
             process_start_marker: MARKER_A.into(),
             created_utc: "2026-09-15T12:00:00Z".into(),
-            grant_version: PLACE_GRANT_VERSION,
+            schema: PLACE_GRANT_VERSION,
         }
     }
 
     #[test]
     fn place_grant_serialization_round_trip_keeps_every_field() {
         let value = grant().to_json();
-        assert_eq!(value["grant_version"], PLACE_GRANT_VERSION);
+        assert_eq!(value["schema"], PLACE_GRANT_VERSION);
         assert_eq!(value["place_ref"], "workcell:place:tmux:default:agent-test");
         assert_eq!(value["provider"], TMUX_PROVIDER);
         assert_eq!(value["session_name"], "agent-test");
-        assert_eq!(value["workspace_id"], Value::Null);
+        // Closed-world consumers are never handed null padding for another
+        // provider's field: an absent workspace_id is omitted, not null.
+        assert!(value.get("workspace_id").is_none());
         assert_eq!(value["pane_id"], "%7");
         assert_eq!(value["pane_pid"], 4242);
         assert_eq!(value["process_start_marker"], MARKER_A);
@@ -1283,7 +1296,7 @@ mod tests {
             pane_pid: 77,
             process_start_marker: MARKER_B.into(),
             created_utc: "2026-09-15T12:00:00Z".into(),
-            grant_version: PLACE_GRANT_VERSION,
+            schema: PLACE_GRANT_VERSION,
         }
         .to_json();
         let round_tripped = PlaceGrant::from_json(&value).unwrap();
@@ -1294,7 +1307,7 @@ mod tests {
     #[test]
     fn grant_round_trip_refuses_a_foreign_version() {
         let mut value = grant().to_json();
-        value["grant_version"] = "workcell.place-grant/v0".into();
+        value["schema"] = "workcell.place-grant/v0".into();
         let error = PlaceGrant::from_json(&value).unwrap_err().to_string();
         assert!(error.contains("workcell.place-grant/v1"), "{error}");
     }

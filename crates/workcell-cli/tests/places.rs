@@ -175,7 +175,7 @@ fn place_request_and_release_round_trip_through_the_cli_live() {
         stdout_text(&requested),
         stderr_text(&requested)
     );
-    let grant = json_stdout(&requested)["grant"].clone();
+    let grant = json_stdout(&requested);
     assert_eq!(grant["provider"], "tmux");
     let place_ref = grant["place_ref"].as_str().unwrap().to_owned();
     let pid = grant["pane_pid"].as_u64().unwrap().to_string();
