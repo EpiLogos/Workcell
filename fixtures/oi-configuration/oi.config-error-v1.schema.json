@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://epilogos.github.io/o-i/schemas/oi.config-error-v1.schema.json",
+  "title": "O:I Config Error v1",
+  "description": "Structured failure document for a configuration-plane operation (non-zero exit). Error codes are frozen; unsupported scopes and absent owners are explicit errors, never silent reinterpretation. Frozen by docs/cradle/09-CONFIGURATION-PLANE.md §6 (#299 C0-5).",
+  "type": "object",
+  "required": ["schema", "error_code", "message"],
+  "properties": {
+    "schema": { "const": "oi.config-error/v1" },
+    "error_code": {
+      "enum": ["unsupported_setting", "unsupported_scope", "unknown_scope_kind", "invalid_value", "validation_failed", "owner_unavailable", "plan_expired", "not_authorised", "unsupported_schema", "internal"]
+    },
+    "message": { "type": "string" },
+    "setting_ref": {
+      "type": ["string", "null"],
+      "pattern": "^(connector/)?[a-z0-9][a-z0-9-]*:[a-z0-9][a-z0-9-]*:[a-z0-9_][a-z0-9_-]*(\\.[a-z0-9_][a-z0-9_-]*)*$"
+    },
+    "scope_kind": {
+      "type": ["string", "null"],
+      "description": "the offending scope kind, when the error is about scope"
+    },
+    "retryable": { "type": "boolean" },
+    "detail_ref": { "type": ["string", "null"] }
+  }
+}
