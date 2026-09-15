@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://epilogos.github.io/o-i/schemas/oi.config-receipt-v1.schema.json",
+  "title": "O:I Config Receipt v1",
+  "description": "The owner-native receipt for one configuration operation. Owner-minted identity, no plaintext secrets, idempotent replay via (owner_ref, changeset_id, setting_ref, scope, plan_digest). Frozen by docs/cradle/09-CONFIGURATION-PLANE.md §9 (#299 C0-8).",
+  "type": "object",
+  "required": ["schema", "receipt_id", "owner_ref", "changeset_id", "setting_ref", "scope", "operation", "outcome", "applied_at_unix_ms"],
+  "properties": {
+    "schema": { "const": "oi.config-receipt/v1" },
+    "receipt_id": { "description": "owner-minted, unique within the owner", "type": "string", "minLength": 1 },
+    "owner_ref": { "type": "string", "pattern": "^(connector/)?[a-z0-9][a-z0-9-]*$" },
+    "changeset_id": { "type": "string", "pattern": "^cs-[A-Za-z0-9_-]+$" },
+    "plan_digest": { "type": ["string", "null"] },
+    "setting_ref": {
+      "type": "string",
+      "pattern": "^(connector/)?[a-z0-9][a-z0-9-]*:[a-z0-9][a-z0-9-]*:[a-z0-9_][a-z0-9_-]*(\\.[a-z0-9_][a-z0-9_-]*)*$"
+    },
+    "scope": {
+      "type": "object",
+      "required": ["scope_kind", "scope_ref"],
+      "properties": {
+        "scope_kind": { "enum": ["world", "ground", "project", "machine", "workcell", "agency", "agent", "session-space", "agent-session", "provider", "connector-relation", "invocation"] },
+        "scope_ref": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
+    "operation": { "enum": ["validate", "plan", "apply", "reset"] },
+    "outcome": {
+      "enum": ["applied", "no_op", "failed"],
+      "description": "no_op = idempotent replay; original_receipt_id names the executed receipt"
+    },
+    "applied_at_unix_ms": { "type": "integer", "minimum": 0 },
+    "native_ref": { "description": "owner-native receipt/history ref — the owner's record of record", "type": ["string", "null"] },
+    "expected_effect": {
+      "type": ["object", "null"],
+      "properties": {
+        "kind": { "enum": ["none", "value-change", "restart-required", "session-restart-required", "provider-reconnect-required", "material-effect", "pending", "unknown"] },
+        "summary": { "type": ["string", "null"] },
+        "ref": { "type": ["string", "null"] }
+      }
+    },
+    "original_receipt_id": { "type": ["string", "null"], "description": "set on no_op replay" },
+    "error": {
+      "type": ["object", "null"],
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "enum": ["unsupported_setting", "unsupported_scope", "unknown_scope_kind", "invalid_value", "validation_failed", "owner_unavailable", "plan_expired", "not_authorised", "unsupported_schema", "internal"] },
+        "message": { "type": "string" },
+        "retryable": { "type": "boolean" }
+      }
+    }
+  }
+}

@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://epilogos.github.io/o-i/schemas/oi.configuration-contribution-v1.schema.json",
+  "title": "O:I Configuration Contribution v1",
+  "description": "What configuration subjects an owner (product, connector or the O:I composition layer) discloses as addressable by the composed O:I World: identity, scopes, value contract and owner-native operations. Frozen by docs/cradle/09-CONFIGURATION-PLANE.md (#299 C0). Complementary to oi.product-settings-disclosure/v2 — never mixed, never inferred from it.",
+  "type": "object",
+  "required": ["schema", "owner", "about", "sections"],
+  "properties": {
+    "schema": { "const": "oi.configuration-contribution/v1" },
+    "contract_revision": { "const": "configuration-plane/contribution.1" },
+    "owner": { "$ref": "#/$defs/owner" },
+    "about": { "type": "string", "minLength": 1 },
+    "sections": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/section" }
+    },
+    "operations": { "$ref": "#/$defs/ownerOperations" },
+    "availability": {
+      "type": "object",
+      "required": ["state"],
+      "properties": {
+        "state": { "enum": ["available", "degraded", "unavailable", "unknown"] },
+        "reason": { "type": ["string", "null"] }
+      }
+    },
+    "degradations": { "type": "array", "items": { "$ref": "#/$defs/degradation" } },
+    "obligations": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "owner": {
+      "type": "object",
+      "required": ["owner_ref", "owner_kind", "owner_version", "contribution_command", "disclosed_at_unix_ms"],
+      "properties": {
+        "owner_ref": { "$ref": "#/$defs/ownerRef" },
+        "owner_kind": { "enum": ["product", "connector", "oi"] },
+        "owner_version": { "type": "string" },
+        "contribution_command": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "disclosed_at_unix_ms": { "type": "integer", "minimum": 0 },
+        "reading_digest": { "type": ["string", "null"] },
+        "reading_digest_covers": { "type": ["string", "null"] }
+      }
+    },
+    "ownerRef": {
+      "description": "Existing product_id, `oi`, or `connector/<name>`. No dots, no colons.",
+      "type": "string",
+      "pattern": "^(connector/)?[a-z0-9][a-z0-9-]*$"
+    },
+    "section": {
+      "type": "object",
+      "required": ["id", "title", "settings"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "title": { "type": "string", "minLength": 1 },
+        "settings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/settingSpec" }
+        }
+      }
+    },
+    "settingSpec": {
+      "type": "object",
+      "required": [
+        "setting_ref", "section_ref", "title", "description", "value_schema",
+        "allowed_scopes", "writable", "profileable", "sensitive", "effect",
+        "operations"
+      ],
+      "properties": {
+        "setting_ref": { "$ref": "#/$defs/settingRef" },
+        "section_ref": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "title": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "value_schema": { "$ref": "#/$defs/valueSchema" },
+        "allowed_scopes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["scope_kind", "scope_ref"],
+            "properties": {
+              "scope_kind": { "$ref": "#/$defs/scopeKind" },
+              "scope_ref": { "description": "null = any instance of this kind", "type": ["string", "null"] }
+            }
+          }
+        },
+        "writable": { "type": "boolean" },
+        "profileable": { "type": "boolean" },
+        "sensitive": { "type": "boolean" },
+        "default": { "description": "only with default_semantics `constant`" },
+        "default_semantics": { "enum": ["constant", "computed", "none"] },
+        "effect": { "$ref": "#/$defs/effect" },
+        "operations": {
+          "type": "object",
+          "required": ["validate", "plan", "apply", "reset"],
+          "properties": {
+            "validate": { "type": "boolean" },
+            "plan": { "type": "boolean" },
+            "apply": { "type": "boolean" },
+            "reset": { "type": "boolean" }
+          }
+        },
+        "native_ref": { "description": "a location in the owner namespace, never a command string", "type": "string" }
+      }
+    },
+    "settingRef": {
+      "description": "owner_ref ':' section_ref ':' setting_key — the one stable identity (09 §3).",
+      "type": "string",
+      "pattern": "^(connector/)?[a-z0-9][a-z0-9-]*:[a-z0-9][a-z0-9-]*:[a-z0-9_][a-z0-9_-]*(\\.[a-z0-9_][a-z0-9_-]*)*$"
+    },
+    "valueSchema": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["boolean", "scalar", "number", "integer", "enum", "path", "reference", "table", "list", "secret"] },
+        "options": {
+          "description": "enum only",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["value"],
+            "properties": { "value": {}, "title": { "type": "string" } }
+          }
+        },
+        "columns": {
+          "description": "table only",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "type"],
+            "properties": { "name": { "type": "string" }, "type": { "type": "string" } }
+          }
+        },
+        "items": { "$ref": "#/$defs/valueSchema" },
+        "minimum": { "type": "number" },
+        "maximum": { "type": "number" },
+        "pattern": { "type": "string" },
+        "format": { "type": "string" },
+        "subject_kind": { "description": "reference only", "type": "string" }
+      }
+    },
+    "scopeKind": {
+      "enum": ["world", "ground", "project", "machine", "workcell", "agency", "agent", "session-space", "agent-session", "provider", "connector-relation", "invocation"]
+    },
+    "effect": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["none", "value-change", "restart-required", "session-restart-required", "provider-reconnect-required", "material-effect", "pending", "unknown"] },
+        "summary": { "type": ["string", "null"] },
+        "ref": { "type": ["string", "null"] }
+      }
+    },
+    "ownerOperations": {
+      "description": "Owner-level mutation transport capability (09 §6).",
+      "type": "object",
+      "required": ["transport"],
+      "properties": {
+        "transport": { "const": "cli/v1" },
+        "validate": { "$ref": "#/$defs/operationAvailability" },
+        "plan": { "$ref": "#/$defs/operationAvailability" },
+        "apply": { "$ref": "#/$defs/operationAvailability" },
+        "reset": { "$ref": "#/$defs/operationAvailability" }
+      }
+    },
+    "operationAvailability": {
+      "type": "object",
+      "required": ["availability"],
+      "properties": {
+        "availability": { "enum": ["disclosed", "missing_native_obligation", "unavailable"] },
+        "reason": { "type": ["string", "null"] }
+      }
+    },
+    "degradation": {
+      "type": "object",
+      "required": ["subject_ref", "state", "reason"],
+      "properties": {
+        "subject_ref": { "type": ["string", "null"] },
+        "state": { "enum": ["degraded", "unavailable", "unknown"] },
+        "reason": { "type": "string" },
+        "native_error": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

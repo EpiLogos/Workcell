@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://epilogos.github.io/o-i/schemas/oi.config-plan-v1.schema.json",
+  "title": "O:I Config Plan v1",
+  "description": "The owner-native plan/explain answer for one requested change (`<ns> config plan --json`). Carries the owner-minted plan_id and the plan_digest that anchors idempotent apply. Frozen by docs/cradle/09-CONFIGURATION-PLANE.md §6 (#299 C0-5).",
+  "type": "object",
+  "required": ["schema", "plan_id", "plan_digest", "setting_ref", "scope", "changes", "expected_effect"],
+  "properties": {
+    "schema": { "const": "oi.config-plan/v1" },
+    "plan_id": { "description": "owner-minted, unique within the owner", "type": "string", "minLength": 1 },
+    "plan_digest": { "description": "sha256 hex over the canonical plan body (plan_id, expires_at_unix_ms and all *_unix_ms zeroed)", "type": "string", "minLength": 1 },
+    "setting_ref": {
+      "type": "string",
+      "pattern": "^(connector/)?[a-z0-9][a-z0-9-]*:[a-z0-9][a-z0-9-]*:[a-z0-9_][a-z0-9_-]*(\\.[a-z0-9_][a-z0-9_-]*)*$"
+    },
+    "scope": {
+      "type": "object",
+      "required": ["scope_kind", "scope_ref"],
+      "properties": {
+        "scope_kind": { "enum": ["world", "ground", "project", "machine", "workcell", "agency", "agent", "session-space", "agent-session", "provider", "connector-relation", "invocation"] },
+        "scope_ref": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
+    "changes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["summary"],
+        "properties": {
+          "summary": { "type": "string" },
+          "native_ref": { "type": ["string", "null"] },
+          "before_ref": { "type": ["string", "null"] },
+          "after_ref": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "expected_effect": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["none", "value-change", "restart-required", "session-restart-required", "provider-reconnect-required", "material-effect", "pending", "unknown"] },
+        "summary": { "type": ["string", "null"] },
+        "ref": { "type": ["string", "null"] }
+      }
+    },
+    "expires_at_unix_ms": { "type": ["integer", "null"], "minimum": 0 },
+    "explain_ref": { "type": ["string", "null"] },
+    "authority": {
+      "type": ["object", "null"],
+      "properties": {
+        "requires": { "type": "array", "items": { "type": "string" } },
+        "granted_by": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

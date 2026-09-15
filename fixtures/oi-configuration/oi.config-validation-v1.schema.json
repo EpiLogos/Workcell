@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://epilogos.github.io/o-i/schemas/oi.config-validation-v1.schema.json",
+  "title": "O:I Config Validation v1",
+  "description": "Owner-native validation answer for one requested value at one scope (`<ns> config validate --json`). The owner's native validation remains authoritative. Frozen by docs/cradle/09-CONFIGURATION-PLANE.md §6 (#299 C0-5).",
+  "type": "object",
+  "required": ["schema", "setting_ref", "scope", "valid"],
+  "properties": {
+    "schema": { "const": "oi.config-validation/v1" },
+    "setting_ref": {
+      "type": "string",
+      "pattern": "^(connector/)?[a-z0-9][a-z0-9-]*:[a-z0-9][a-z0-9-]*:[a-z0-9_][a-z0-9_-]*(\\.[a-z0-9_][a-z0-9_-]*)*$"
+    },
+    "scope": {
+      "type": "object",
+      "required": ["scope_kind", "scope_ref"],
+      "properties": {
+        "scope_kind": { "enum": ["world", "ground", "project", "machine", "workcell", "agency", "agent", "session-space", "agent-session", "provider", "connector-relation", "invocation"] },
+        "scope_ref": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
+    "valid": { "type": "boolean" },
+    "violations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code", "message"],
+        "properties": {
+          "code": { "type": "string", "description": "owner-native violation code" },
+          "message": { "type": "string" },
+          "path": { "description": "JSON path inside the value, for structured values", "type": ["string", "null"] }
+        }
+      }
+    },
+    "expected_effect": {
+      "type": ["object", "null"],
+      "properties": {
+        "kind": { "enum": ["none", "value-change", "restart-required", "session-restart-required", "provider-reconnect-required", "material-effect", "pending", "unknown"] },
+        "summary": { "type": ["string", "null"] },
+        "ref": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

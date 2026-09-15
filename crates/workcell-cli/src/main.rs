@@ -106,6 +106,8 @@ fn run(args: Vec<String>) -> Result<(), WorkcellError> {
         "connect" => command_connect(&global, command_args),
         "connections" => command_connections(&global, command_args),
         "system" => command_system(&global),
+        "config" => command_config(&global, command_args),
+        "config-contribution" => command_config_contribution(&global),
         other if other.starts_with('-') => Err(WorkcellError::InvalidDemand(format!(
             "unknown option `{other}`; run `workcell help`"
         ))),
@@ -1406,6 +1408,10 @@ fn command_instances(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
                     executable_sha256: sha256.clone(),
                     identity_material: executable.to_string_lossy().into_owned(),
                     pids,
+                    // A manual registration declares live pids without a
+                    // sampled start marker; `instances scan` records the
+                    // host's start evidence instead.
+                    executions: Vec::new(),
                     evidence_grade: evidence_grade.to_owned(),
                     seams,
                 },
@@ -3466,6 +3472,1151 @@ fn command_system(global: &GlobalArgs) -> Result<(), WorkcellError> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Configuration plane — Workcell's owner contribution and owner-native
+// mutation transport (oi.configuration-contribution/v1; frozen by
+// O-I docs/cradle/09-CONFIGURATION-PLANE.md, #299 Gate A / C0).
+//
+// One setting is contributed: the operator-declared provider/material policy
+// (`services.declared`) that every composition of this collapsed-local Workcell
+// already reads from the state root. Observed hardware, provider availability,
+// instances and staged material are disclosure-plane facts (`workcell system
+// --json`) and are deliberately not writable here. Provider choices offered
+// through this plane are validated against this machine's real material
+// possibility before they may enter declared state: a declaration naming a
+// program this machine does not have is refused, never stored.
+// ---------------------------------------------------------------------------
+
+const CONFIG_CONTRIBUTION_SCHEMA: &str = "oi.configuration-contribution/v1";
+const CONFIG_CONTRACT_REVISION: &str = "configuration-plane/contribution.1";
+const CONFIG_SETTING_SERVICES: &str = "workcell:processes-services:services.declared";
+const CONFIG_SETTING_SECTION: &str = "processes-services";
+const CONFIG_SERVICES_NATIVE_REF: &str = "workcell:state-root:services.json";
+const CONFIG_HISTORY_DIR: &str = "config";
+const CONFIG_HISTORY_FILE: &str = "history.jsonl";
+
+/// The frozen seed scope kinds (09 §5). An open registry: new kinds extend the
+/// contract minor revision, they are never silently accepted here.
+const CONFIG_SCOPE_KINDS: [&str; 12] = [
+    "world",
+    "ground",
+    "project",
+    "machine",
+    "workcell",
+    "agency",
+    "agent",
+    "session-space",
+    "agent-session",
+    "provider",
+    "connector-relation",
+    "invocation",
+];
+/// Singular kinds carry no scope_ref in the compact form.
+const CONFIG_SINGULAR_SCOPE_KINDS: [&str; 3] = ["world", "ground", "machine"];
+
+/// A structured configuration-plane failure: emitted as `oi.config-error/v1` on
+/// stdout, then mapped onto the CLI's ordinary non-zero exit codes.
+struct ConfigFailure {
+    code: &'static str,
+    message: String,
+    setting_ref: Option<String>,
+    scope_kind: Option<String>,
+    retryable: bool,
+}
+
+impl ConfigFailure {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            setting_ref: None,
+            scope_kind: None,
+            retryable: false,
+        }
+    }
+
+    fn for_setting(mut self, setting_ref: &str) -> Self {
+        self.setting_ref = Some(setting_ref.to_owned());
+        self
+    }
+
+    fn for_scope_kind(mut self, scope_kind: &str) -> Self {
+        self.scope_kind = Some(scope_kind.to_owned());
+        self
+    }
+
+    fn retryable(mut self) -> Self {
+        self.retryable = true;
+        self
+    }
+
+    fn emit(&self) {
+        emit_json(json!({
+            "schema": "oi.config-error/v1",
+            "error_code": self.code,
+            "message": self.message,
+            "setting_ref": self.setting_ref,
+            "scope_kind": self.scope_kind,
+            "retryable": self.retryable,
+            "detail_ref": null,
+        }));
+    }
+
+    fn workcell_error(&self) -> WorkcellError {
+        match self.code {
+            "owner_unavailable" => WorkcellError::Unavailable(self.message.clone()),
+            "internal" => WorkcellError::OperationFailed(self.message.clone()),
+            _ => WorkcellError::InvalidDemand(self.message.clone()),
+        }
+    }
+}
+
+fn command_config(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    if let Err(failure) = config_run(global, args) {
+        failure.emit();
+        return Err(failure.workcell_error());
+    }
+    Ok(())
+}
+
+fn config_run(global: &GlobalArgs, args: &[String]) -> Result<(), ConfigFailure> {
+    let Some(verb) = args.first().map(String::as_str) else {
+        return Err(ConfigFailure::new(
+            "validation_failed",
+            "usage: workcell config <validate|plan|apply|reset> --json ...",
+        ));
+    };
+    let verb_args = &args[1..];
+    match verb {
+        "validate" => config_validate(global, verb_args),
+        "plan" => config_plan(global, verb_args),
+        "apply" => config_apply(global, verb_args),
+        "reset" => config_reset(global, verb_args),
+        other => Err(ConfigFailure::new(
+            "validation_failed",
+            format!("unknown config verb `{other}`; expected validate|plan|apply|reset"),
+        )),
+    }
+}
+
+/// Owner-minted unique identifier (plan ids, receipt ids, owner-side changesets).
+/// Uniqueness comes from clock + pid + a process-local counter, hashed so the
+/// identifier is opaque.
+fn config_unique_id(prefix: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let material = format!(
+        "{}-{}-{}",
+        nanos,
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(material.as_bytes());
+    let short: String = digest.iter().take(8).map(|byte| format!("{byte:02x}")).collect();
+    format!("{prefix}-{short}")
+}
+
+fn config_sha256_hex(value: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    let body = serde_json::to_string(value).unwrap_or_default();
+    system_hex_digest(&Sha256::digest(body.as_bytes()))
+}
+
+/// The frozen plan-digest convention (09 §6): sha256 hex over the canonical plan
+/// body — the plan document with `plan_digest` removed, `plan_id` zeroed to the
+/// empty string, `expires_at_unix_ms` zeroed and every `*_unix_ms` field zeroed.
+/// Owner-minted and owner-verified; O:I treats the digest as opaque.
+fn config_plan_digest(plan: &Value) -> String {
+    let mut body = plan.clone();
+    if let Some(object) = body.as_object_mut() {
+        object.remove("plan_digest");
+        object.insert("plan_id".into(), json!(""));
+        object.insert("expires_at_unix_ms".into(), json!(0));
+    }
+    zero_unix_ms(&mut body);
+    config_sha256_hex(&body)
+}
+
+fn config_scope_from_json(value: &Value) -> Result<(String, Option<String>, Value), ConfigFailure> {
+    let kind = value
+        .get("scope_kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ConfigFailure::new(
+                "validation_failed",
+                "plan scope must carry `scope_kind` and `scope_ref`",
+            )
+        })?;
+    if !CONFIG_SCOPE_KINDS.contains(&kind) {
+        return Err(ConfigFailure::new(
+            "unknown_scope_kind",
+            format!("unknown scope kind `{kind}`; the frozen scope registry is: {}", CONFIG_SCOPE_KINDS.join(", ")),
+        )
+        .for_scope_kind(kind));
+    }
+    let scope_ref = match value.get("scope_ref") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(text)) => Some(text.clone()),
+        Some(_) => {
+            return Err(ConfigFailure::new(
+                "validation_failed",
+                "plan scope `scope_ref` must be a string or null",
+            )
+            .for_scope_kind(kind))
+        }
+    };
+    config_check_scope_shape(kind, scope_ref.as_deref())?;
+    Ok((kind.to_owned(), scope_ref, value.clone()))
+}
+
+/// Compact form `<scope_kind>:<scope_ref>` (CLI/grammar only); the ref is
+/// omitted for singular kinds.
+fn config_parse_scope_arg(spec: &str) -> Result<(String, Option<String>), ConfigFailure> {
+    let (kind, scope_ref) = match spec.split_once(':') {
+        Some((kind, rest)) => (kind, Some(rest.to_owned())),
+        None => (spec, None),
+    };
+    if !CONFIG_SCOPE_KINDS.contains(&kind) {
+        return Err(ConfigFailure::new(
+            "unknown_scope_kind",
+            format!(
+                "unknown scope kind `{kind}`; the frozen scope registry is: {}",
+                CONFIG_SCOPE_KINDS.join(", ")
+            ),
+        )
+        .for_scope_kind(kind));
+    }
+    config_check_scope_shape(kind, scope_ref.as_deref())?;
+    Ok((kind.to_owned(), scope_ref))
+}
+
+fn config_check_scope_shape(kind: &str, scope_ref: Option<&str>) -> Result<(), ConfigFailure> {
+    let singular = CONFIG_SINGULAR_SCOPE_KINDS.contains(&kind);
+    match scope_ref {
+        Some(reference) if reference.trim().is_empty() => Err(ConfigFailure::new(
+            "unsupported_scope",
+            format!("scope kind `{kind}` requires a non-empty scope_ref"),
+        )
+        .for_scope_kind(kind)),
+        Some(_) if singular => Err(ConfigFailure::new(
+            "unsupported_scope",
+            format!("scope kind `{kind}` is singular; its compact form carries no scope_ref"),
+        )
+        .for_scope_kind(kind)),
+        Some(_) => Ok(()),
+        None if singular => Ok(()),
+        None => Err(ConfigFailure::new(
+            "unsupported_scope",
+            format!("scope kind `{kind}` requires the compact form `{kind}:<scope_ref>`"),
+        )
+        .for_scope_kind(kind)),
+    }
+}
+
+/// The one contributed setting allows only the `workcell` scope kind (09 §5:
+/// a scope kind outside the setting's allowed_scopes is an error, never a
+/// fallback to another scope).
+fn config_check_scope_allowed(kind: &str) -> Result<(), ConfigFailure> {
+    if kind == "workcell" {
+        Ok(())
+    } else {
+        Err(ConfigFailure::new(
+            "unsupported_scope",
+            format!(
+                "scope kind `{kind}` is not in the allowed scopes of `{CONFIG_SETTING_SERVICES}` (workcell)"
+            ),
+        )
+        .for_scope_kind(kind))
+    }
+}
+
+fn config_scope_json(kind: &str, scope_ref: Option<&str>) -> Value {
+    json!({ "scope_kind": kind, "scope_ref": scope_ref })
+}
+
+fn config_resolve_setting(setting_ref: &str) -> Result<(), ConfigFailure> {
+    if setting_ref == CONFIG_SETTING_SERVICES {
+        Ok(())
+    } else {
+        Err(ConfigFailure::new(
+            "unsupported_setting",
+            format!(
+                "unknown setting `{setting_ref}`; Workcell contributes exactly `{CONFIG_SETTING_SERVICES}`"
+            ),
+        )
+        .for_setting(setting_ref))
+    }
+}
+
+/// The declared effect of changing the contributed setting (frozen effect
+/// vocabulary, 09 §11). Applying the policy changes what the next discovery
+/// offers; nothing material is started until a demand requires it.
+fn config_expected_effect() -> Value {
+    json!({
+        "kind": "value-change",
+        "summary": "The next discovery on this Workcell offers the declared services; nothing is started until a demand requires them.",
+        "ref": "workcell discover --json",
+    })
+}
+
+fn config_read_stdin_or_file(spec: &str, flag: &str) -> Result<String, ConfigFailure> {
+    if spec == "-" {
+        use std::io::Read;
+        let mut raw = String::new();
+        std::io::stdin()
+            .read_to_string(&mut raw)
+            .map_err(|error| ConfigFailure::new("validation_failed", format!("read {flag} from stdin: {error}")))?;
+        Ok(raw)
+    } else {
+        fs::read_to_string(spec).map_err(|error| {
+            ConfigFailure::new("validation_failed", format!("read {flag} `{spec}`: {error}"))
+        })
+    }
+}
+
+fn config_parse_json(raw: &str, flag: &str) -> Result<Value, ConfigFailure> {
+    serde_json::from_str(raw)
+        .map_err(|error| ConfigFailure::new("invalid_value", format!("parse {flag}: {error}")))
+}
+
+/// Native validation of a declared-services value. The owner's real parser
+/// (`parse_service_declarations`) stays the single semantic implementation; the
+/// material checks after it are the C3E law: a provider choice this machine
+/// cannot honour is an `invalid_value` violation, never accepted declared state.
+fn config_services_violations(value: &Value) -> Vec<Value> {
+    let mut violations = Vec::new();
+    let Some(entries) = value.as_array() else {
+        violations.push(json!({
+            "code": "invalid_value",
+            "message": "the declared-services value must be a JSON array of workcell.service-declaration/v1 entries",
+            "path": null,
+        }));
+        return violations;
+    };
+
+    let document = json!({
+        "schema": epilogos_workcell_runtime::SERVICE_DECLARATION_SCHEMA,
+        "services": entries,
+    });
+    let raw = serde_json::to_string(&document).unwrap_or_default();
+    let declared = match epilogos_workcell_runtime::parse_service_declarations(&raw) {
+        Ok(declared) => declared,
+        Err(error) => {
+            violations.push(json!({
+                "code": "invalid_value",
+                "message": error.to_string(),
+                "path": null,
+            }));
+            return violations;
+        }
+    };
+
+    for service in &declared.managed {
+        let index = declared
+            .managed
+            .iter()
+            .position(|candidate| candidate.logical_ref == service.logical_ref)
+            .unwrap_or_default();
+        if !config_program_available(&service.program) {
+            violations.push(config_material_violation(
+                &service.logical_ref,
+                index,
+                "program",
+                &service.program,
+            ));
+        }
+        if let Some(cwd) = &service.cwd {
+            if !cwd.is_dir() {
+                violations.push(json!({
+                    "code": "invalid_value",
+                    "message": format!(
+                        "declared service `{}` cannot be honoured on this machine: working directory `{}` does not exist here",
+                        service.logical_ref,
+                        cwd.display()
+                    ),
+                    "path": format!("/{index}/cwd"),
+                }));
+            }
+        }
+    }
+    for service in &declared.target_owned {
+        let index = declared
+            .target_owned
+            .iter()
+            .position(|candidate| candidate.logical_ref == service.logical_ref)
+            .unwrap_or_default();
+        let commands = [
+            ("status", Some(&service.status)),
+            ("readiness", service.readiness.as_ref()),
+            ("start", service.start.as_ref()),
+            ("stop", service.stop.as_ref()),
+            ("restart", service.restart.as_ref()),
+        ];
+        for (role, command) in commands {
+            let Some(command) = command else { continue };
+            if !config_program_available(&command.program) {
+                violations.push(config_material_violation(
+                    &service.logical_ref,
+                    index,
+                    role,
+                    &command.program,
+                ));
+            }
+        }
+    }
+    violations
+}
+
+fn config_material_violation(
+    logical_ref: &str,
+    index: usize,
+    role: &str,
+    program: &str,
+) -> Value {
+    // A managed service declares `program` directly; a target-owned command
+    // nests it under its role, and the JSON path follows the value's shape.
+    let path = if role == "program" {
+        format!("/{index}/program")
+    } else {
+        format!("/{index}/{role}/program")
+    };
+    json!({
+        "code": "invalid_value",
+        "message": format!(
+            "declared service `{logical_ref}` cannot be honoured on this machine: {role} `{program}` does not exist here; this Workcell does not accept a declaration it cannot materialise or observe"
+        ),
+        "path": path,
+    })
+}
+
+/// Material possibility on this machine: the program must exist — directly when
+/// the declaration names a path, otherwise on PATH — and on Unix it must be
+/// executable. This is evidence about this machine, gathered at validation time;
+/// it is never stored as setting state.
+fn config_program_available(program: &str) -> bool {
+    let path = if program.contains('/') {
+        Some(PathBuf::from(program))
+    } else {
+        env::var_os("PATH").as_deref().and_then(|paths| {
+            env::split_paths(paths)
+                .map(|dir| dir.join(program))
+                .find(|candidate| candidate.is_file())
+        })
+    };
+    let Some(path) = path else {
+        return false;
+    };
+    if !path.is_file() {
+        return false;
+    }
+    config_program_executable(&path)
+}
+
+/// Evidence about this machine, gathered at validation time and never stored as
+/// setting state.
+#[allow(unused_variables)]
+fn config_program_executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    let executable = {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path)
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    };
+    #[cfg(not(unix))]
+    let executable = true;
+    executable
+}
+
+fn config_validation_doc(setting_ref: &str, scope: &Value, violations: Vec<Value>) -> Value {
+    let valid = violations.is_empty();
+    json!({
+        "schema": "oi.config-validation/v1",
+        "setting_ref": setting_ref,
+        "scope": scope,
+        "valid": valid,
+        "violations": violations,
+        "expected_effect": config_expected_effect(),
+    })
+}
+
+fn config_read_value(args: &[String]) -> Result<Value, ConfigFailure> {
+    let mut value: Option<Value> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--value" => {
+                if value.is_some() {
+                    return Err(ConfigFailure::new(
+                        "validation_failed",
+                        "--value and --value-file are mutually exclusive",
+                    ));
+                }
+                let raw = require_value(args, index, "--value").map_err(|error| {
+                    ConfigFailure::new("validation_failed", error.to_string())
+                })?;
+                value = Some(config_parse_json(raw, "--value")?);
+                index += 2;
+            }
+            "--value-file" => {
+                if value.is_some() {
+                    return Err(ConfigFailure::new(
+                        "validation_failed",
+                        "--value and --value-file are mutually exclusive",
+                    ));
+                }
+                let spec = require_value(args, index, "--value-file").map_err(|error| {
+                    ConfigFailure::new("validation_failed", error.to_string())
+                })?;
+                let raw = config_read_stdin_or_file(spec, "--value-file")?;
+                value = Some(config_parse_json(&raw, "--value-file")?);
+                index += 2;
+            }
+            "--setting" | "--scope" => index += 2,
+            other => {
+                return Err(ConfigFailure::new(
+                    "validation_failed",
+                    format!("unknown config option `{other}`"),
+                ))
+            }
+        }
+    }
+    value.ok_or_else(|| {
+        ConfigFailure::new(
+            "validation_failed",
+            "this verb requires --value <json> or --value-file <path|->",
+        )
+    })
+}
+
+/// Parse the shared `--setting/--scope` request flags. Value flags are skipped
+/// over (still flag/value pairs) so validate, plan and reset share one parser.
+/// No explicit scope addresses this Workcell — the local Workcell the invocation
+/// is standing on.
+fn config_parse_setting_scope(
+    global: &GlobalArgs,
+    args: &[String],
+) -> Result<(String, Value), ConfigFailure> {
+    let mut setting_ref: Option<String> = None;
+    let mut scope: Option<Value> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--setting" => {
+                setting_ref = Some(
+                    require_value(args, index, "--setting").map_err(|error| {
+                        ConfigFailure::new("validation_failed", error.to_string())
+                    })?
+                    .to_owned(),
+                );
+                index += 2;
+            }
+            "--scope" => {
+                let spec = require_value(args, index, "--scope")
+                    .map_err(|error| ConfigFailure::new("validation_failed", error.to_string()))?;
+                let (kind, scope_ref) = config_parse_scope_arg(spec)?;
+                config_check_scope_allowed(&kind)?;
+                scope = Some(config_scope_json(&kind, scope_ref.as_deref()));
+                index += 2;
+            }
+            "--value" | "--value-file" | "--changeset" => index += 2,
+            other => {
+                return Err(ConfigFailure::new(
+                    "validation_failed",
+                    format!("unknown config option `{other}`"),
+                ))
+            }
+        }
+    }
+    let setting_ref = setting_ref.ok_or_else(|| {
+        ConfigFailure::new(
+            "validation_failed",
+            "this verb requires --setting <setting_ref>",
+        )
+    })?;
+    config_resolve_setting(&setting_ref)?;
+    let scope =
+        scope.unwrap_or_else(|| config_scope_json("workcell", Some(&global.workcell_ref)));
+    Ok((setting_ref, scope))
+}
+
+fn config_validate(global: &GlobalArgs, args: &[String]) -> Result<(), ConfigFailure> {
+    let (setting_ref, scope) = config_parse_setting_scope(global, args)?;
+    let value = config_read_value(args)?;
+    let violations = config_services_violations(&value);
+    emit_json(config_validation_doc(&setting_ref, &scope, violations));
+    Ok(())
+}
+
+fn config_plan(global: &GlobalArgs, args: &[String]) -> Result<(), ConfigFailure> {
+    let (setting_ref, scope) = config_parse_setting_scope(global, args)?;
+    let value = config_read_value(args)?;
+    let violations = config_services_violations(&value);
+    if let Some(first) = violations.first() {
+        let message = first
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("the value cannot be honoured on this machine");
+        return Err(ConfigFailure::new("invalid_value", message)
+            .for_setting(&setting_ref)
+            .for_scope_kind(scope["scope_kind"].as_str().unwrap_or("workcell")));
+    }
+
+    let plan_id = config_unique_id("wcplan");
+    let count = value.as_array().map(Vec::len).unwrap_or(0);
+    let mut plan = json!({
+        "schema": "oi.config-plan/v1",
+        "plan_id": plan_id,
+        "plan_digest": "",
+        "setting_ref": setting_ref,
+        "scope": scope,
+        "changes": [{
+            "summary": format!(
+                "Set the declared logical services of this Workcell ({count} service(s)); the next discovery offers them."
+            ),
+            "native_ref": CONFIG_SERVICES_NATIVE_REF,
+            "before_ref": null,
+            "after_ref": CONFIG_SERVICES_NATIVE_REF,
+        }],
+        "expected_effect": config_expected_effect(),
+        "expires_at_unix_ms": null,
+        "explain_ref": "workcell config-contribution --json",
+        "authority": null,
+        // Owner extension (09 §15: consumers must accept unknown fields): the
+        // planned declared-state payload, so apply is driven by exactly what
+        // was planned.
+        "value": value,
+    });
+    let digest = config_plan_digest(&plan);
+    plan["plan_digest"] = json!(digest);
+    emit_json(plan);
+    Ok(())
+}
+
+fn config_history_path(state_root: &Path) -> PathBuf {
+    state_root.join(CONFIG_HISTORY_DIR).join(CONFIG_HISTORY_FILE)
+}
+
+/// The owner's own history is the record of record (09 §9); receipts reference
+/// it through `native_ref`. One executed operation per line.
+fn config_history_records(state_root: &Path) -> Result<Vec<Value>, ConfigFailure> {
+    let path = config_history_path(state_root);
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let raw = fs::read_to_string(&path).map_err(|error| {
+        ConfigFailure::new(
+            "owner_unavailable",
+            format!("read config history `{}`: {error}", path.display()),
+        )
+        .retryable()
+    })?;
+    raw.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            serde_json::from_str(line).map_err(|error| {
+                ConfigFailure::new(
+                    "internal",
+                    format!("config history `{}` has an unreadable line: {error}", path.display()),
+                )
+            })
+        })
+        .collect()
+}
+
+fn config_history_append(state_root: &Path, receipt: &Value) -> Result<(), ConfigFailure> {
+    let path = config_history_path(state_root);
+    let parent = path.parent().ok_or_else(|| {
+        ConfigFailure::new("internal", "config history path has no parent directory")
+    })?;
+    fs::create_dir_all(parent).map_err(|error| {
+        ConfigFailure::new(
+            "owner_unavailable",
+            format!(
+                "create config history directory `{}`: {error}",
+                parent.display()
+            ),
+        )
+        .retryable()
+    })?;
+    let line = serde_json::to_string(receipt)
+        .map_err(|error| ConfigFailure::new("internal", format!("serialise receipt: {error}")))?;
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|error| {
+            ConfigFailure::new(
+                "owner_unavailable",
+                format!("open config history `{}`: {error}", path.display()),
+            )
+            .retryable()
+        })?;
+    writeln!(file, "{line}").map_err(|error| {
+        ConfigFailure::new(
+            "owner_unavailable",
+            format!("append config history `{}`: {error}", path.display()),
+        )
+        .retryable()
+    })?;
+    Ok(())
+}
+
+/// The frozen idempotency key (09 §9): (owner_ref, changeset_id, setting_ref,
+/// scope, plan_digest). Enforcement is owner-side; a replay finds the executed
+/// receipt and answers `no_op` naming it.
+fn config_find_executed(
+    state_root: &Path,
+    changeset_id: &str,
+    setting_ref: &str,
+    scope: &Value,
+    plan_digest: Option<&str>,
+) -> Result<Option<Value>, ConfigFailure> {
+    let digest_value = match plan_digest {
+        Some(digest) => json!(digest),
+        None => Value::Null,
+    };
+    for record in config_history_records(state_root)? {
+        if record.get("outcome").and_then(Value::as_str) != Some("applied") {
+            continue;
+        }
+        if record.get("owner_ref").and_then(Value::as_str) == Some("workcell")
+            && record.get("changeset_id").and_then(Value::as_str) == Some(changeset_id)
+            && record.get("setting_ref").and_then(Value::as_str) == Some(setting_ref)
+            && record.get("scope") == Some(scope)
+            && record.get("plan_digest") == Some(&digest_value)
+        {
+            return Ok(Some(record));
+        }
+    }
+    Ok(None)
+}
+
+/// Write the declared-services document into the state root atomically. This is
+/// the whole material effect of apply: the same file every composition of this
+/// Workcell already reads.
+fn config_write_services_document(
+    state_root: &Path,
+    services: &Value,
+) -> Result<(), ConfigFailure> {
+    fs::create_dir_all(state_root).map_err(|error| {
+        ConfigFailure::new(
+            "owner_unavailable",
+            format!("create state root `{}`: {error}", state_root.display()),
+        )
+        .retryable()
+    })?;
+    let document = json!({
+        "schema": epilogos_workcell_runtime::SERVICE_DECLARATION_SCHEMA,
+        "services": services,
+    });
+    let body = serde_json::to_string_pretty(&document)
+        .map_err(|error| ConfigFailure::new("internal", format!("serialise declaration: {error}")))?;
+    let target = epilogos_workcell_runtime::default_service_declaration_path(state_root);
+    let temporary = state_root.join(format!(".services.json.tmp-{}", std::process::id()));
+    fs::write(&temporary, format!("{body}\n")).map_err(|error| {
+        ConfigFailure::new(
+            "owner_unavailable",
+            format!("write declared services `{}`: {error}", temporary.display()),
+        )
+        .retryable()
+    })?;
+    fs::rename(&temporary, &target).map_err(|error| {
+        ConfigFailure::new(
+            "owner_unavailable",
+            format!(
+                "move declared services into place `{}`: {error}",
+                target.display()
+            ),
+        )
+        .retryable()
+    })?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn config_receipt(
+    receipt_id: String,
+    changeset_id: &str,
+    plan_digest: Option<&str>,
+    setting_ref: &str,
+    scope: &Value,
+    operation: &str,
+    outcome: &str,
+    native_ref: Option<String>,
+    original_receipt_id: Option<String>,
+) -> Value {
+    json!({
+        "schema": "oi.config-receipt/v1",
+        "receipt_id": receipt_id,
+        "owner_ref": "workcell",
+        "changeset_id": changeset_id,
+        "plan_digest": plan_digest,
+        "setting_ref": setting_ref,
+        "scope": scope,
+        "operation": operation,
+        "outcome": outcome,
+        "applied_at_unix_ms": system_now_ms(),
+        "native_ref": native_ref,
+        "expected_effect": config_expected_effect(),
+        "original_receipt_id": original_receipt_id,
+        "error": null,
+    })
+}
+
+fn config_apply(global: &GlobalArgs, args: &[String]) -> Result<(), ConfigFailure> {
+    let mut plan_source: Option<String> = None;
+    let mut changeset: Option<String> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--plan-file" => {
+                plan_source = Some(
+                    require_value(args, index, "--plan-file").map_err(|error| {
+                        ConfigFailure::new("validation_failed", error.to_string())
+                    })?
+                    .to_owned(),
+                );
+                index += 2;
+            }
+            "--changeset" => {
+                changeset = Some(
+                    require_value(args, index, "--changeset").map_err(|error| {
+                        ConfigFailure::new("validation_failed", error.to_string())
+                    })?
+                    .to_owned(),
+                );
+                index += 2;
+            }
+            other => {
+                return Err(ConfigFailure::new(
+                    "validation_failed",
+                    format!("unknown config apply option `{other}`"),
+                ))
+            }
+        }
+    }
+    let spec = plan_source.ok_or_else(|| {
+        ConfigFailure::new(
+            "validation_failed",
+            "apply requires --plan-file <path|-> (mint one with `workcell config plan --json`)",
+        )
+    })?;
+    let raw = config_read_stdin_or_file(&spec, "--plan-file")?;
+    let plan = config_parse_json(&raw, "--plan-file")?;
+    if plan.get("schema").and_then(Value::as_str) != Some("oi.config-plan/v1") {
+        return Err(ConfigFailure::new(
+            "unsupported_schema",
+            "the plan document is not `oi.config-plan/v1`",
+        ));
+    }
+    let plan_id = plan
+        .get("plan_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| ConfigFailure::new("validation_failed", "the plan carries no plan_id"))?;
+    let digest = plan
+        .get("plan_digest")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| ConfigFailure::new("validation_failed", "the plan carries no plan_digest"))?
+        .to_owned();
+    let setting_ref = plan
+        .get("setting_ref")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ConfigFailure::new("validation_failed", "the plan carries no setting_ref"))?
+        .to_owned();
+    config_resolve_setting(&setting_ref)?;
+    let (kind, _scope_ref, scope) =
+        config_scope_from_json(plan.get("scope").unwrap_or(&Value::Null))
+            .map_err(|failure| failure.for_setting(&setting_ref))?;
+    config_check_scope_allowed(&kind)
+        .map_err(|failure| failure.for_setting(&setting_ref))?;
+
+    // The plan is verified against its minted digest before anything runs:
+    // a modified plan is not the plan the owner made.
+    if config_plan_digest(&plan) != digest {
+        return Err(ConfigFailure::new(
+            "validation_failed",
+            format!("plan `{plan_id}` does not match its plan_digest; it was modified after minting"),
+        )
+        .for_setting(&setting_ref));
+    }
+
+    let value = plan.get("value").cloned().unwrap_or(Value::Null);
+    let violations = config_services_violations(&value);
+    if let Some(first) = violations.first() {
+        let message = first
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("the planned value cannot be honoured on this machine");
+        return Err(ConfigFailure::new("invalid_value", message)
+            .for_setting(&setting_ref)
+            .for_scope_kind(&kind));
+    }
+
+    let changeset =
+        changeset.unwrap_or_else(|| config_unique_id("cs-workcell"));
+    if let Some(original) = config_find_executed(
+        &global.state_root,
+        &changeset,
+        &setting_ref,
+        &scope,
+        Some(&digest),
+    )? {
+        let original_id = original
+            .get("receipt_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let native_ref = original
+            .get("native_ref")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let receipt = config_receipt(
+            config_unique_id("wcreceipt"),
+            &changeset,
+            Some(&digest),
+            &setting_ref,
+            &scope,
+            "apply",
+            "no_op",
+            native_ref,
+            Some(original_id),
+        );
+        config_history_append(&global.state_root, &receipt)?;
+        emit_json(receipt);
+        return Ok(());
+    }
+
+    config_write_services_document(&global.state_root, &value)?;
+    // The receipt's native_ref names its own line in the owner's history, so
+    // the line number is fixed before the record is appended.
+    let line_no = config_history_records(&global.state_root)?.len() as u64 + 1;
+    let mut receipt = config_receipt(
+        config_unique_id("wcreceipt"),
+        &changeset,
+        Some(&digest),
+        &setting_ref,
+        &scope,
+        "apply",
+        "applied",
+        None,
+        None,
+    );
+    receipt["native_ref"] = json!(format!("workcell:config:history:{line_no}"));
+    config_history_append(&global.state_root, &receipt)?;
+    emit_json(receipt);
+    Ok(())
+}
+
+fn config_reset(global: &GlobalArgs, args: &[String]) -> Result<(), ConfigFailure> {
+    let (setting_ref, scope) = config_parse_setting_scope(global, args)?;
+    let mut changeset: Option<String> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--changeset" => {
+                changeset = Some(
+                    require_value(args, index, "--changeset").map_err(|error| {
+                        ConfigFailure::new("validation_failed", error.to_string())
+                    })?
+                    .to_owned(),
+                );
+                index += 2;
+            }
+            "--setting" | "--scope" => index += 2,
+            other => {
+                return Err(ConfigFailure::new(
+                    "validation_failed",
+                    format!("unknown config reset option `{other}`"),
+                ))
+            }
+        }
+    }
+    let changeset = changeset.unwrap_or_else(|| config_unique_id("cs-workcell"));
+
+    if let Some(original) = config_find_executed(
+        &global.state_root,
+        &changeset,
+        &setting_ref,
+        &scope,
+        None,
+    )? {
+        let original_id = original
+            .get("receipt_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let native_ref = original
+            .get("native_ref")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let receipt = config_receipt(
+            config_unique_id("wcreceipt"),
+            &changeset,
+            None,
+            &setting_ref,
+            &scope,
+            "reset",
+            "no_op",
+            native_ref,
+            Some(original_id),
+        );
+        config_history_append(&global.state_root, &receipt)?;
+        emit_json(receipt);
+        return Ok(());
+    }
+
+    // The owner baseline: no declared services. The document keeps the
+    // declaration schema so the file stays an honest, parseable declaration.
+    config_write_services_document(&global.state_root, &json!([]))?;
+    let line_no = config_history_records(&global.state_root)?.len() as u64 + 1;
+    let mut receipt = config_receipt(
+        config_unique_id("wcreceipt"),
+        &changeset,
+        None,
+        &setting_ref,
+        &scope,
+        "reset",
+        "applied",
+        None,
+        None,
+    );
+    receipt["native_ref"] = json!(format!("workcell:config:history:{line_no}"));
+    config_history_append(&global.state_root, &receipt)?;
+    emit_json(receipt);
+    Ok(())
+}
+
+/// Emit Workcell's configuration contribution (`oi.configuration-contribution/v1`)
+/// — bare on stdout with `--json`. Availability is probed through the same
+/// collapsed-local discovery the disclosure plane uses, never asserted.
+fn command_config_contribution(global: &GlobalArgs) -> Result<(), WorkcellError> {
+    use sha2::{Digest, Sha256};
+
+    let workcell_ref = parse_workcell_ref(&global.workcell_ref)?;
+    let workcell = new_local(global, workcell_ref, BTreeSet::new())?;
+    let discovery = workcell.discover()?;
+
+    let now = system_now_ms();
+    let availability_state = match discovery.health {
+        HealthState::Healthy => "available",
+        HealthState::Degraded => "degraded",
+        HealthState::Unavailable => "unavailable",
+        HealthState::Unknown => "unknown",
+    };
+    let availability_reason = if availability_state == "available" {
+        None
+    } else {
+        Some("collapsed-local discovery reports non-healthy state".to_owned())
+    };
+
+    let setting = json!({
+        "setting_ref": CONFIG_SETTING_SERVICES,
+        "section_ref": CONFIG_SETTING_SECTION,
+        "title": "Declared logical services",
+        "description": "The operator's provider/material policy for this Workcell: which logical services it offers, whether each is materialised as a managed host process or observed as a target-owned service, where its endpoint is and how readiness is decided. Values are validated against this machine's material possibility — a declaration naming a program that does not exist here is refused and never enters declared state. Native state: services.json in the Workcell state root.",
+        "value_schema": {
+            "type": "table",
+            "columns": [
+                { "name": "logical_ref", "type": "scalar" },
+                { "name": "lifetime", "type": "scalar" },
+                { "name": "endpoint", "type": "scalar" },
+                { "name": "program", "type": "scalar" },
+                { "name": "args", "type": "list" },
+                { "name": "acquisition", "type": "scalar" },
+                { "name": "readiness", "type": "table" }
+            ]
+        },
+        "allowed_scopes": [{ "scope_kind": "workcell", "scope_ref": null }],
+        "writable": true,
+        "profileable": false,
+        "sensitive": false,
+        "default": [],
+        "default_semantics": "constant",
+        "effect": {
+            "kind": "value-change",
+            "summary": "The next discovery on this Workcell offers the declared services; nothing is started until a demand requires them.",
+            "ref": "workcell discover --json"
+        },
+        "operations": { "validate": true, "plan": true, "apply": true, "reset": true },
+        "native_ref": CONFIG_SERVICES_NATIVE_REF,
+    });
+
+    let mut contribution = json!({
+        "schema": CONFIG_CONTRIBUTION_SCHEMA,
+        "contract_revision": CONFIG_CONTRACT_REVISION,
+        "owner": {
+            "owner_ref": "workcell",
+            "owner_kind": "product",
+            "owner_version": env!("CARGO_PKG_VERSION"),
+            "contribution_command": ["workcell", "config-contribution", "--json"],
+            "disclosed_at_unix_ms": now,
+            "reading_digest": null,
+            "reading_digest_covers": "document with every *_unix_ms field zeroed and owner.reading_digest set to null",
+        },
+        "about": "Workcell's owned configuration surface: the operator-declared provider/material policy for this Workcell — which logical services it offers and how each may materialise. Provider choices are validated against this machine's real material possibility; observed hardware and provider availability remain disclosure facts (workcell system --json), never writable settings.",
+        "sections": [{
+            "id": CONFIG_SETTING_SECTION,
+            "title": "Processes / services",
+            "settings": [setting],
+        }],
+        "operations": {
+            "transport": "cli/v1",
+            "validate": { "availability": "disclosed", "reason": null },
+            "plan": { "availability": "disclosed", "reason": null },
+            "apply": { "availability": "disclosed", "reason": null },
+            "reset": { "availability": "disclosed", "reason": null },
+        },
+        "availability": { "state": availability_state, "reason": availability_reason },
+        "degradations": [],
+        "obligations": [
+            "multi-Workcell placement policy (epilogos-workcell-placement PlacementPolicy) is engine API only: nothing in the product persists or honours a placement-policy setting yet, so none is contributed here — placement/provider choices are instead validated for material possibility at workcell:processes-services:services.declared",
+            "configuration verbs operate on this machine's Workcell state only; remote Workcell configuration through workcell.control/v1 is not implemented",
+            "observed hardware, provider availability, harness instances and staged material are disclosure-plane facts (workcell system --json) and are deliberately absent as writable settings",
+        ],
+    });
+
+    let mut canonical = contribution.clone();
+    zero_unix_ms(&mut canonical);
+    if let Some(owner) = canonical.get_mut("owner").and_then(Value::as_object_mut) {
+        owner.insert("reading_digest".into(), Value::Null);
+    }
+    let canonical_body = serde_json::to_string(&canonical).unwrap_or_default();
+    let digest = system_hex_digest(&Sha256::digest(canonical_body.as_bytes()));
+    if let Some(owner) = contribution.get_mut("owner").and_then(Value::as_object_mut) {
+        owner.insert("reading_digest".into(), json!(digest));
+    }
+
+    if global.json {
+        emit_json(contribution);
+    } else {
+        println!(
+            "Workcell configuration contribution (oi.configuration-contribution/v1)\n  owner: workcell ({})\n  sections: {}\n  settings: {}\n  availability: {}\n  obligations: {}\n  reading digest: {}",
+            env!("CARGO_PKG_VERSION"),
+            contribution["sections"].as_array().map_or(0, Vec::len),
+            contribution["sections"]
+                .as_array()
+                .map(|sections| sections
+                    .iter()
+                    .map(|section| section["settings"].as_array().map_or(0, Vec::len))
+                    .sum())
+                .unwrap_or(0),
+            contribution["availability"]["state"].as_str().unwrap_or("unknown"),
+            contribution["obligations"].as_array().map_or(0, Vec::len),
+            contribution["owner"]["reading_digest"].as_str().unwrap_or("null"),
+        );
+    }
+    Ok(())
+}
+
 fn write_receipt(
     path: &Path,
     world: &epilogos_workcell_core::MaterialisedExecutionWorld,
@@ -3751,7 +4902,7 @@ fn print_help() {
         "Workcell — provider-neutral material execution control\n\n\
 Usage:\n  workcell [global options] <command> [command options]\n\n\
 Commands:\n  status       Summarise this local Workcell\n  discover     Discover material offers\n  plan         Plan an ExecutionDemand\n  prepare      Prepare a material world and persist a receipt\n  observe      Observe a prepared world from its receipt\n  expose       Resolve prepared exposure surfaces\n  collect      Collect prepared output channels\n  release      Release or preserve a prepared world\n  reconcile    Reconcile desired material state\n  instances    Live harness instances and bounded resource usage
-  sandboxes    OpenSandbox server-side material (reconcile)\n  connections  Cross-cell connection records (list/show/disconnect)\n  providers    List provider inventory\n  system       Emit this Workcell's System settings disclosure (oi.product-settings-disclosure/v2)\n  doctor       Verify the zero-setup local baseline\n\n\
+  sandboxes    OpenSandbox server-side material (reconcile)\n  connections  Cross-cell connection records (list/show/disconnect)\n  providers    List provider inventory\n  system       Emit this Workcell's System settings disclosure (oi.product-settings-disclosure/v2)\n  config-contribution\n               Emit Workcell's configuration contribution (oi.configuration-contribution/v1)\n  config       Owner-native configuration transport: validate | plan | apply | reset\n  doctor       Verify the zero-setup local baseline\n\n\
 Cross-cell connection lifecycle:\n  workcell serve --listen HOST:PORT [--authorization TOKEN]\n      Serve this cell's control plane; grants are enforced per request.\n      Non-loopback listeners require a token or at least one active grant.\n  workcell authorise --client <label> --allow <operation>... [--advertise <port>...] [--store-credential]\n      Grant a connecting client named operations; the credential is shown once.\n  workcell revoke --client <label> | --grant <ref>\n      Revoke grants; takes effect at the connecting client's next use.\n  workcell connect --endpoint HOST:PORT [--connection <label>] [--authorization TOKEN] [--store-credential]\n      Establish or reconnect the client side; reports both cells' protocol\n      and software, refuses unsupported combinations loudly.\n\n\
 Global options:\n  --json                     Structured machine/agent output\n  --state-root PATH          Local Workcell state (default: $WORKCELL_HOME or ~/.workcell)\n  --workcell-ref REF         Workcell identity for new local operations\n  --receipt PATH             Material-world receipt for prepare/resume\n  --workspace-source PATH    Physical local source binding; never semantic identity\n  --services PATH            Operator-declared logical services (default: <state-root>/services.json)\n\n\
 Demand options for plan/prepare:\n  --demand-ref REF\n  --require VALUE | --prefer VALUE | --optional VALUE\n  --workspace writable|read-only [--workspace-ref REF] [--revision REV]\n  --project-runtime MODE\n  --connect VALUE | --prefer-connect VALUE | --optional-connect VALUE\n  --expose VALUE | --prefer-expose VALUE | --optional-expose VALUE\n  --output VALUE | --prefer-output VALUE | --optional-output VALUE\n  --resource key[=amount[:unit]]\n  --subject role=opaque-ref\n  --persistence SCOPE\n  --isolation VALUE\n  --retention release|preserve|suspend-if-supported|snapshot-if-supported\n  --extension key=value\n\n\
