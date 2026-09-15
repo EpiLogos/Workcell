@@ -103,12 +103,9 @@ impl PlaceGrant {
     }
 
     pub fn from_json(value: &Value) -> Result<Self, WorkcellError> {
-        let schema = value
-            .get("schema")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                WorkcellError::InvalidDemand("place grant requires a string `schema`".into())
-            })?;
+        let schema = value.get("schema").and_then(Value::as_str).ok_or_else(|| {
+            WorkcellError::InvalidDemand("place grant requires a string `schema`".into())
+        })?;
         if schema != PLACE_GRANT_VERSION {
             return Err(WorkcellError::InvalidDemand(format!(
                 "place grant version `{schema}` must be `{PLACE_GRANT_VERSION}`"
