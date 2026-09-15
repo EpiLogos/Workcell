@@ -29,6 +29,9 @@ epilogos-workcell-wire = { path = "../workcell-wire" }
 serde_json = "1"
 sha2 = "0.10"
 
+[dev-dependencies]
+jsonschema = { version = "0.56.0", default-features = false }
+
 [[bin]]
 name = "workcell-write-boundary"
 path = "src/bin/workcell-write-boundary.rs"

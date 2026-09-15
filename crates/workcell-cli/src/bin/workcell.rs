@@ -223,6 +223,10 @@ fn run_remote(
         "release" => remote_world_operation(&global, &mut client, RemoteWorldOperation::Release),
         "reconcile" => remote_reconcile(&global, command_args, &mut client),
         "system" => remote_system(&global, &endpoint),
+        "config" | "config-contribution" => Err(WorkcellError::InvalidDemand(format!(
+            "`{command}` operates on this machine's Workcell state; remote Workcell configuration through workcell.control/v1 is not implemented"
+        ))
+        .into()),
         other => Err(WorkcellError::InvalidDemand(format!(
             "unknown command `{other}`; run `workcell help`"
         ))
