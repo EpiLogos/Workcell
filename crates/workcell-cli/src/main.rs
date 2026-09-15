@@ -99,6 +99,8 @@ fn run(args: Vec<String>) -> Result<(), WorkcellError> {
         "release" => command_release(&global),
         "reconcile" => command_reconcile(&global, command_args),
         "instances" => command_instances(&global, command_args),
+        "places" => command_places(&global),
+        "place" => command_place(&global, command_args),
         "sandboxes" => command_sandboxes(&global, command_args),
         "serve" => command_serve(&global, command_args),
         "authorise" => command_authorise(&global, command_args),
@@ -1529,6 +1531,145 @@ fn command_instances(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
         other => Err(WorkcellError::InvalidDemand(format!(
             "unknown instances subcommand `{other}`; expected list|show|register|declare|scan|usage|candidates|project"
         ))),
+    }
+}
+
+/// `workcell places` — the read-only place census. It is a machine-first
+/// census document, so it emits the JSON shape unconditionally (`--json`
+/// changes nothing); there is no useful text rendering of a census.
+fn command_places(_global: &GlobalArgs) -> Result<(), WorkcellError> {
+    let census = epilogos_workcell_runtime::scan_places_live();
+    emit_json(epilogos_workcell_runtime::census_json(&census));
+    Ok(())
+}
+
+/// `workcell place <request|release>` — claim a persistent process place and
+/// give it back. Machine-first like the census: both subcommands emit their
+/// JSON contract document; refusals additionally carry typed evidence.
+fn command_place(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    let Some(subcommand) = args.first().map(String::as_str) else {
+        return Err(WorkcellError::InvalidDemand(
+            "usage: workcell place <request|release> [args]".into(),
+        ));
+    };
+    match subcommand {
+        "request" => command_place_request(global, &args[1..]),
+        "release" => command_place_release(global, &args[1..]),
+        other => Err(WorkcellError::InvalidDemand(format!(
+            "unknown place subcommand `{other}`; expected request|release"
+        ))),
+    }
+}
+
+fn command_place_request(_global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    let mut provider = "auto";
+    let mut name: Option<&str> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--provider" => {
+                index += 1;
+                provider = args.get(index).map(String::as_str).ok_or_else(|| {
+                    WorkcellError::InvalidDemand("--provider requires auto, herdr or tmux".into())
+                })?;
+            }
+            "--name" => {
+                index += 1;
+                name = args.get(index).map(String::as_str);
+            }
+            other => {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "unknown place request flag `{other}`"
+                )))
+            }
+        }
+        index += 1;
+    }
+    let Some(name) = name else {
+        return Err(WorkcellError::InvalidDemand(
+            "usage: workcell place request --provider auto|herdr|tmux --name <slug>".into(),
+        ));
+    };
+    let policy = epilogos_workcell_runtime::PlacePolicy::parse(provider)?;
+
+    match epilogos_workcell_runtime::request_place_live(policy, name) {
+        Ok(grant) => {
+            // Success stdout is exactly the published grant document — the
+            // contract artifact itself, flat and self-describing — so a
+            // consumer can pin and parse `workcell.place-grant/v1` without
+            // unwrapping a command envelope. Refusals keep the typed refusal
+            // document on stdout with a non-zero exit.
+            emit_json(grant.to_json());
+            Ok(())
+        }
+        Err(refusal) => {
+            // Mirror the instances conflict pattern: the typed refusal
+            // document goes to stdout, the error to the exit path.
+            emit_json(refusal.to_json());
+            Err(refusal.to_error())
+        }
+    }
+}
+
+fn command_place_release(_global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    let mut place_ref: Option<&str> = None;
+    let mut pid: Option<u32> = None;
+    let mut start_marker: Option<&str> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--place-ref" => {
+                index += 1;
+                place_ref = args.get(index).map(String::as_str);
+            }
+            "--pid" => {
+                index += 1;
+                pid = Some(
+                    args.get(index)
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .ok_or_else(|| {
+                            WorkcellError::InvalidDemand("--pid requires a numeric process id".into())
+                        })?,
+                );
+            }
+            "--start-marker" => {
+                index += 1;
+                start_marker = args.get(index).map(String::as_str);
+            }
+            other => {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "unknown place release flag `{other}`"
+                )))
+            }
+        }
+        index += 1;
+    }
+    let (Some(place_ref), Some(pid), Some(start_marker)) = (place_ref, pid, start_marker) else {
+        return Err(WorkcellError::InvalidDemand(
+            "usage: workcell place release --place-ref <ref> --pid <n> --start-marker \"<ps lstart>\""
+                .into(),
+        ));
+    };
+    if start_marker.is_empty() {
+        return Err(WorkcellError::InvalidDemand(
+            "--start-marker requires the ps lstart value recorded in the place grant".into(),
+        ));
+    }
+    let demand = epilogos_workcell_runtime::PlaceReleaseDemand {
+        place_ref: place_ref.to_owned(),
+        pid,
+        start_marker: start_marker.to_owned(),
+    };
+
+    match epilogos_workcell_runtime::release_place_live(&demand) {
+        Ok(result) => {
+            emit_json(result);
+            Ok(())
+        }
+        Err(refusal) => {
+            emit_json(refusal.to_json());
+            Err(refusal.to_error())
+        }
     }
 }
 
@@ -4902,6 +5043,8 @@ fn print_help() {
         "Workcell — provider-neutral material execution control\n\n\
 Usage:\n  workcell [global options] <command> [command options]\n\n\
 Commands:\n  status       Summarise this local Workcell\n  discover     Discover material offers\n  plan         Plan an ExecutionDemand\n  prepare      Prepare a material world and persist a receipt\n  observe      Observe a prepared world from its receipt\n  expose       Resolve prepared exposure surfaces\n  collect      Collect prepared output channels\n  release      Release or preserve a prepared world\n  reconcile    Reconcile desired material state\n  instances    Live harness instances and bounded resource usage
+  places       Census of persistent process places (tmux, herdr) — read-only
+  place        Place request/release over those places (request --provider auto|herdr|tmux --name SLUG; release --place-ref REF --pid N --start-marker PS_LSTART)
   sandboxes    OpenSandbox server-side material (reconcile)\n  connections  Cross-cell connection records (list/show/disconnect)\n  providers    List provider inventory\n  system       Emit this Workcell's System settings disclosure (oi.product-settings-disclosure/v2)\n  config-contribution\n               Emit Workcell's configuration contribution (oi.configuration-contribution/v1)\n  config       Owner-native configuration transport: validate | plan | apply | reset\n  doctor       Verify the zero-setup local baseline\n\n\
 Cross-cell connection lifecycle:\n  workcell serve --listen HOST:PORT [--authorization TOKEN]\n      Serve this cell's control plane; grants are enforced per request.\n      Non-loopback listeners require a token or at least one active grant.\n  workcell authorise --client <label> --allow <operation>... [--advertise <port>...] [--store-credential]\n      Grant a connecting client named operations; the credential is shown once.\n  workcell revoke --client <label> | --grant <ref>\n      Revoke grants; takes effect at the connecting client's next use.\n  workcell connect --endpoint HOST:PORT [--connection <label>] [--authorization TOKEN] [--store-credential]\n      Establish or reconnect the client side; reports both cells' protocol\n      and software, refuses unsupported combinations loudly.\n\n\
 Global options:\n  --json                     Structured machine/agent output\n  --state-root PATH          Local Workcell state (default: $WORKCELL_HOME or ~/.workcell)\n  --workcell-ref REF         Workcell identity for new local operations\n  --receipt PATH             Material-world receipt for prepare/resume\n  --workspace-source PATH    Physical local source binding; never semantic identity\n  --services PATH            Operator-declared logical services (default: <state-root>/services.json)\n\n\

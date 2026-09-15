@@ -15,6 +15,8 @@ mod instance_projection;
 mod instance_registry;
 mod instance_scan;
 mod local;
+mod place;
+mod place_scan;
 mod profile;
 mod reference_services;
 mod resource_usage;
@@ -47,6 +49,21 @@ pub use instance_scan::{
 pub use local::{
     CollapsedLocalConfig, CollapsedLocalWorkcell, ServiceDeclarationSource,
     MANAGED_SERVICE_PROVIDER_REF, TARGET_SERVICE_PROVIDER_REF,
+};
+pub use place::{
+    decide_place_release, herdr_place_ref, parse_place_ref, release_place_live, request_place_live,
+    request_tmux_place, tmux_place_ref, validate_place_name, PlaceGrant, PlacePolicy, PlaceRefusal,
+    PlaceReleaseDecision, PlaceReleaseDemand, ProviderSnapshot, PLACE_GRANT_VERSION,
+};
+pub use place_scan::{
+    assemble_census, census_json, classify_command, format_rfc3339_utc, join_process_evidence,
+    machine_name, parse_herdr_pane_list, parse_herdr_process_info, parse_herdr_workspace_list,
+    parse_tmux_list_panes, scan_places_live, utc_now_rfc3339, HerdrPaneRow, HerdrProcessInfo,
+    HerdrWorkspaceRow, PaneObservation, PlaceCensus, PlaceReuseFinding, ProviderCensus,
+    TmuxPaneRow, HERDR_PROVIDER, PLACE_CENSUS_VERSION, PLACE_CLASS_HARNESS, PLACE_CLASS_OTHER,
+    PLACE_CLASS_SELF, PLACE_CLASS_UNOBSERVED, PLACE_PROVIDER_ABSENT, PLACE_PROVIDER_CLI_UNPARSED,
+    PLACE_PROVIDER_ERROR, PLACE_PROVIDER_NO_SERVER, PLACE_PROVIDER_OK,
+    PLACE_PROVIDER_SERVER_UNREACHABLE, SELF_BINARY_STEMS, TMUX_PANE_FORMAT, TMUX_PROVIDER,
 };
 pub use profile::*;
 pub use reference_services::{
