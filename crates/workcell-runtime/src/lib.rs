@@ -34,15 +34,15 @@ pub use instance_projection::{
     projection_candidates, projection_report_json, ProjectionReport,
 };
 pub use instance_registry::{
-    build_instance_record, by_slug, identity_hash, seam, sort_by_reference,
-    validate_instance_record, InstanceObservation, InstanceRegistry, RegisterOutcome,
-    EVIDENCE_DECLARED_UNVERIFIED, EVIDENCE_GATEWAY_CONFIRMED, EVIDENCE_LIVE_PID,
+    build_instance_record, by_slug, identity_hash, recorded_start_marker, seam, sort_by_reference,
+    validate_instance_record, InstanceObservation, InstanceRegistry, ProcessExecution,
+    RegisterOutcome, EVIDENCE_DECLARED_UNVERIFIED, EVIDENCE_GATEWAY_CONFIRMED, EVIDENCE_LIVE_PID,
     HARNESS_INSTANCE_SCHEMA, LIVENESS_LIVE, LIVENESS_STALE, REGISTRY_SCHEMA,
 };
 pub use instance_scan::{
     gateway_answering, read_pid_table, reconcile, report_json, scan_inputs_live, scan_live,
-    InstanceConflict, ObservedInstance, ScanInputs, ScanReport, ScanTransitions, PID_ALIASES,
-    STALE_AFTER_MISSED_SCANS,
+    GenerationReplacement, InstanceConflict, ObservedInstance, ObservedProcess, ScanInputs,
+    ScanReport, ScanTransitions, PID_ALIASES, STALE_AFTER_MISSED_SCANS,
 };
 pub use local::{
     CollapsedLocalConfig, CollapsedLocalWorkcell, ServiceDeclarationSource,

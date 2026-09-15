@@ -32,9 +32,9 @@ use epilogos_workcell_core::{Result, WorkcellError, WorkcellRef};
 use serde_json::{json, Value};
 
 use crate::instance_registry::{
-    build_instance_record, sha256_file, InstanceObservation, InstanceRegistry, RegisterOutcome,
-    EVIDENCE_DECLARED_UNVERIFIED, EVIDENCE_GATEWAY_CONFIRMED, EVIDENCE_LIVE_PID, LIVENESS_LIVE,
-    LIVENESS_STALE,
+    build_instance_record, recorded_start_marker, sha256_file, InstanceObservation,
+    InstanceRegistry, ProcessExecution, RegisterOutcome, EVIDENCE_DECLARED_UNVERIFIED,
+    EVIDENCE_GATEWAY_CONFIRMED, EVIDENCE_LIVE_PID, LIVENESS_LIVE, LIVENESS_STALE,
 };
 
 pub const STALE_AFTER_MISSED_SCANS: u64 = 2;
@@ -57,6 +57,30 @@ pub const PID_ALIASES: [(&str, &str); 12] = [
     ("grok", "grok-bot"),
     ("qwen", "qwen"),
 ];
+
+/// One row of the live pid table: the pid, the OS process start marker
+/// (`ps lstart`, the start-identity discipline shared with `resource_usage`)
+/// and the observed executable path or name. The start marker scopes the pid
+/// to one process generation: a recycled pid carries a different marker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedProcess {
+    pub pid: u32,
+    pub start_marker: String,
+    pub comm: String,
+}
+
+/// A named process-generation change: the record bound `pid` to one start
+/// marker and this scan observed the same pid under a different one. The
+/// contract identity is unchanged (same executable); the observed process
+/// generation is not the recorded one. Named for the owner, never silently
+/// merged into a continuity claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenerationReplacement {
+    pub instance_ref: String,
+    pub pid: u32,
+    pub recorded_start_marker: String,
+    pub observed_start_marker: String,
+}
 
 /// What the scanner observed about one live process this scan.
 #[derive(Debug, Clone)]
@@ -100,6 +124,8 @@ pub struct ScanReport {
     pub conflicts: Vec<InstanceConflict>,
     /// pid comms that matched no known alias; named, never silently dropped.
     pub unmatched_processes: Vec<String>,
+    /// Same-pid-different-start-marker findings this scan.
+    pub generation_replacements: Vec<GenerationReplacement>,
 }
 
 impl ScanReport {
@@ -113,6 +139,7 @@ impl ScanReport {
             transitions: ScanTransitions::default(),
             conflicts: Vec::new(),
             unmatched_processes: Vec::new(),
+            generation_replacements: Vec::new(),
         }
     }
 
@@ -128,9 +155,8 @@ impl ScanReport {
 pub struct ScanInputs {
     /// Parsed Actuation detection document (`actuation.harness-detection/v1`).
     pub detection: Value,
-    /// Live pid table: (pid, observed executable path where the host supplies
-    /// one, otherwise its executable name).
-    pub processes: Vec<(u32, String)>,
+    /// Live pid table rows with their process start markers.
+    pub processes: Vec<ObservedProcess>,
     /// Whether the ai-kit Agency Gateway answered its well-known endpoint
     /// this scan. An independent detection seam: Hermes runs under
     /// python/node runtimes its pid comm cannot name, so the carrier answer
@@ -228,6 +254,7 @@ pub fn reconcile(
 
     let mut transitions = ScanTransitions::default();
     let mut conflicts = Vec::new();
+    let mut generation_replacements = Vec::new();
     for instance in &observed {
         let reference = instance.record["instance_ref"]
             .as_str()
@@ -321,6 +348,46 @@ pub fn reconcile(
             .and_then(|existing| existing.get("liveness").and_then(Value::as_str))
             == Some(LIVENESS_STALE);
         let was_present = prior.is_some();
+
+        // Process-generation law: a pid observed under a different start
+        // marker than the recorded one is a replaced process (the host
+        // recycled the pid). The refreshed record carries the new evidence,
+        // and the replacement is named — never merged into a continuity
+        // claim.
+        if let Some(existing) = prior.as_ref() {
+            for execution in instance
+                .record
+                .get("executions")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let Some(pid) = execution
+                    .get("pid")
+                    .and_then(Value::as_u64)
+                    .and_then(|pid| u32::try_from(pid).ok())
+                else {
+                    continue;
+                };
+                let Some(observed_marker) = execution
+                    .get("process_start_marker")
+                    .and_then(Value::as_str)
+                else {
+                    continue;
+                };
+                if let Some(recorded_marker) = recorded_start_marker(existing, pid) {
+                    if recorded_marker != observed_marker {
+                        generation_replacements.push(GenerationReplacement {
+                            instance_ref: reference.clone(),
+                            pid,
+                            recorded_start_marker: recorded_marker,
+                            observed_start_marker: observed_marker.to_owned(),
+                        });
+                    }
+                }
+            }
+        }
+
         match registry.register(instance.record.clone()) {
             Ok(RegisterOutcome::Registered) => {
                 if !was_present {
@@ -422,7 +489,7 @@ pub fn reconcile(
     let matched_comms: BTreeSet<String> = inputs
         .processes
         .iter()
-        .map(|(_, comm)| executable_basename(comm))
+        .map(|process| executable_basename(&process.comm))
         .collect();
     let known_aliases: BTreeSet<&str> = PID_ALIASES.iter().map(|(alias, _)| *alias).collect();
     let unmatched_processes = matched_comms
@@ -448,6 +515,7 @@ pub fn reconcile(
         transitions,
         conflicts,
         unmatched_processes,
+        generation_replacements,
     }
 }
 
@@ -460,10 +528,11 @@ fn alias_slug(comm: &str) -> &str {
 }
 
 /// Build instance observations from a validated detection document plus the
-/// live pid table. One observation per (detected harness, observed pid).
+/// live pid table. One observation per (detected harness, observed
+/// executable identity); each observed pid carries its process start marker.
 fn observations_from_detection(
     detection: &Value,
-    processes: &[(u32, String)],
+    processes: &[ObservedProcess],
     workcell_ref: &WorkcellRef,
     gateway_answer: bool,
 ) -> Result<Vec<ObservedInstance>> {
@@ -503,13 +572,13 @@ fn observations_from_detection(
             .cloned()
             .unwrap_or_default();
 
-        let mut process_groups: BTreeMap<(PathBuf, bool), Vec<u32>> = BTreeMap::new();
-        for (pid, observed_comm) in processes {
-            let observed_name = executable_basename(observed_comm);
+        let mut process_groups: BTreeMap<(PathBuf, bool), Vec<ObservedProcess>> = BTreeMap::new();
+        for observed_process in processes {
+            let observed_name = executable_basename(&observed_process.comm);
             if observed_name != executable_name && !alias_matches_slug(&observed_name, slug) {
                 continue;
             }
-            let observed_path = PathBuf::from(observed_comm);
+            let observed_path = PathBuf::from(&observed_process.comm);
             let observed_identity = observed_path.is_absolute();
             let identity_path = if observed_identity {
                 fs::canonicalize(&observed_path).unwrap_or(observed_path)
@@ -519,7 +588,7 @@ fn observations_from_detection(
             process_groups
                 .entry((identity_path, observed_identity))
                 .or_default()
-                .push(*pid);
+                .push(observed_process.clone());
         }
         if process_groups.is_empty() {
             continue; // installed, not executing — not an instance
@@ -529,7 +598,7 @@ fn observations_from_detection(
         if (slug == "hermes" || slug == "hermes-acp") && gateway_answer {
             evidence_grade = EVIDENCE_GATEWAY_CONFIRMED;
         }
-        for ((identity_path, observed_identity), pids) in process_groups {
+        for ((identity_path, observed_identity), group) in process_groups {
             let (path, sha256, identity_material) = if observed_identity {
                 let sha256 = sha256_file(&identity_path)?;
                 let material = identity_path.to_string_lossy().into_owned();
@@ -546,6 +615,14 @@ fn observations_from_detection(
                     material,
                 )
             };
+            let pids: Vec<u32> = group.iter().map(|process| process.pid).collect();
+            let executions: Vec<ProcessExecution> = group
+                .iter()
+                .map(|process| ProcessExecution {
+                    pid: process.pid,
+                    process_start_marker: process.start_marker.clone(),
+                })
+                .collect();
             let record = build_instance_record(
                 workcell_ref,
                 &InstanceObservation {
@@ -554,6 +631,7 @@ fn observations_from_detection(
                     executable_sha256: sha256,
                     identity_material,
                     pids,
+                    executions,
                     evidence_grade: evidence_grade.to_owned(),
                     seams: seams.clone(),
                 },
@@ -614,6 +692,7 @@ fn gateway_only_hermes_observation(
                 executable_sha256: executable_sha.clone(),
                 identity_material: format!("gateway:{}", default_gateway_socket().display()),
                 pids: vec![],
+                executions: vec![],
                 evidence_grade: EVIDENCE_GATEWAY_CONFIRMED.into(),
                 seams,
             },
@@ -676,24 +755,43 @@ fn run_actuation_detection(command: &str) -> std::result::Result<Value, String> 
         .map_err(|error| format!("parse `{command} harness detect --json` output: {error}"))
 }
 
-/// Read the live pid table as (pid, executable basename) pairs.
-pub fn read_pid_table() -> std::result::Result<Vec<(u32, String)>, String> {
+/// Read the live pid table as pid / start-marker / executable-name rows.
+/// The start marker is `ps lstart` — the same start-identity evidence
+/// `resource_usage` samples — so a recycled pid is detectable as a new
+/// process generation rather than a continuing one.
+pub fn read_pid_table() -> std::result::Result<Vec<ObservedProcess>, String> {
     let output = Command::new("ps")
-        .args(["-axo", "pid=,comm="])
+        .args(["-axo", "pid=,lstart=,comm="])
         .stdin(Stdio::null())
         .output()
-        .map_err(|error| format!("run `ps -axo pid=,comm=`: {error}"))?;
+        .map_err(|error| format!("run `ps -axo pid=,lstart=,comm=`: {error}"))?;
     if !output.status.success() {
-        return Err(format!("`ps -axo pid=,comm=` exited {}", output.status));
+        return Err(format!(
+            "`ps -axo pid=,lstart=,comm=` exited {}",
+            output.status
+        ));
     }
     let mut processes = Vec::new();
     for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let mut parts = line.split_whitespace();
-        let Some(pid) = parts.next().and_then(|value| value.parse::<u32>().ok()) else {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        let Some(pid) = fields.first().and_then(|value| value.parse::<u32>().ok()) else {
             continue;
         };
-        let comm = parts.next().unwrap_or_default().to_owned();
-        processes.push((pid, comm));
+        // `lstart` renders as five whitespace-separated tokens
+        // (`Thu Sep 14 00:01:50 2026`); the comm follows it and may itself
+        // contain spaces.
+        let (start_marker, comm) = if fields.len() >= 7 {
+            (fields[1..6].join(" "), fields[6..].join(" "))
+        } else {
+            // A row without the full timestamp cannot carry start evidence;
+            // keep the pid visible with an empty marker, never drop it.
+            (String::new(), fields[1..].join(" "))
+        };
+        processes.push(ObservedProcess {
+            pid,
+            start_marker,
+            comm,
+        });
     }
     Ok(processes)
 }
@@ -757,6 +855,18 @@ pub fn report_json(report: &ScanReport) -> Value {
             })
             .collect::<Vec<_>>(),
         "unmatched_processes": report.unmatched_processes,
+        "generation_replacements": report
+            .generation_replacements
+            .iter()
+            .map(|replacement| {
+                json!({
+                    "instance_ref": replacement.instance_ref,
+                    "pid": replacement.pid,
+                    "recorded_start_marker": replacement.recorded_start_marker,
+                    "observed_start_marker": replacement.observed_start_marker,
+                })
+            })
+            .collect::<Vec<_>>(),
         "instances": report.live.iter().chain(report.stale.iter()).cloned().collect::<Vec<_>>(),
     })
 }
@@ -805,9 +915,27 @@ mod tests {
         )
     }
 
+    /// A pid-table row with a shared default start marker; the marker value
+    /// is irrelevant unless a test asserts on it.
+    fn proc(pid: u32, comm: &str) -> ObservedProcess {
+        ObservedProcess {
+            pid,
+            start_marker: "Thu Sep 14 00:01:50 2026".into(),
+            comm: comm.to_owned(),
+        }
+    }
+
+    fn proc_marker(pid: u32, comm: &str, marker: &str) -> ObservedProcess {
+        ObservedProcess {
+            pid,
+            start_marker: marker.to_owned(),
+            comm: comm.to_owned(),
+        }
+    }
+
     fn inputs(
         detection: Value,
-        processes: Vec<(u32, String)>,
+        processes: Vec<ObservedProcess>,
         gateway_answering: bool,
     ) -> ScanInputs {
         ScanInputs {
@@ -830,6 +958,10 @@ mod tests {
                     executable_sha256: "ab".repeat(32),
                     identity_material: "/usr/local/bin/hermes".into(),
                     pids: vec![1],
+                    executions: vec![ProcessExecution {
+                        pid: 1,
+                        process_start_marker: "Thu Sep 14 00:01:50 2026".into(),
+                    }],
                     evidence_grade: EVIDENCE_LIVE_PID.into(),
                     seams: vec![],
                 },
@@ -857,7 +989,7 @@ mod tests {
             registry.clone(),
             ScanInputs {
                 detection: detection(&[("hermes", true)]),
-                processes: vec![(4242, "hermes".into())],
+                processes: vec![proc(4242, "hermes")],
                 gateway_answering: false,
             },
         );
@@ -884,7 +1016,7 @@ mod tests {
             registry.clone(),
             inputs(
                 detection(&[("codex", true)]),
-                vec![(30757, running.to_string_lossy().into_owned())],
+                vec![proc(30757, &running.to_string_lossy())],
                 false,
             ),
         );
@@ -917,8 +1049,8 @@ mod tests {
             inputs(
                 detection(&[("codex", true)]),
                 vec![
-                    (10, first.to_string_lossy().into_owned()),
-                    (11, second.to_string_lossy().into_owned()),
+                    proc(10, &first.to_string_lossy()),
+                    proc(11, &second.to_string_lossy()),
                 ],
                 false,
             ),
@@ -966,7 +1098,7 @@ mod tests {
             registry.clone(),
             inputs(
                 detection(&[("hermes", true)]),
-                vec![(7, "hermes".into())],
+                vec![proc(7, "hermes")],
                 false,
             ),
         );
@@ -995,7 +1127,7 @@ mod tests {
             registry.clone(),
             inputs(
                 detection(&[("hermes", true)]),
-                vec![(9, "hermes".into())],
+                vec![proc(9, "hermes")],
                 false,
             ),
         );
@@ -1033,7 +1165,7 @@ mod tests {
             registry,
             ScanInputs {
                 detection: detection(&[]),
-                processes: vec![(100, "mystery".into()), (200, "claude".into())],
+                processes: vec![proc(100, "mystery"), proc(200, "claude")],
                 gateway_answering: false,
             },
         );
@@ -1051,7 +1183,7 @@ mod tests {
             registry,
             ScanInputs {
                 detection: detection(&[("hermes", true)]),
-                processes: vec![(1, "hermes".into())],
+                processes: vec![proc(1, "hermes")],
                 gateway_answering: false,
             },
         );
@@ -1073,7 +1205,7 @@ mod tests {
             registry.clone(),
             inputs(
                 detection(&[("hermes", true), ("claude-code", true)]),
-                vec![(500, "python3.11".into()), (600, "claude".into())],
+                vec![proc(500, "python3.11"), proc(600, "claude")],
                 true,
             ),
         );
@@ -1105,11 +1237,7 @@ mod tests {
             registry.clone(),
             inputs(
                 detection(&[("claude-code", true)]),
-                vec![
-                    (11, "claude".into()),
-                    (12, "claude".into()),
-                    (13, "claude".into()),
-                ],
+                vec![proc(11, "claude"), proc(12, "claude"), proc(13, "claude")],
                 false,
             ),
         );
@@ -1121,6 +1249,139 @@ mod tests {
     }
 
     #[test]
+    fn same_pid_with_different_start_marker_is_a_named_generation_replacement() {
+        // A recycled pid is not a continuing process: the second scan
+        // observes the same pid under a different start marker, the record
+        // refreshes to the new evidence, and the replacement is named for
+        // the owner — never silently merged into a continuity claim.
+        let root = temp_root("generation-replacement");
+        let registry = InstanceRegistry::new(&root, WorkcellRef::new("workcell:local").unwrap());
+        let first = scan(
+            registry.clone(),
+            inputs(
+                detection(&[("hermes", true)]),
+                vec![proc_marker(7, "hermes", "Thu Sep 14 00:00:01 2026")],
+                false,
+            ),
+        );
+        assert_eq!(first.status, "ok");
+        assert!(first.generation_replacements.is_empty());
+
+        let second = scan(
+            registry.clone(),
+            inputs(
+                detection(&[("hermes", true)]),
+                vec![proc_marker(7, "hermes", "Thu Sep 14 00:00:09 2026")],
+                false,
+            ),
+        );
+        assert_eq!(second.status, "ok");
+        assert_eq!(second.generation_replacements.len(), 1);
+        let replacement = &second.generation_replacements[0];
+        assert_eq!(replacement.pid, 7);
+        assert_eq!(
+            replacement.recorded_start_marker,
+            "Thu Sep 14 00:00:01 2026"
+        );
+        assert_eq!(
+            replacement.observed_start_marker,
+            "Thu Sep 14 00:00:09 2026"
+        );
+
+        // The record now carries the new generation's evidence.
+        let records = registry.list().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0]["executions"][0]["process_start_marker"],
+            "Thu Sep 14 00:00:09 2026"
+        );
+
+        // The JSON readback names it too.
+        let value = report_json(&second);
+        assert_eq!(value["generation_replacements"][0]["pid"], 7);
+        assert_eq!(
+            value["generation_replacements"][0]["recorded_start_marker"],
+            "Thu Sep 14 00:00:01 2026"
+        );
+    }
+
+    #[test]
+    fn same_pid_same_start_marker_is_continuation_not_replacement() {
+        let root = temp_root("generation-continuation");
+        let registry = InstanceRegistry::new(&root, WorkcellRef::new("workcell:local").unwrap());
+        let marker = "Thu Sep 14 00:00:01 2026";
+        for _ in 0..3 {
+            let report = scan(
+                registry.clone(),
+                inputs(
+                    detection(&[("hermes", true)]),
+                    vec![proc_marker(7, "hermes", marker)],
+                    false,
+                ),
+            );
+            assert_eq!(report.status, "ok");
+            assert!(report.generation_replacements.is_empty());
+        }
+        let records = registry.list().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["executions"][0]["process_start_marker"], marker);
+    }
+
+    #[test]
+    fn two_simultaneous_executions_carry_distinct_per_execution_start_evidence() {
+        // Executable aggregation must not collapse simultaneous executions:
+        // one contract identity, and each execution named with its own start
+        // marker so per-execution correlation stays possible.
+        let root = temp_root("per-execution");
+        let registry = InstanceRegistry::new(&root, WorkcellRef::new("workcell:local").unwrap());
+        let report = scan(
+            registry.clone(),
+            inputs(
+                detection(&[("claude-code", true)]),
+                vec![
+                    proc_marker(11, "claude", "Thu Sep 14 00:00:03 2026"),
+                    proc_marker(12, "claude", "Thu Sep 14 00:00:07 2026"),
+                ],
+                false,
+            ),
+        );
+        assert_eq!(report.status, "ok");
+        let records = registry.list().unwrap();
+        assert_eq!(records.len(), 1);
+        let executions = records[0]["executions"].as_array().unwrap();
+        assert_eq!(executions.len(), 2);
+        let markers: BTreeSet<&str> = executions
+            .iter()
+            .map(|execution| execution["process_start_marker"].as_str().unwrap())
+            .collect();
+        assert_eq!(markers.len(), 2, "each execution keeps its own marker");
+        let execution_pids: BTreeSet<u64> = executions
+            .iter()
+            .map(|execution| execution["pid"].as_u64().unwrap())
+            .collect();
+        assert_eq!(execution_pids, BTreeSet::from([11, 12]));
+    }
+
+    #[test]
+    fn real_pid_table_supplies_start_markers_for_this_test_process() {
+        let processes = read_pid_table().unwrap();
+        let myself = processes
+            .iter()
+            .find(|process| process.pid == std::process::id())
+            .expect("this test process appears in the host pid table");
+        assert!(
+            !myself.start_marker.is_empty(),
+            "the host ps provider supplied a start marker for pid {}",
+            myself.pid
+        );
+        assert_eq!(
+            myself.start_marker.split_whitespace().count(),
+            5,
+            "the start marker is a full lstart timestamp"
+        );
+    }
+
+    #[test]
     fn no_gateway_answer_no_gateway_seam_instance() {
         let root = temp_root("no-gateway");
         let registry = InstanceRegistry::new(&root, WorkcellRef::new("workcell:local").unwrap());
@@ -1128,7 +1389,7 @@ mod tests {
             registry.clone(),
             inputs(
                 detection(&[("hermes", true)]),
-                vec![(500, "python3.11".into())],
+                vec![proc(500, "python3.11")],
                 false,
             ),
         );
@@ -1157,7 +1418,7 @@ mod tests {
             registry.clone(),
             inputs(
                 detection(&[("hermes", true)]),
-                vec![(41, "hermes".into())],
+                vec![proc(41, "hermes")],
                 false,
             ),
         );
@@ -1225,7 +1486,7 @@ mod tests {
             registry.clone(),
             inputs(
                 detection(&[("hermes", true)]),
-                vec![(77, "hermes".into())],
+                vec![proc(77, "hermes")],
                 false,
             ),
         );
@@ -1253,7 +1514,7 @@ mod tests {
             registry.clone(),
             inputs(
                 detection(&[("codex", true)]),
-                vec![(88, "codex".into())],
+                vec![proc(88, "codex")],
                 false,
             ),
         );

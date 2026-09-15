@@ -26,12 +26,25 @@ numeric value.
 
 The collector requires the PID to belong to the named live HarnessInstance.
 It checks the registry binding before and after the interval and checks the OS
-process start marker and executable across both samples. PID reuse, executable
+process start marker and executable across both samples. When the recording
+scan stored a start marker for that PID (`executions` in the instance
+record), the live sample must match it: a mismatch is a stale binding — the
+host recycled the PID and the recorded process generation was replaced —
+refused by name, never attributed to the old interval. Records without stored
+start evidence (manual registration, older records) disclose the gap with an
+empty `executions` array and skip the check. PID reuse, executable
 replacement, instance revival/rebinding or movement to another Workcell is a
 named unavailable result, never a continuation of the old interval.
 
 The live scanner binds each PID to the executable path the host actually
-reports and fingerprints that binary when readable. Installation detection is
+reports and fingerprints that binary when readable. It also records each
+observed execution's process start marker, so simultaneous executions of one
+executable stay individually correlated and a PID observed under a different
+marker than the record holds is named in the scan report as a
+`generation_replacements` entry instead of being silently refreshed. Start
+markers are host-local scheduling facts, not global identities: they prove
+process generations within one machine's observations and nothing more.
+Installation detection is
 only matching vocabulary; it cannot substitute its candidate executable for a
 different running binary. Processes from the same harness family but distinct
 executables therefore remain distinct HarnessInstances instead of being
