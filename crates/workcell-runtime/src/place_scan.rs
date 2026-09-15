@@ -57,7 +57,12 @@ pub const SELF_BINARY_STEMS: [&str; 2] = ["workcell", "factory"];
 
 /// The tmux `list-panes` format: one tab-separated row per pane, default
 /// socket only (`-a` across all sessions). Field order is the parser contract.
-pub const TMUX_PANE_FORMAT: &str = "#{session_name}\t#{session_created}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_dead}\t#{pane_tty}";
+/// tmux 3.7 escapes control characters in format expansion (a literal tab
+/// byte comes back as the two characters `\t` — found live on Omarchy during
+/// the commissioned TM02-R re-test), so the row separator is `:`: no field
+/// but an arbitrary user window name can carry one, and a window name with a
+/// colon is skipped and counted as malformed, never fatal.
+pub const TMUX_PANE_FORMAT: &str = "#{session_name}:#{session_created}:#{window_index}:#{window_name}:#{pane_id}:#{pane_pid}:#{pane_current_command}:#{pane_dead}:#{pane_tty}";
 
 /// One parsed tmux pane row. Every field is a defensive `Option`/default:
 /// tmux renders what it has, and a pane with no live pid (a dead pane) is
@@ -405,7 +410,7 @@ pub fn parse_tmux_list_panes(output: &str) -> (Vec<TmuxPaneRow>, usize) {
         if line.trim().is_empty() {
             continue;
         }
-        let fields: Vec<&str> = line.split('\t').collect();
+        let fields: Vec<&str> = line.split(':').collect();
         if fields.len() != 9 {
             malformed += 1;
             continue;
@@ -879,11 +884,12 @@ mod tests {
     fn tmux_fixture() -> String {
         // Two live panes (one a harness alias), one dead pane with no pid,
         // one row whose window name contains spaces, and one malformed row.
-        "main\t1718000000\t0\tzsh\t%0\t4242\tzsh\t0\t/dev/ttys004\n\
-         main\t1718000000\t1\tvim notes\t%1\t4243\tclaude\t0\t/dev/ttys005\n\
-         workcell-test\t1718000100\t0\tzsh\t%2\t\tzsh\t1\t\n\
-         shared work\t1718000200\t0\tlogs & errors\t%3\t4244\thtop\t0\t/dev/ttys006\n\
-         this\trow\tis\tbroken\n"
+        // Separator `:` — see TMUX_PANE_FORMAT for why not a tab.
+        "main:1718000000:0:zsh:%0:4242:zsh:0:/dev/ttys004\n\
+         main:1718000000:1:vim notes:%1:4243:claude:0:/dev/ttys005\n\
+         workcell-test:1718000100:0:zsh:%2::zsh:1:\n\
+         shared work:1718000200:0:logs & errors:%3:4244:htop:0:/dev/ttys006\n\
+         this:row:is:broken\n"
             .to_string()
     }
 
@@ -932,8 +938,22 @@ mod tests {
 
     #[test]
     fn tmux_parser_refuses_non_numeric_pid_rows_as_malformed() {
-        let line = "main\t1718000000\t0\tzsh\t%0\tnot-a-pid\tzsh\t0\t/dev/ttys004\n";
+        let line = "main:1718000000:0:zsh:%0:not-a-pid:zsh:0:/dev/ttys004\n";
         let (rows, malformed) = parse_tmux_list_panes(line);
+        assert_eq!(rows.len(), 0);
+        assert_eq!(malformed, 1);
+    }
+
+    #[test]
+    fn tmux37_control_char_escapes_never_count_as_separators() {
+        // tmux 3.7 (Omarchy host, found live during TM02-R): a literal tab
+        // byte in the format comes back escaped as the two characters `\t`,
+        // so a tab-separated contract silently degrades to one field per
+        // row. With the `:` contract such a degraded row is malformed and
+        // counted, never silently accepted or fatal.
+        let (rows, malformed) = parse_tmux_list_panes(
+            "main\\t1718000000\\t0\\tzsh\\t%0\\t4242\\tzsh\\t0\\t/dev/ttys004\n",
+        );
         assert_eq!(rows.len(), 0);
         assert_eq!(malformed, 1);
     }
