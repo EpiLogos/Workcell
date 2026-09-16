@@ -1,4 +1,13 @@
 {
   "schema": "central.project-now.promotions/v1",
-  "entries": []
+  "entries": [
+    {
+      "source": "ProjectCentral/now/agents/remote-file-sharing-over-tailnet-runbook-2026-09-16.json",
+      "target": "agent-wiki",
+      "destination": "ProjectCentral/agents/wiki/returns/remote-file-sharing-over-tailnet",
+      "acceptance": "agent-return",
+      "recorded_at_unix_seconds": 1789595408,
+      "source_preserved": true
+    }
+  ]
 }

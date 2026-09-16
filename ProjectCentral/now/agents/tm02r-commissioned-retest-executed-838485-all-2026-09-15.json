@@ -1,0 +1,11 @@
+{
+  "schema": "central.project-now.handoff/v1",
+  "id": "tm02r-commissioned-retest-executed-838485-all-2026-09-15",
+  "provenance": "agent-authored-bounded-return",
+  "actor": "agent:oh-i",
+  "kind": "handoff",
+  "recorded_at_unix_seconds": 1789497208,
+  "subject": "TM02-R commissioned re-test executed: #83/#84/#85 all merged and deployed to Omarchy; two live cold/tmux-3.7 bugs found and fixed during the test itself; census, commission, bind, release and refusal paths all proven on the real machine",
+  "result": "Owner merged #83 and #84; #85 (tmux 3.7 control-char escaping in -F formats — separator now colon, regression-tested) opened, CI-green and merged this session; branches deleted; Omarchy binaries rebuilt from mains with backups. Live proofs now on the real host: cold-bootstrap request works (#84); census reads tmux 3.7c + herdr 0.8.2 panes with pid+start-marker, classifying harness/self/other; request->already-exists(exit 3)->release(proved generation)->place-mismatch/stale-binding(exit 7) all demonstrated. AIKit SessionSpace bound to a commissioned tmux room via plan id and opened healthy without minting a second world; the handoff changed material pane identity and the binding honestly recorded reobserved-unproven. Full receipts frank:~/tm02r-field-test/receipts/, root execution receipt Control/agents/now/flows/tm02r-execution-receipt-2026-09-15-1840.md. Open follow-ups recorded there: census tmux status present-no-server wording, pi pane classified other (pid-table vs foreground-name integration), both cosmetic-to-modest",
+  "status": "resolved"
+}
