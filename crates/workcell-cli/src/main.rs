@@ -2225,7 +2225,18 @@ fn command_connect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellE
             .and_then(|record| record.credential_ref.as_deref()),
     )?;
 
-    let mut client = ControlClient::new(TcpControlTransport::new(endpoint.clone()));
+    // Material operations are not chatty: preparing a real world (a sandbox
+    // booting in a VM, an image pulling) legitimately runs for minutes. The
+    // read window is operator-tunable because a fixed 10s default silently
+    // caps how long a remote materialisation may take.
+    let operation_timeout = env::var("WORKCELL_CONTROL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|secs| std::time::Duration::from_secs(secs))
+        .unwrap_or(std::time::Duration::from_secs(300));
+    let mut client = ControlClient::new(
+        TcpControlTransport::new(endpoint.clone()).with_timeout(Some(operation_timeout)),
+    );
     if let Some(token) = &credential {
         client = client.with_authorization(token);
     }
