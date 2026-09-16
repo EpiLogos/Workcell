@@ -17,12 +17,17 @@ use epilogos_workcell_runtime::{
 };
 
 fn temp_root(label: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Tests in one binary share a pid; a loaded run can quantise two
+    // same-instant calls onto one clock tick.
+    static SEQ: AtomicU64 = AtomicU64::new(0);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "epilogos-workcell-external-service-{label}-{}-{nonce}",
+        "epilogos-workcell-external-service-{label}-{}-{nonce}-{seq}",
         std::process::id()
     ))
 }

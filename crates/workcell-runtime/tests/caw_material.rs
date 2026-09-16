@@ -6,13 +6,18 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 fn root(label: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Tests in one binary share a pid; a loaded run can quantise two
+    // same-instant calls onto one clock tick.
+    static SEQ: AtomicU64 = AtomicU64::new(0);
     let p = std::env::temp_dir().join(format!(
-        "workcell-caw-{label}-{}-{}",
+        "workcell-caw-{label}-{}-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir_all(&p).unwrap();
     p

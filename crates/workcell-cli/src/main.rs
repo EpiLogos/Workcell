@@ -2232,7 +2232,7 @@ fn command_connect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellE
     let operation_timeout = env::var("WORKCELL_CONTROL_TIMEOUT_SECS")
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
-        .map(|secs| std::time::Duration::from_secs(secs))
+        .map(std::time::Duration::from_secs)
         .unwrap_or(std::time::Duration::from_secs(300));
     let mut client = ControlClient::new(
         TcpControlTransport::new(endpoint.clone()).with_timeout(Some(operation_timeout)),
