@@ -141,6 +141,14 @@ pub struct OpenSandboxCredentialMaterialReceipt {
     pub provenance: BTreeMap<String, String>,
 }
 
+/// Portable evidence that a sandbox's Credential Vault was deleted. Refs only.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OpenSandboxVaultRevocationReceipt {
+    pub sandbox_material_ref: String,
+    pub revoked: bool,
+    pub provenance: BTreeMap<String, String>,
+}
+
 pub struct OpenSandboxCredentialBroker<T> {
     config: OpenSandboxConfig,
     transport: T,
@@ -153,6 +161,39 @@ where
     pub fn new(config: OpenSandboxConfig, transport: T) -> Result<Self> {
         config.validate()?;
         Ok(Self { config, transport })
+    }
+
+    /// Revoke at the projected target: delete the sandbox's whole Credential
+    /// Vault so injected material stops being injected at the next outbound
+    /// flow. Refs only in, no material out — the deletion is named by the
+    /// allocation, and the sidecar's answer is reduced to ok-or-reason.
+    pub fn delete_vault(
+        &self,
+        allocation: &ProviderAllocation,
+    ) -> Result<OpenSandboxVaultRevocationReceipt> {
+        let endpoint = resolve_data_endpoint(
+            &self.config,
+            &self.transport,
+            allocation,
+            OPENSANDBOX_EGRESS_PORT,
+        )?;
+        let response = data_request(
+            &self.transport,
+            &endpoint,
+            "DELETE",
+            "/credential-vault",
+            BTreeMap::new(),
+            Vec::new(),
+        )?;
+        require_success_safe(&response, "credential-vault revocation")?;
+        Ok(OpenSandboxVaultRevocationReceipt {
+            sandbox_material_ref: allocation.material_ref.clone(),
+            revoked: true,
+            provenance: BTreeMap::from([
+                ("provider".into(), "opensandbox:credential-vault".into()),
+                ("secret.visibility".into(), "use-without-read".into()),
+            ]),
+        })
     }
 
     pub fn materialise<P: SecretProvider>(

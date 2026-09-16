@@ -124,7 +124,7 @@ fn main() -> ExitCode {
     // routed through the `--endpoint` remote selector.
     if matches!(
         first_command(&original_args),
-        Some("serve" | "authorise" | "revoke" | "connect" | "connections")
+        Some("serve" | "authorise" | "revoke" | "connect" | "connections" | "machine")
     ) {
         return local_cli::invoke();
     }

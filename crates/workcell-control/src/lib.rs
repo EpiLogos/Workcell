@@ -1,6 +1,7 @@
 mod client;
 pub mod codec;
 pub mod grants;
+pub mod machines;
 mod network;
 pub mod projections;
 mod service;
@@ -13,6 +14,10 @@ use epilogos_workcell_core::WorkcellError;
 pub use grants::{
     credential_sha256, generate_credential, grant_ref_for, parse_duration_millis, validate_label,
     ConnectionGrants, CreateOutcome, GrantDecision, CONNECTIONS_DIRECTORY, GRANTS_FILE,
+};
+pub use machines::{
+    RemoteMachineDeclaration, RemoteMachineRegistry, MACHINE_CREDENTIAL_SCHEMES, MACHINES_FILE,
+    MACHINES_SCHEMA,
 };
 pub use network::{TcpControlServer, TcpControlTransport};
 pub use projections::{

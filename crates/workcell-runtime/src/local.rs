@@ -13,6 +13,9 @@ use epilogos_workcell_core::{
     WorkcellRef, WorkspaceAccess, WorkspaceMaterialRequest, WorkspaceMaterialSource,
     WorkspaceProvider, WorldRef,
 };
+use epilogos_workcell_opensandbox::{
+    OpenSandboxConfig, OpenSandboxExecutionProvider, StdHttpOpenSandboxTransport,
+};
 use epilogos_workcell_workspace::DirectoryWorkspaceProvider;
 
 use crate::{
@@ -29,6 +32,9 @@ pub const MANAGED_SERVICE_PROVIDER_REF: &str = "provider:collapsed-local-managed
 /// Provider identity for operator-declared services that something outside
 /// Workcell starts and supervises.
 pub const TARGET_SERVICE_PROVIDER_REF: &str = "provider:collapsed-local-target-services";
+/// Provider identity for a declared OpenSandbox lifecycle deployment this
+/// Workcell materialises sandbox execution through.
+pub const OPENSANDBOX_PROVIDER_REF: &str = "provider:opensandbox";
 
 /// Where a collapsed-local Workcell reads its operator-declared services.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -67,6 +73,12 @@ pub struct CollapsedLocalConfig {
     pub host_lifetime: HostLifetime,
     /// Explicit existing NOW/state paths, not semantic allocation instructions.
     pub directories: Vec<DirectoryStorage>,
+    /// An OpenSandbox lifecycle deployment this Workcell materialises sandbox
+    /// execution through, declared programmatically by the composing host.
+    /// `None` offers no sandbox execution: a demand for one stays honestly
+    /// unsatisfiable. File declarations (`services.json` `execution` section)
+    /// are merged at composition time.
+    pub opensandbox: Option<OpenSandboxConfig>,
 }
 
 impl CollapsedLocalConfig {
@@ -80,6 +92,7 @@ impl CollapsedLocalConfig {
             service_declaration: ServiceDeclarationSource::StateRoot,
             host_lifetime: HostLifetime::OneShotCommand,
             directories: Vec::new(),
+            opensandbox: None,
         }
     }
 
@@ -136,6 +149,13 @@ impl CollapsedLocalConfig {
         self
     }
 
+    /// Declare an OpenSandbox lifecycle deployment this Workcell materialises
+    /// sandboxes through.
+    pub fn with_opensandbox(mut self, config: OpenSandboxConfig) -> Self {
+        self.opensandbox = Some(config);
+        self
+    }
+
     /// Resolve the declaration source into concrete services.
     pub fn resolve_services(&self) -> Result<DeclaredServices> {
         let mut resolved = match &self.service_declaration {
@@ -151,6 +171,9 @@ impl CollapsedLocalConfig {
         resolved
             .target_owned
             .extend(self.services.target_owned.iter().cloned());
+        resolved
+            .execution
+            .extend(self.opensandbox.iter().cloned());
 
         // Each provider refuses duplicates within itself. One logical ref
         // declared under both lifetimes would produce two offers for the same
@@ -165,6 +188,15 @@ impl CollapsedLocalConfig {
             if !seen.insert(logical_ref.clone()) {
                 return Err(WorkcellError::InvalidDemand(format!(
                     "logical service `{logical_ref}` is declared more than once"
+                )));
+            }
+        }
+        let mut seen_execution = std::collections::BTreeSet::new();
+        for deployment in &resolved.execution {
+            if !seen_execution.insert(deployment.provider_ref.as_str().to_owned()) {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "execution deployment `{}` is declared more than once",
+                    deployment.provider_ref.as_str()
                 )));
             }
         }
@@ -329,6 +361,7 @@ pub struct CollapsedLocalWorkcell {
     control: PreparedWorldControlPlane,
     workspace: SharedProvider<DirectoryWorkspaceProvider>,
     execution: HostProcessExecutionProvider,
+    opensandbox: Option<OpenSandboxExecutionProvider<StdHttpOpenSandboxTransport>>,
     artifacts: SharedProvider<DirectoryArtifactStorageProvider>,
     managed_services: SharedProvider<ManagedHostServiceProvider>,
     target_services: SharedProvider<ExternalManagedServiceProvider>,
@@ -391,9 +424,32 @@ impl CollapsedLocalWorkcell {
             declared.target_owned,
         )?);
 
+        // One OpenSandbox execution deployment may be declared — from the
+        // services file's `execution` section or programmatically. More than
+        // one is refused rather than silently composed: this composition has
+        // exactly one sandbox execution seam.
+        let mut opensandbox_config = config.opensandbox.clone();
+        if declared.execution.len() > 1 {
+            return Err(WorkcellError::InvalidDemand(
+                "more than one execution deployment is declared; collapsed-local composes exactly one OpenSandbox deployment"
+                    .into(),
+            ));
+        }
+        if opensandbox_config.is_none() {
+            opensandbox_config = declared.execution.first().cloned();
+        }
+        let opensandbox = opensandbox_config
+            .map(|deployment| {
+                OpenSandboxExecutionProvider::new(deployment, StdHttpOpenSandboxTransport)
+            })
+            .transpose()?;
+
         let mut control = PreparedWorldControlPlane::new(config.workcell_ref.clone());
         control.register_workspace_provider(workspace.clone())?;
         control.register_execution_provider(execution.clone())?;
+        if let Some(provider) = &opensandbox {
+            control.register_execution_provider(provider.clone())?;
+        }
         control.register_artifact_provider(artifacts.clone())?;
         control.register_service_provider(managed_services.clone())?;
         control.register_service_provider(target_services.clone())?;
@@ -404,6 +460,7 @@ impl CollapsedLocalWorkcell {
             control,
             workspace,
             execution,
+            opensandbox,
             artifacts,
             managed_services,
             target_services,
@@ -504,32 +561,47 @@ impl CollapsedLocalWorkcell {
 
         let workspace_ref = self.workspace.provider_ref().clone();
         let execution_ref = self.execution.provider_ref().clone();
+        let opensandbox_ref = self.opensandbox.as_ref().map(|p| p.provider_ref().clone());
         let artifact_ref = self.artifacts.provider_ref().clone();
         let managed_service_ref = self.managed_services.provider_ref().clone();
         let target_service_ref = self.target_services.provider_ref().clone();
 
         let mut workspace_allocation = None;
-        let mut execution_allocation = None;
+        let mut execution_allocations: BTreeMap<String, ProviderAllocation> = BTreeMap::new();
         let mut allocations = Vec::new();
 
-        let execution_affordances = plan
-            .planned_bindings
-            .iter()
-            .filter(|binding| {
-                binding.provider_ref == execution_ref
-                    && binding.logical_ref.starts_with("affordance:")
-            })
-            .map(|binding| binding.requirement.clone())
-            .collect::<Vec<_>>();
-        let execution_connectivity = plan
-            .planned_bindings
-            .iter()
-            .filter(|binding| {
-                binding.provider_ref == execution_ref
-                    && binding.logical_ref.starts_with("connectivity:")
-            })
-            .map(|binding| LogicalConnectionRequirement::new(binding.requirement.clone()))
-            .collect::<Result<Vec<_>>>()?;
+        // Execution-shaped atoms (affordances, connectivity) are collected per
+        // execution-capable provider, so a sandbox offer carries exactly the
+        // atoms the planner bound to it — never the host process's.
+        let execution_atoms_of = |provider_ref: &ProviderRef| -> Result<(
+            Vec<String>,
+            Vec<LogicalConnectionRequirement>,
+        )> {
+            let affordances = plan
+                .planned_bindings
+                .iter()
+                .filter(|binding| {
+                    binding.provider_ref == *provider_ref
+                        && binding.logical_ref.starts_with("affordance:")
+                })
+                .map(|binding| binding.requirement.clone())
+                .collect::<Vec<_>>();
+            let connectivity = plan
+                .planned_bindings
+                .iter()
+                .filter(|binding| {
+                    binding.provider_ref == *provider_ref
+                        && binding.logical_ref.starts_with("connectivity:")
+                })
+                .map(|binding| LogicalConnectionRequirement::new(binding.requirement.clone()))
+                .collect::<Result<Vec<_>>>()?;
+            Ok((affordances, connectivity))
+        };
+        let (execution_affordances, execution_connectivity) = execution_atoms_of(&execution_ref)?;
+        let (opensandbox_affordances, opensandbox_connectivity) = match &opensandbox_ref {
+            Some(provider_ref) => execution_atoms_of(provider_ref)?,
+            None => (Vec::new(), Vec::new()),
+        };
 
         for binding in &plan.planned_bindings {
             let allocation = if binding.provider_ref == workspace_ref {
@@ -540,22 +612,44 @@ impl CollapsedLocalWorkcell {
                 workspace_allocation
                     .clone()
                     .expect("workspace allocation set")
-            } else if binding.provider_ref == execution_ref {
-                if execution_allocation.is_none() {
-                    execution_allocation = Some(self.execution.prepare_execution(
-                        &ExecutionMaterialRequest {
+            } else if binding.provider_ref == execution_ref
+                || opensandbox_ref.as_ref() == Some(&binding.provider_ref)
+            {
+                let provider_key = binding.provider_ref.as_str().to_owned();
+                if !execution_allocations.contains_key(&provider_key) {
+                    let allocation = if binding.provider_ref == execution_ref {
+                        self.execution.prepare_execution(&ExecutionMaterialRequest {
                             demand_ref: demand.demand_ref.clone(),
                             affordances: execution_affordances.clone(),
                             resources: demand.resources.clone(),
                             connectivity: execution_connectivity.clone(),
                             isolation_trust: demand.isolation_trust.clone(),
                             retention: demand.retention.clone(),
-                        },
-                    )?);
+                        })?
+                    } else {
+                        self.opensandbox
+                            .as_mut()
+                            .ok_or_else(|| {
+                                WorkcellError::OperationFailed(format!(
+                                    "collapsed-local selected unregistered preparation provider `{}`",
+                                    binding.provider_ref
+                                ))
+                            })?
+                            .prepare_execution(&ExecutionMaterialRequest {
+                                demand_ref: demand.demand_ref.clone(),
+                                affordances: opensandbox_affordances.clone(),
+                                resources: demand.resources.clone(),
+                                connectivity: opensandbox_connectivity.clone(),
+                                isolation_trust: demand.isolation_trust.clone(),
+                                retention: demand.retention.clone(),
+                            })?
+                    };
+                    execution_allocations.insert(provider_key.clone(), allocation);
                 }
-                execution_allocation
-                    .clone()
-                    .expect("execution allocation set")
+                execution_allocations
+                    .get(&provider_key)
+                    .cloned()
+                    .expect("allocation prepared above")
             } else if binding.provider_ref == managed_service_ref
                 || binding.provider_ref == target_service_ref
             {
@@ -666,12 +760,24 @@ impl WorkcellControlPlane for CollapsedLocalWorkcell {
             ));
         }
         // Check existing source/storage before changing any executable service.
+        let opensandbox_ref = self.opensandbox.as_ref().map(|p| p.provider_ref().clone());
         for binding in &snapshot.binding_graph.bindings {
             let allocation = allocation_of(binding);
             let observed = match binding.port {
                 ProviderPortKind::Workspace => Some(self.workspace.observe_workspace(&allocation)?),
                 ProviderPortKind::Storage => Some(self.directories.observe_storage(&allocation)?),
-                ProviderPortKind::Execution => Some(self.execution.observe_execution(&allocation)?),
+                ProviderPortKind::Execution => {
+                    if opensandbox_ref.as_ref() == Some(&binding.provider_ref) {
+                        Some(
+                            self.opensandbox
+                                .as_ref()
+                                .expect("opensandbox provider present for its own binding")
+                                .observe_execution(&allocation)?,
+                        )
+                    } else {
+                        Some(self.execution.observe_execution(&allocation)?)
+                    }
+                }
                 ProviderPortKind::ArtifactStorage => {
                     Some(self.artifacts.observe_artifact_channel(&allocation)?)
                 }
@@ -899,6 +1005,67 @@ mod tests {
             matches!(error, WorkcellError::NotFound(_)),
             "unexpected error: {error}"
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_declared_opensandbox_deployment_offers_execution_honestly_unavailable() {
+        let root = temp_root("opensandbox-declared");
+        let mut deployment = epilogos_workcell_opensandbox::OpenSandboxConfig::local(
+            ProviderRef::new(OPENSANDBOX_PROVIDER_REF).unwrap(),
+            "opensandbox/code-interpreter:v1.1.0",
+            vec!["/opt/code-interpreter/code-interpreter.sh".into()],
+        )
+        .unwrap();
+        // Nothing listens here: the declaration is present, its lifecycle
+        // server is not reachable, and discovery must say exactly that.
+        deployment.lifecycle_base_url = "http://127.0.0.1:1".into();
+        let workcell = CollapsedLocalWorkcell::new(config(&root).with_opensandbox(deployment))
+            .unwrap();
+
+        let discovery = workcell.discover().unwrap();
+        let offer = discovery
+            .offers
+            .iter()
+            .find(|offer| offer.provider_ref.as_str() == OPENSANDBOX_PROVIDER_REF)
+            .expect("a declared sandbox deployment must be offered through the execution port");
+        assert_eq!(offer.port, ProviderPortKind::Execution.as_str());
+        assert_eq!(
+            offer.availability,
+            epilogos_workcell_core::Availability::Unavailable,
+            "declaring a deployment must not assert that its lifecycle server is reachable"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_declared_execution_deployment_reaches_composition_through_the_services_file() {
+        let root = temp_root("opensandbox-file-declared");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("services.json"),
+            r#"{
+              "schema": "workcell.service-declaration/v1",
+              "execution": [
+                {
+                  "kind": "opensandbox",
+                  "lifecycle_base_url": "http://127.0.0.1:1",
+                  "use_server_proxy": true
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+        let workcell = CollapsedLocalWorkcell::new(config(&root)).unwrap();
+        let discovery = workcell.discover().unwrap();
+        let offer = discovery
+            .offers
+            .iter()
+            .find(|offer| offer.provider_ref.as_str() == OPENSANDBOX_PROVIDER_REF)
+            .expect("a file-declared sandbox deployment must be composed and offered");
+        assert_eq!(offer.port, ProviderPortKind::Execution.as_str());
 
         let _ = fs::remove_dir_all(root);
     }

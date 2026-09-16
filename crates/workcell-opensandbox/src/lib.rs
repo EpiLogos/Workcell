@@ -50,6 +50,54 @@ impl OpenSandboxStartupSource {
     }
 }
 
+/// Outbound egress policy pushed with every sandbox create request. This is
+/// the Workcell-side half of the egress-sidecar contract: a default-deny
+/// allowlist of hosts, and the credential-proxy switch that lets the sidecar
+/// intercept outbound HTTPS and inject vault credentials.
+///
+/// The law it encodes: a sandbox may only reach hosts Workcell named, and a
+/// credential may only be used without being read. `credential_proxy`
+/// therefore requires `default_deny` — an allow-all sandbox must never carry
+/// injected credentials, because direct-IP or unintercepted egress would
+/// bypass the injection boundary.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct OpenSandboxEgressPolicy {
+    /// When true the create request carries `defaultAction: "deny"`: every
+    /// host not explicitly allowed is unreachable from the sandbox.
+    pub default_deny: bool,
+    /// Hosts (FQDN or wildcard domain) the sandbox may reach.
+    pub allowed_hosts: Vec<String>,
+    /// Enable transparent credential interception (Credential Proxy) so the
+    /// Credential Vault can inject authentication on matched outbound flows.
+    pub credential_proxy: bool,
+}
+
+impl OpenSandboxEgressPolicy {
+    pub fn validate(&self) -> Result<()> {
+        for host in &self.allowed_hosts {
+            if host.trim().is_empty() {
+                return Err(WorkcellError::InvalidDemand(
+                    "OpenSandbox egress allowlist hosts must not be empty".into(),
+                ));
+            }
+        }
+        if self.credential_proxy && !self.default_deny {
+            return Err(WorkcellError::InvalidDemand(
+                "OpenSandbox credential proxy requires a default-deny egress policy; \
+                 injected credentials must never ride an allow-all sandbox"
+                    .into(),
+            ));
+        }
+        if self.credential_proxy && self.allowed_hosts.is_empty() {
+            return Err(WorkcellError::InvalidDemand(
+                "OpenSandbox credential proxy requires at least one allowed host to bind against"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Provider-local OpenSandbox materialisation configuration.
 ///
 /// Image/snapshot/runtime details remain here, below ExecutionDemand. The API
@@ -66,6 +114,10 @@ pub struct OpenSandboxConfig {
     pub metadata: BTreeMap<String, String>,
     pub use_server_proxy: bool,
     pub api_key_env: Option<String>,
+    /// Outbound egress policy carried into every create request; `None` sends
+    /// neither a policy nor the credential-proxy switch, and upstream defaults
+    /// apply untouched.
+    pub egress: Option<OpenSandboxEgressPolicy>,
     pub capacity: BTreeMap<String, Capacity>,
     pub isolation_offers: Vec<String>,
 }
@@ -88,6 +140,7 @@ impl OpenSandboxConfig {
             metadata: BTreeMap::new(),
             use_server_proxy: false,
             api_key_env: Some(OPENSANDBOX_DEFAULT_API_KEY_ENV.into()),
+            egress: None,
             capacity: BTreeMap::new(),
             isolation_offers: vec!["sandbox".into()],
         };
@@ -112,6 +165,7 @@ impl OpenSandboxConfig {
             metadata: BTreeMap::new(),
             use_server_proxy: false,
             api_key_env: Some(OPENSANDBOX_DEFAULT_API_KEY_ENV.into()),
+            egress: None,
             capacity: BTreeMap::new(),
             isolation_offers: vec!["sandbox".into()],
         };
@@ -122,6 +176,9 @@ impl OpenSandboxConfig {
     pub fn validate(&self) -> Result<()> {
         self.startup.validate()?;
         parse_http_url(&self.lifecycle_base_url)?;
+        if let Some(egress) = &self.egress {
+            egress.validate()?;
+        }
         if matches!(self.startup, OpenSandboxStartupSource::Image { .. })
             && (self.entrypoint.is_empty()
                 || self.entrypoint.iter().any(|item| item.trim().is_empty()))
@@ -221,6 +278,10 @@ impl OpenSandboxTransport for StdHttpOpenSandboxTransport {
     }
 }
 
+/// `Clone` so a runtime composition (e.g. `CollapsedLocalWorkcell`) can hold
+/// and share one provider instance across discovery, preparation and
+/// recovery. The transport is cloned with it; both are plain config + data.
+#[derive(Clone, Debug)]
 pub struct OpenSandboxExecutionProvider<T> {
     config: OpenSandboxConfig,
     transport: T,
@@ -796,6 +857,23 @@ fn create_sandbox_body(
         label_safe_metadata_value(&request.demand_ref.to_string()),
     );
     body.insert("metadata".into(), json!(metadata));
+
+    if let Some(egress) = &config.egress {
+        body.insert(
+            "networkPolicy".into(),
+            json!({
+                "defaultAction": if egress.default_deny { "deny" } else { "allow" },
+                "egress": egress
+                    .allowed_hosts
+                    .iter()
+                    .map(|host| json!({"action": "allow", "target": host}))
+                    .collect::<Vec<_>>(),
+            }),
+        );
+        if egress.credential_proxy {
+            body.insert("credentialProxy".into(), json!({"enabled": true}));
+        }
+    }
 
     let limits = resource_limits(&request.resources)?;
     if !limits.is_empty() {
@@ -1492,5 +1570,52 @@ mod tests {
     fn chunked_http_body_is_decoded_for_streaming_data_plane() {
         let body = b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
         assert_eq!(decode_chunked(body).unwrap(), b"hello world");
+    }
+
+    #[test]
+    fn egress_policy_reaches_the_create_request_body() {
+        let mut config = config();
+        config.egress = Some(OpenSandboxEgressPolicy {
+            default_deny: true,
+            allowed_hosts: vec!["api.github.com".into()],
+            credential_proxy: true,
+        });
+        let transport = FixtureTransport::with_responses(vec![response(
+            200,
+            json!({
+                "id": "sbx_123",
+                "status": {"state": "Running"}
+            }),
+        )]);
+        let inspect = transport.clone();
+        let mut provider = OpenSandboxExecutionProvider::new(config, transport).unwrap();
+        let allocation = provider.prepare_execution(&request()).unwrap();
+        assert_eq!(allocation.material_ref, "sbx_123");
+
+        // The create request carried the policy: default deny, the allowlist,
+        // and the credential-proxy switch.
+        let requests = inspect.requests();
+        assert_eq!(requests.len(), 1);
+        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["networkPolicy"]["defaultAction"], "deny");
+        assert_eq!(body["networkPolicy"]["egress"][0]["target"], "api.github.com");
+        assert_eq!(body["networkPolicy"]["egress"][0]["action"], "allow");
+        assert_eq!(body["credentialProxy"]["enabled"], true);
+    }
+
+    #[test]
+    fn credential_proxy_without_default_deny_is_refused() {
+        let mut config = config();
+        config.egress = Some(OpenSandboxEgressPolicy {
+            default_deny: false,
+            allowed_hosts: vec!["api.github.com".into()],
+            credential_proxy: true,
+        });
+        let error = OpenSandboxExecutionProvider::new(config, StdHttpOpenSandboxTransport)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("default-deny"),
+            "unexpected error: {error}"
+        );
     }
 }

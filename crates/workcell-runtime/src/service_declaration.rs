@@ -15,11 +15,12 @@ use std::{
 };
 
 use epilogos_workcell_core::{Result, WorkcellError};
+use epilogos_workcell_opensandbox::OpenSandboxConfig;
 use serde_json::Value;
 
 use crate::{
     ExternalManagedService, ExternalServiceAcquisition, ExternalServiceCommand, ManagedHostService,
-    TcpEndpointProbe,
+    TcpEndpointProbe, OPENSANDBOX_PROVIDER_REF,
 };
 
 pub const SERVICE_DECLARATION_SCHEMA: &str = "workcell.service-declaration/v1";
@@ -54,24 +55,28 @@ impl ServiceLifetime {
 }
 
 /// Declared services split by which provider can honestly materialise them.
+/// `execution` carries an optional OpenSandbox lifecycle deployment the
+/// Workcell materialises sandbox execution through.
 #[derive(Clone, Debug, Default)]
 pub struct DeclaredServices {
     pub managed: Vec<ManagedHostService>,
     pub target_owned: Vec<ExternalManagedService>,
+    pub execution: Vec<OpenSandboxConfig>,
 }
 
 impl DeclaredServices {
     pub fn is_empty(&self) -> bool {
-        self.managed.is_empty() && self.target_owned.is_empty()
+        self.managed.is_empty() && self.target_owned.is_empty() && self.execution.is_empty()
     }
 
     pub fn len(&self) -> usize {
-        self.managed.len() + self.target_owned.len()
+        self.managed.len() + self.target_owned.len() + self.execution.len()
     }
 
     fn extend(&mut self, other: DeclaredServices) {
         self.managed.extend(other.managed);
         self.target_owned.extend(other.target_owned);
+        self.execution.extend(other.execution);
     }
 }
 
@@ -158,7 +163,127 @@ pub fn parse_service_declarations(raw: &str) -> Result<DeclaredServices> {
         seen.push(logical_ref);
         declared.extend(one);
     }
+
+    let executions = object
+        .get("execution")
+        .map(|value| {
+            value.as_array().ok_or_else(|| {
+                WorkcellError::InvalidDemand(
+                    "service declaration `execution` must be an array".into(),
+                )
+            })
+        })
+        .transpose()?
+        .cloned()
+        .unwrap_or_default();
+    for entry in executions {
+        declared.execution.push(parse_execution_deployment(&entry)?);
+    }
     Ok(declared)
+}
+
+/// One operator-declared execution deployment. The only declared kind today is
+/// an OpenSandbox lifecycle deployment; every field maps onto
+/// `epilogos_workcell_opensandbox::OpenSandboxConfig`, and the defaults are
+/// that config's own defaults — a declaration names the deployment, it does
+/// not invent a provider contract.
+fn parse_execution_deployment(entry: &Value) -> Result<OpenSandboxConfig> {
+    let object = entry.as_object().ok_or_else(|| {
+        WorkcellError::InvalidDemand(
+            "each declared execution deployment must be a JSON object".into(),
+        )
+    })?;
+    let kind = object
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("opensandbox");
+    if kind != "opensandbox" {
+        return Err(WorkcellError::InvalidDemand(format!(
+            "declared execution deployment has unknown kind `{kind}`; known kinds: opensandbox"
+        )));
+    }
+    let provider_ref = epilogos_workcell_core::ProviderRef::new(
+        optional_str(object, "provider_ref")?
+            .unwrap_or_else(|| OPENSANDBOX_PROVIDER_REF.to_owned()),
+    )?;
+    let mut config = OpenSandboxConfig::local(
+        provider_ref,
+        optional_str(object, "image")?
+            .unwrap_or_else(|| "opensandbox/code-interpreter:v1.1.0".to_owned()),
+        {
+            let declared_entrypoint = string_list(object, "entrypoint")?;
+            if declared_entrypoint.is_empty() && object.get("entrypoint").is_none() {
+                vec!["/opt/code-interpreter/code-interpreter.sh".to_owned()]
+            } else {
+                declared_entrypoint
+            }
+        },
+    )?;
+    if let Some(url) = optional_str(object, "lifecycle_base_url")? {
+        config.lifecycle_base_url = url;
+    }
+    config.use_server_proxy = object
+        .get("use_server_proxy")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if let Some(env) = optional_str(object, "api_key_env")? {
+        config.api_key_env = Some(env);
+    }
+    for (key, value) in string_map(object, "env")? {
+        config.environment.insert(key, value);
+    }
+    for (key, value) in string_map(object, "metadata")? {
+        config.metadata.insert(key, value);
+    }
+    if let Some(capacity) = object.get("capacity") {
+        let capacity = capacity.as_object().ok_or_else(|| {
+            WorkcellError::InvalidDemand(
+                "declared execution deployment field `capacity` must be a JSON object".into(),
+            )
+        })?;
+        for (key, value) in capacity {
+            let value = value.as_object().ok_or_else(|| {
+                WorkcellError::InvalidDemand(format!(
+                    "declared execution deployment capacity `{key}` must be an object"
+                ))
+            })?;
+            let amount = value.get("amount").and_then(Value::as_u64).ok_or_else(|| {
+                WorkcellError::InvalidDemand(format!(
+                    "declared execution deployment capacity `{key}` requires a numeric `amount`"
+                ))
+            })?;
+            config.capacity.insert(
+                key.clone(),
+                epilogos_workcell_core::Capacity {
+                    amount,
+                    unit: value.get("unit").and_then(Value::as_str).map(str::to_owned),
+                },
+            );
+        }
+    }
+    if let Some(egress) = object.get("egress") {
+        let egress = egress.as_object().ok_or_else(|| {
+            WorkcellError::InvalidDemand(
+                "declared execution deployment field `egress` must be a JSON object".into(),
+            )
+        })?;
+        let policy = epilogos_workcell_opensandbox::OpenSandboxEgressPolicy {
+            default_deny: egress
+                .get("default_deny")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            allowed_hosts: string_list(egress, "allow")?,
+            credential_proxy: egress
+                .get("credential_proxy")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        };
+        config.egress = Some(policy);
+    }
+    config
+        .validate()
+        .map_err(|error| WorkcellError::InvalidDemand(error.to_string()))?;
+    Ok(config)
 }
 
 fn parse_service(entry: &Value) -> Result<DeclaredServices> {
@@ -211,6 +336,7 @@ fn parse_service(entry: &Value) -> Result<DeclaredServices> {
             Ok(DeclaredServices {
                 managed: vec![service],
                 target_owned: Vec::new(),
+                execution: Vec::new(),
             })
         }
         ServiceLifetime::TargetOwned => {
@@ -244,6 +370,7 @@ fn parse_service(entry: &Value) -> Result<DeclaredServices> {
             Ok(DeclaredServices {
                 managed: Vec::new(),
                 target_owned: vec![service],
+                execution: Vec::new(),
             })
         }
     }
@@ -455,6 +582,58 @@ mod tests {
             error
                 .to_string()
                 .contains("unsupported service declaration schema"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn an_execution_deployment_parses_into_the_opensandbox_config() {
+        let declared = parse_service_declarations(
+            r#"{
+              "schema": "workcell.service-declaration/v1",
+              "execution": [
+                {
+                  "kind": "opensandbox",
+                  "lifecycle_base_url": "http://127.0.0.1:8080/v1",
+                  "use_server_proxy": true,
+                  "api_key_env": "OPEN_SANDBOX_API_KEY",
+                  "env": {"WORKCELL_PROVENANCE": "declared"},
+                  "metadata": {"declared_by": "operator"}
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(declared.execution.len(), 1);
+        let deployment = &declared.execution[0];
+        assert_eq!(deployment.provider_ref.as_str(), "provider:opensandbox");
+        assert_eq!(deployment.lifecycle_base_url, "http://127.0.0.1:8080/v1");
+        assert!(deployment.use_server_proxy);
+        assert_eq!(
+            deployment.api_key_env.as_deref(),
+            Some("OPEN_SANDBOX_API_KEY")
+        );
+        match &deployment.startup {
+            epilogos_workcell_opensandbox::OpenSandboxStartupSource::Image { uri } => {
+                assert_eq!(uri, "opensandbox/code-interpreter:v1.1.0");
+            }
+            other => panic!("declared image must parse as an image startup source: {other:?}"),
+        }
+        assert_eq!(
+            deployment.metadata.get("declared_by"),
+            Some(&"operator".to_owned())
+        );
+    }
+
+    #[test]
+    fn an_unknown_execution_kind_is_refused() {
+        let error = parse_service_declarations(
+            r#"{"execution":[{"kind":"hypervisor-mystery"}]}"#,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("unknown kind"),
             "unexpected error: {error}"
         );
     }

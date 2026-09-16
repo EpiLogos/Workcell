@@ -9,20 +9,21 @@ use std::{
 use epilogos_workcell_control::{
     check_compatibility, credential_sha256, generate_credential, grant_ref_for, parse_duration_millis,
     software_version, validate_label, ConnectionGrants, ControlClient, ControlClientError,
-    ControlService, CreateOutcome, ProjectionDecision, SecretProjectionLedger, SecretProjectionRecord,
-    TcpControlServer, TcpControlTransport, CONTROL_OPERATIONS, CONTROL_PROTOCOL_VERSION,
-    GRANTS_FILE,
+    ControlService, CreateOutcome, ProjectionDecision, RemoteMachineDeclaration, RemoteMachineRegistry,
+    SecretProjectionLedger, SecretProjectionRecord, TcpControlServer, TcpControlTransport,
+    CONTROL_OPERATIONS, CONTROL_PROTOCOL_VERSION, GRANTS_FILE,
 };
 use epilogos_workcell_core::{
-    AffordanceRequirement, Availability, CollectionBundle, Degradation, DemandRef,
-    DesiredMaterialState, Discovery, ExecutionDemand, ExposureBundle, ExposureRequirement,
-    ExternalRef, HealthState, IsolationTrustRequirement, LogicalConnectionRequirement,
-    MaterialisationPlan, ObservationBundle, OutputRequirement, PersistenceScope, PlanOmission,
-    PlanStatus, ProjectRuntimeRequirement, ProviderPortKind, ReconciliationResult,
-    ReleaseDisposition, ReleaseResult, RequirementNecessity, ResourceRequirement,
-    RetentionExpectation, SecretMaterialisationClass, SecretProjectionRequest,
-    SecretProjectionTarget, Tiered, WorkcellControlPlane, WorkcellError, WorkcellRef,
-    WorkspaceAccess, WorkspaceRequirement,
+    broker_handle, AffordanceRequirement, Availability, BindingRef, BrokerPolicy, BrokerRoute,
+    CollectionBundle, Degradation, DemandRef, DesiredMaterialState, Discovery, ExecutionDemand,
+    ExposureBundle, ExposureRequirement, ExternalRef, HealthState, IsolationTrustRequirement,
+    LogicalConnectionRequirement, MaterialisationPlan, ObservationBundle, OutputRequirement,
+    PersistenceScope, PlanOmission, PlanStatus, ProjectRuntimeRequirement, ProviderAllocation,
+    ProviderPortKind, ReconciliationResult, ReleaseDisposition, ReleaseResult,
+    RequirementNecessity, ResourceRequirement, RetentionExpectation, SecretMaterialisationClass,
+    SecretMaterialisationRequest, SecretProjectionRequest, SecretProjectionTarget,
+    SecretRevocationState, Tiered, WorkcellControlPlane,
+    WorkcellError, WorkcellRef, WorkspaceAccess, WorkspaceRequirement,
 };
 use epilogos_workcell_keychain::{
     store_bootstrap_material as store_keychain_material, KeychainAclPolicy, KeychainSecretProvider,
@@ -30,6 +31,10 @@ use epilogos_workcell_keychain::{
 use epilogos_workcell_secret_scan as secret_scan;
 use epilogos_workcell_secret_service::{
     store_bootstrap_material as store_secret_service_material, SecretServiceSecretProvider,
+};
+use epilogos_workcell_opensandbox::{
+    project_credential_to_sandbox, OpenSandboxCredentialAuth, OpenSandboxCredentialBindingSpec,
+    OpenSandboxCredentialBroker, OpenSandboxConfig, StdHttpOpenSandboxTransport,
 };
 use epilogos_workcell_runtime::{CollapsedLocalConfig, CollapsedLocalWorkcell};
 use epilogos_workcell_wire::{
@@ -114,6 +119,7 @@ fn run(args: Vec<String>) -> Result<(), WorkcellError> {
         "connect" => command_connect(&global, command_args),
         "connections" => command_connections(&global, command_args),
         "secret" => command_secret(&global, command_args),
+        "machine" => command_machine(&global, command_args),
         "system" => command_system(&global),
         "config" => command_config(&global, command_args),
         "config-contribution" => command_config_contribution(&global),
@@ -2217,19 +2223,46 @@ fn command_connect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellE
             }
         }
     }
-    let endpoint = endpoint.ok_or_else(|| {
-        WorkcellError::InvalidDemand(
-            "usage: workcell connect --endpoint HOST:PORT [--connection <label>] [--authorization TOKEN] [--store-credential]".into(),
-        )
-    })?;
+    // A declared machine carries the endpoint (and the credential
+    // reference, resolved from the origin secret source below) so the
+    // ordinary connect verb works with a label alone.
+    let machine: Option<RemoteMachineDeclaration> = match (&endpoint, &label) {
+        (None, Some(label)) => {
+            let registry = RemoteMachineRegistry::new(&global.state_root);
+            match registry.get(label)? {
+                Some(machine) => Some(machine),
+                None => {
+                    return Err(WorkcellError::InvalidDemand(format!(
+                        "no endpoint given and no machine `{label}` is declared; add it with `workcell machine add --label {label} --endpoint HOST:PORT`"
+                    )))
+                }
+            }
+        }
+        _ => None,
+    };
+    let endpoint = match endpoint {
+        Some(endpoint) => endpoint,
+        None => machine
+            .as_ref()
+            .map(|machine| machine.endpoint.clone())
+            .ok_or_else(|| {
+                WorkcellError::InvalidDemand(
+                    "usage: workcell connect --endpoint HOST:PORT [--connection <label>] [--authorization TOKEN] [--store-credential]".into(),
+                )
+            })?,
+    };
     let label = label.unwrap_or_else(|| safe_filename(&endpoint));
     validate_label(&label)?;
     let existing = load_connection_record(&global.state_root, &label)?;
+    let declared_credential_ref = machine
+        .as_ref()
+        .and_then(|machine| machine.credential_ref.as_deref());
     let credential = resolve_connection_credential(
         authorization.as_deref(),
         existing
             .as_ref()
-            .and_then(|record| record.credential_ref.as_deref()),
+            .and_then(|record| record.credential_ref.as_deref())
+            .or(declared_credential_ref),
     )?;
 
     // Material operations are not chatty: preparing a real world (a sandbox
@@ -5149,6 +5182,165 @@ fn exit_code(error: &WorkcellError) -> u8 {
     }
 }
 
+// ---- Declared remote machines -----------------------------------------
+//
+// "Add a machine" as a native declaration: a label, an endpoint (cloud
+// private fabric or local loopback alike — the connection protocol is
+// independent of the path), and the connection credential as a secret
+// *reference* resolved from this cell's origin store at connect time.
+
+const MACHINE_USAGE: &str = "usage: workcell machine add --label LABEL --endpoint HOST:PORT [--credential-ref REF] [--allow OPERATION]... [--note TEXT] | list | remove --label LABEL";
+
+fn command_machine(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    let Some(subcommand) = args.first() else {
+        return Err(WorkcellError::InvalidDemand(MACHINE_USAGE.into()));
+    };
+    let rest = &args[1..];
+    match subcommand.as_str() {
+        "add" => machine_add(global, rest),
+        "list" => machine_list(global, rest),
+        "remove" => machine_remove(global, rest),
+        other => Err(WorkcellError::InvalidDemand(format!(
+            "unknown machine subcommand `{other}`; {MACHINE_USAGE}"
+        ))),
+    }
+}
+
+fn machine_add(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    let mut label: Option<String> = None;
+    let mut endpoint: Option<String> = None;
+    let mut credential_ref: Option<String> = None;
+    let mut operations: Vec<String> = Vec::new();
+    let mut note: Option<String> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--label" => {
+                label = Some(require_value(args, index, "--label")?.to_owned());
+                index += 2;
+            }
+            "--endpoint" => {
+                endpoint = Some(require_value(args, index, "--endpoint")?.to_owned());
+                index += 2;
+            }
+            "--credential-ref" => {
+                credential_ref = Some(require_value(args, index, "--credential-ref")?.to_owned());
+                index += 2;
+            }
+            "--allow" => {
+                operations.push(require_value(args, index, "--allow")?.to_owned());
+                index += 2;
+            }
+            "--note" => {
+                note = Some(require_value(args, index, "--note")?.to_owned());
+                index += 2;
+            }
+            other => {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "unknown machine add option `{other}`"
+                )))
+            }
+        }
+    }
+    let label = label.ok_or_else(|| {
+        WorkcellError::InvalidDemand("machine add needs --label LABEL".into())
+    })?;
+    validate_label(&label)?;
+    let endpoint = endpoint.ok_or_else(|| {
+        WorkcellError::InvalidDemand(
+            "machine add needs --endpoint HOST:PORT (cloud private address or local loopback)"
+                .into(),
+        )
+    })?;
+    for operation in &operations {
+        if !CONTROL_OPERATIONS.contains(&operation.as_str()) {
+            return Err(WorkcellError::InvalidDemand(format!(
+                "unknown control operation `{operation}`; known operations are {}",
+                CONTROL_OPERATIONS.join(", ")
+            )));
+        }
+    }
+    let registry = RemoteMachineRegistry::new(&global.state_root);
+    registry.add(RemoteMachineDeclaration {
+        label: label.clone(),
+        endpoint: endpoint.clone(),
+        credential_ref,
+        operations: operations.clone(),
+        note,
+    })?;
+    if global.json {
+        emit_json(json!({
+            "ok": true,
+            "label": label,
+            "endpoint": endpoint,
+            "registry": registry.path().display().to_string(),
+        }));
+    } else {
+        println!(
+            "machine `{label}` declared at {} (endpoint {endpoint}); connect with `workcell connect --connection {label}`",
+            registry.path().display()
+        );
+    }
+    Ok(())
+}
+
+fn machine_list(global: &GlobalArgs, _args: &[String]) -> Result<(), WorkcellError> {
+    let registry = RemoteMachineRegistry::new(&global.state_root);
+    let machines = registry.list()?;
+    if global.json {
+        emit_json(json!({
+            "ok": true,
+            "machines": machines.iter().map(|machine| machine.to_json()).collect::<Vec<_>>(),
+        }));
+    } else {
+        if machines.is_empty() {
+            println!(
+                "no machines declared in {}; add one with `workcell machine add --label LABEL --endpoint HOST:PORT`",
+                registry.path().display()
+            );
+        }
+        for machine in machines {
+            println!(
+                "{} -> {} operations=[{}] credential_ref={}",
+                machine.label,
+                machine.endpoint,
+                machine.operations.join(","),
+                machine.credential_ref.as_deref().unwrap_or("(none stored)")
+            );
+        }
+    }
+    Ok(())
+}
+
+fn machine_remove(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    let mut label: Option<String> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--label" => {
+                label = Some(require_value(args, index, "--label")?.to_owned());
+                index += 2;
+            }
+            other => {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "unknown machine remove option `{other}`"
+                )))
+            }
+        }
+    }
+    let label = label.ok_or_else(|| {
+        WorkcellError::InvalidDemand("machine remove needs --label LABEL".into())
+    })?;
+    let registry = RemoteMachineRegistry::new(&global.state_root);
+    registry.remove(&label)?;
+    if global.json {
+        emit_json(json!({"ok": true, "label": label, "removed": true}));
+    } else {
+        println!("machine `{label}` declaration removed; any stored connection receipt is kept");
+    }
+    Ok(())
+}
+
 // ---- Secret origin and projection -------------------------------------
 //
 // One origin store per machine — the machine where the person put the
@@ -5157,7 +5349,7 @@ fn exit_code(error: &WorkcellError) -> u8 {
 // into the origin store without ever printing it, and projections record
 // authorised relations (refs, classes, purpose, scope) — never material.
 
-const SECRET_USAGE: &str = "usage: workcell secret scan | vault --from env:NAME|PATH [--select KEY] --ref REF [--provider secret-service|keychain] | project --name LABEL (--to-workcell REF --connection LABEL | --to-sandbox --allocation-ref REF [--sandbox-provider REF]) --credential-ref REF --source-provider REF --class CLASS --purpose P --scope S --by REF | projections | revoke-projection (--name LABEL | --ref PREF)";
+const SECRET_USAGE: &str = "usage: workcell secret scan | vault --from env:NAME|PATH [--select KEY] --ref REF [--provider secret-service|keychain] | project --name LABEL (--to-workcell REF --connection LABEL | --to-sandbox --allocation-ref REF [--sandbox-provider REF]) --credential-ref REF --source-provider REF --class CLASS --purpose P --scope S --by REF | projections | deliver (--name LABEL | --ref PREF) --allocation SANDBOX-ID --route HOST=METHOD [--binding NAME] [--auth bearer|api-key:HEADER] | revoke-projection (--name LABEL | --ref PREF) [--sandbox SANDBOX-ID]";
 
 fn command_secret(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
     let Some(subcommand) = args.first() else {
@@ -5170,10 +5362,298 @@ fn command_secret(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellEr
         "project" => secret_project(global, rest),
         "projections" => secret_projections(global, rest),
         "revoke-projection" => secret_revoke_projection(global, rest),
+        "deliver" => secret_deliver(global, rest),
         other => Err(WorkcellError::InvalidDemand(format!(
             "unknown secret subcommand `{other}`; {SECRET_USAGE}"
         ))),
     }
+}
+
+/// The declared OpenSandbox execution deployment from this state root's
+/// services file — the same declaration `discover`/`prepare` compose with.
+fn declared_sandbox_deployment(
+    global: &GlobalArgs,
+    provider_ref: &str,
+) -> Result<OpenSandboxConfig, WorkcellError> {
+    let declared =
+        epilogos_workcell_runtime::read_state_root_service_declarations(&global.state_root)?;
+    declared
+        .execution
+        .into_iter()
+        .find(|deployment| deployment.provider_ref.as_str() == provider_ref)
+        .ok_or_else(|| {
+            WorkcellError::Unavailable(format!(
+                "no OpenSandbox deployment `{provider_ref}` is declared in {}`s services file; \
+                 declare it under `execution` before delivering secrets to a sandbox",
+                global.state_root.display()
+            ))
+        })
+}
+
+fn secret_deliver(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    let mut name: Option<String> = None;
+    let mut projection_ref: Option<String> = None;
+    let mut allocation: Option<String> = None;
+    let mut routes: Vec<String> = Vec::new();
+    let mut binding: Option<String> = None;
+    let mut credential_name: Option<String> = None;
+    let mut paths: Vec<String> = Vec::new();
+    let mut auth: Option<String> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--name" => {
+                name = Some(require_value(args, index, "--name")?.to_owned());
+                index += 2;
+            }
+            "--ref" => {
+                projection_ref = Some(require_value(args, index, "--ref")?.to_owned());
+                index += 2;
+            }
+            "--allocation" => {
+                allocation = Some(require_value(args, index, "--allocation")?.to_owned());
+                index += 2;
+            }
+            "--route" => {
+                routes.push(require_value(args, index, "--route")?.to_owned());
+                index += 2;
+            }
+            "--binding" => {
+                binding = Some(require_value(args, index, "--binding")?.to_owned());
+                index += 2;
+            }
+            "--credential-name" => {
+                credential_name = Some(require_value(args, index, "--credential-name")?.to_owned());
+                index += 2;
+            }
+            "--paths" => {
+                for path in require_value(args, index, "--paths")?.split(',') {
+                    paths.push(path.to_owned());
+                }
+                index += 2;
+            }
+            "--auth" => {
+                auth = Some(require_value(args, index, "--auth")?.to_owned());
+                index += 2;
+            }
+            other => {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "unknown deliver option `{other}`"
+                )))
+            }
+        }
+    }
+    let projection_ref = match (name, projection_ref) {
+        (Some(name), None) => {
+            validate_label(&name)?;
+            format!("secret-projection:{name}")
+        }
+        (None, Some(reference)) => reference,
+        (Some(_), Some(_)) => {
+            return Err(WorkcellError::InvalidDemand(
+                "pass --name LABEL or --ref PREF, not both".into(),
+            ))
+        }
+        (None, None) => {
+            return Err(WorkcellError::InvalidDemand(
+                "deliver needs the projection: --name LABEL or --ref PREF".into(),
+            ))
+        }
+    };
+    let allocation = allocation.ok_or_else(|| {
+        WorkcellError::InvalidDemand(
+            "deliver needs the sandbox material id: --allocation <sandbox id from prepare>".into(),
+        )
+    })?;
+    if routes.is_empty() {
+        return Err(WorkcellError::InvalidDemand(
+            "deliver needs at least one authorised route: --route HOST=METHOD".into(),
+        ));
+    }
+
+    // Deny-before-write: a revoked or unknown projection delivers nothing.
+    let workcell_ref = parse_workcell_ref(&global.workcell_ref)?;
+    let ledger = SecretProjectionLedger::new(&global.state_root, workcell_ref);
+    let record = match ledger.decision_for(&projection_ref)? {
+        ProjectionDecision::Active(record) => *record,
+        ProjectionDecision::Revoked(_) => {
+            return Err(WorkcellError::UnsatisfiedDemand(format!(
+                "secret projection `{projection_ref}` is revoked at the origin; the target receives nothing"
+            )))
+        }
+        ProjectionDecision::Unknown => {
+            return Err(WorkcellError::InvalidDemand(format!(
+                "no secret projection `{projection_ref}` exists in this ledger"
+            )))
+        }
+    };
+    let projection = record.to_request()?;
+    let (target_provider_ref, target_allocation_ref) = match &projection.target {
+        SecretProjectionTarget::Sandbox {
+            provider_ref,
+            allocation_ref,
+        } => (provider_ref.as_str().to_owned(), allocation_ref.clone()),
+        SecretProjectionTarget::Workcell { .. } => {
+            return Err(WorkcellError::InvalidDemand(
+                "deliver projects to sandbox allocations; this projection names a workcell target"
+                    .into(),
+            ))
+        }
+    };
+    if target_allocation_ref != allocation {
+        return Err(WorkcellError::UnsatisfiedDemand(format!(
+            "projection targets sandbox allocation `{target_allocation_ref}`, not `{allocation}`"
+        )));
+    }
+
+    let config = declared_sandbox_deployment(global, &target_provider_ref)?;
+    let broker = OpenSandboxCredentialBroker::new(config, StdHttpOpenSandboxTransport)?;
+
+    // The origin provider is named by the projection's recorded source; the
+    // material is resolved in-process and never printed.
+    use epilogos_workcell_core::SecretProvider;
+    enum OriginProvider {
+        SecretService(SecretServiceSecretProvider),
+        Keychain(KeychainSecretProvider),
+    }
+    impl SecretProvider for OriginProvider {
+        fn provider_ref(&self) -> &epilogos_workcell_core::ProviderRef {
+            match self {
+                Self::SecretService(provider) => provider.provider_ref(),
+                Self::Keychain(provider) => provider.provider_ref(),
+            }
+        }
+
+        fn resolve(
+            &self,
+            credential_ref: &ExternalRef,
+        ) -> epilogos_workcell_core::Result<epilogos_workcell_core::ProviderSecretMaterial> {
+            match self {
+                Self::SecretService(provider) => provider.resolve(credential_ref),
+                Self::Keychain(provider) => provider.resolve(credential_ref),
+            }
+        }
+    }
+    let origin_provider = if record.source_provider_ref.contains("secret-service") {
+        OriginProvider::SecretService(SecretServiceSecretProvider::new()?)
+    } else if record.source_provider_ref.contains("keychain") {
+        OriginProvider::Keychain(KeychainSecretProvider::new(
+            KeychainAclPolicy::ThisDeviceUnlocked,
+        )?)
+    } else {
+        return Err(WorkcellError::InvalidDemand(format!(
+            "unknown origin secret source `{}`; deliver resolves from secret-service or keychain",
+            record.source_provider_ref
+        )));
+    };
+
+    let binding_name = binding.unwrap_or_else(|| {
+        record
+            .credential_ref
+            .rsplit('/')
+            .next()
+            .unwrap_or("credential")
+            .to_owned()
+    });
+    let credential_name = credential_name.unwrap_or_else(|| binding_name.clone());
+    let request_paths = if paths.is_empty() {
+        vec!["/".to_owned()]
+    } else {
+        paths
+    };
+    let binding_auth = match auth.as_deref() {
+        None | Some("bearer") => OpenSandboxCredentialAuth::Bearer,
+        Some(value) if value.starts_with("api-key:") => OpenSandboxCredentialAuth::ApiKey {
+            header_name: value.trim_start_matches("api-key:").to_owned(),
+        },
+        Some(other) => {
+            return Err(WorkcellError::InvalidDemand(format!(
+                "unknown auth `{other}`; use bearer or api-key:HEADER"
+            )))
+        }
+    };
+
+    let class = SecretMaterialisationClass::CredentialBroker;
+    let request = SecretMaterialisationRequest {
+        credential_ref: ExternalRef::new(&record.credential_ref).map_err(WorkcellError::from)?,
+        provider_ref: origin_provider.provider_ref().clone(),
+        binding_ref: BindingRef::new(&format!("binding:{binding_name}"))
+            .map_err(WorkcellError::from)?,
+        consumer_ref: ExternalRef::new("agent-session:secret-deliver")
+            .map_err(WorkcellError::from)?,
+        workload_ref: None,
+        class: class.clone(),
+        purpose: record.purpose.clone(),
+        destination: "opensandbox-egress".into(),
+        scope: record.scope.clone(),
+    };
+    let mut broker_routes = Vec::new();
+    for route in &routes {
+        let (host, method) = route.split_once('=').ok_or_else(|| {
+            WorkcellError::InvalidDemand(format!(
+                "route `{route}` must be HOST=METHOD (e.g. api.github.com=GET)"
+            ))
+        })?;
+        broker_routes.push(BrokerRoute {
+            destination_host: host.trim().to_owned(),
+            method: method.trim().to_uppercase(),
+            purpose: record.purpose.clone(),
+            scope: record.scope.clone(),
+        });
+    }
+    let policy = BrokerPolicy::new(broker_routes.clone())?;
+    let route = broker_routes[0].clone();
+    let handle = broker_handle(&request)?;
+    let binding = OpenSandboxCredentialBindingSpec::https(
+        credential_name.clone(),
+        binding_name.clone(),
+        request_paths,
+        binding_auth,
+    )?;
+    let allocation_stub = ProviderAllocation {
+        provider_ref: epilogos_workcell_core::ProviderRef::new(&target_provider_ref)
+            .map_err(WorkcellError::from)?,
+        port: ProviderPortKind::Execution,
+        material_ref: allocation.clone(),
+        health: HealthState::Healthy,
+        properties: BTreeMap::new(),
+        provenance: BTreeMap::new(),
+    };
+
+    let receipt = project_credential_to_sandbox(
+        &broker,
+        &projection,
+        SecretRevocationState::Active,
+        &allocation_stub,
+        &origin_provider,
+        &request,
+        &policy,
+        &handle,
+        &route,
+        &binding,
+    )?;
+
+    let vault_revision = receipt
+        .provenance
+        .get("sandbox.vault_revision")
+        .cloned()
+        .unwrap_or_default();
+    if global.json {
+        emit_json(json!({
+            "ok": true,
+            "projection_ref": projection_ref,
+            "sandbox": allocation,
+            "credential_name": credential_name,
+            "binding_name": binding_name,
+            "vault_revision": vault_revision,
+            "secret_visibility": "use-without-read",
+        }));
+    } else {
+        println!(
+            "delivered `{projection_ref}` into sandbox `{allocation}` as vault credential `{credential_name}` (binding `{binding_name}`, revision {vault_revision}); use-without-read — the material was resolved in-process and never printed"
+        );
+    }
+    Ok(())
 }
 
 fn secret_scan(global: &GlobalArgs, _args: &[String]) -> Result<(), WorkcellError> {
@@ -5586,6 +6066,7 @@ fn secret_projections(global: &GlobalArgs, _args: &[String]) -> Result<(), Workc
 fn secret_revoke_projection(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
     let mut name: Option<String> = None;
     let mut projection_ref: Option<String> = None;
+    let mut sandbox: Option<String> = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -5595,6 +6076,10 @@ fn secret_revoke_projection(global: &GlobalArgs, args: &[String]) -> Result<(), 
             }
             "--ref" => {
                 projection_ref = Some(require_value(args, index, "--ref")?.to_owned());
+                index += 2;
+            }
+            "--sandbox" => {
+                sandbox = Some(require_value(args, index, "--sandbox")?.to_owned());
                 index += 2;
             }
             other => {
@@ -5620,29 +6105,80 @@ fn secret_revoke_projection(global: &GlobalArgs, args: &[String]) -> Result<(), 
     };
     let workcell_ref = parse_workcell_ref(&global.workcell_ref)?;
     let ledger = SecretProjectionLedger::new(&global.state_root, workcell_ref);
-    match ledger.decision_for(&projection_ref)? {
+    let (was_active, record) = match ledger.decision_for(&projection_ref)? {
         ProjectionDecision::Unknown => {
             return Err(WorkcellError::InvalidDemand(format!(
                 "no secret projection `{projection_ref}` exists in this ledger"
             )))
         }
-        ProjectionDecision::Revoked(_) => {
-            if global.json {
-                emit_json(json!({"ok": true, "projection_ref": projection_ref, "state": "revoked", "note": "already revoked"}));
-            } else {
-                println!("{projection_ref} was already revoked; the record is kept as audit evidence");
-            }
-            return Ok(());
+        ProjectionDecision::Revoked(record) => (false, Some(*record)),
+        ProjectionDecision::Active(record) => {
+            ledger.revoke(&projection_ref, now_unix_ms())?;
+            (true, Some(*record))
         }
-        ProjectionDecision::Active(_) => {}
+    };
+
+    // Delete the vault at the projected target so injected material stops
+    // being injected at its next outbound flow — revocation that reaches the
+    // target, not a ledger entry alone.
+    let mut vault_deleted = false;
+    if let Some(allocation) = &sandbox {
+        let record = record.ok_or_else(|| {
+            WorkcellError::InvalidDemand(format!(
+                "no secret projection `{projection_ref}` exists in this ledger"
+            ))
+        })?;
+        let (target_provider_ref, _) = match &record.to_request()?.target {
+            SecretProjectionTarget::Sandbox {
+                provider_ref,
+                allocation_ref,
+            } => (provider_ref.as_str().to_owned(), allocation_ref.clone()),
+            SecretProjectionTarget::Workcell { .. } => {
+                return Err(WorkcellError::InvalidDemand(
+                    "--sandbox deletes a sandbox vault; this projection names a workcell target"
+                        .into(),
+                ))
+            }
+        };
+        let config = declared_sandbox_deployment(global, &target_provider_ref)?;
+        let broker = OpenSandboxCredentialBroker::new(config, StdHttpOpenSandboxTransport)?;
+        let allocation_stub = ProviderAllocation {
+            provider_ref: epilogos_workcell_core::ProviderRef::new(&target_provider_ref)
+                .map_err(WorkcellError::from)?,
+            port: ProviderPortKind::Execution,
+            material_ref: allocation.clone(),
+            health: HealthState::Healthy,
+            properties: BTreeMap::new(),
+            provenance: BTreeMap::new(),
+        };
+        broker.delete_vault(&allocation_stub)?;
+        vault_deleted = true;
     }
-    ledger.revoke(&projection_ref, now_unix_ms())?;
+
     if global.json {
-        emit_json(json!({"ok": true, "projection_ref": projection_ref, "state": "revoked"}));
+        emit_json(json!({
+            "ok": true,
+            "projection_ref": projection_ref,
+            "state": "revoked",
+            "vault_deleted": vault_deleted,
+            "note": if !was_active && !vault_deleted { "already revoked" } else { "" },
+        }));
     } else {
-        println!(
-            "{projection_ref} revoked; the projected target is refused at its next use, and the record is kept as audit evidence"
-        );
+        let vault_note = if vault_deleted {
+            format!(
+                "; the sandbox `{}` vault was deleted, so injected material is no longer injected",
+                sandbox.clone().unwrap_or_default()
+            )
+        } else {
+            String::new()
+        };
+        if !was_active && !vault_deleted {
+            println!("{projection_ref} was already revoked; the record is kept as audit evidence");
+        } else {
+            println!(
+                "{projection_ref} revoked; the projected target is refused at its next use{vault_note}, and the record is kept as audit evidence"
+            );
+        }
     }
     Ok(())
 }
@@ -5661,6 +6197,11 @@ Secret origin and projection:\n  workcell secret scan [--json]
       Detect credential material outside a secret provider (env vars, shell\n      rc files, known auth files); reports location + presence only.
   workcell secret vault --from env:NAME|PATH [--select KEY] --ref REF [--provider secret-service|keychain]
       Move material into this machine's origin store; the value is never printed.
+  workcell machine add --label LABEL --endpoint HOST:PORT [--credential-ref REF]
+      Declare a remote machine natively; then `workcell connect --connection LABEL`
+      needs no flags — the endpoint and credential reference come from the
+      declaration, and the material resolves from the origin secret source.
+  workcell machine list | remove --label LABEL
   workcell secret project --name LABEL (--to-workcell REF --connection LABEL | --to-sandbox --allocation-ref REF)
       --credential-ref REF --source-provider REF --class CLASS --purpose P --scope S --by REF
       Record an authorised projection at the origin (refs only, never material).

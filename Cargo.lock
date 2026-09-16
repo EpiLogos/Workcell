@@ -472,6 +472,7 @@ dependencies = [
  "epilogos-workcell-artifact",
  "epilogos-workcell-core",
  "epilogos-workcell-fabric",
+ "epilogos-workcell-opensandbox",
  "epilogos-workcell-workspace",
  "libc",
  "serde_json",
