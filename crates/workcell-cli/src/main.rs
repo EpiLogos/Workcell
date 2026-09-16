@@ -9,8 +9,9 @@ use std::{
 use epilogos_workcell_control::{
     check_compatibility, credential_sha256, generate_credential, grant_ref_for, parse_duration_millis,
     software_version, validate_label, ConnectionGrants, ControlClient, ControlClientError,
-    ControlService, CreateOutcome, TcpControlServer, TcpControlTransport, CONTROL_OPERATIONS,
-    CONTROL_PROTOCOL_VERSION, GRANTS_FILE,
+    ControlService, CreateOutcome, ProjectionDecision, SecretProjectionLedger, SecretProjectionRecord,
+    TcpControlServer, TcpControlTransport, CONTROL_OPERATIONS, CONTROL_PROTOCOL_VERSION,
+    GRANTS_FILE,
 };
 use epilogos_workcell_core::{
     AffordanceRequirement, Availability, CollectionBundle, Degradation, DemandRef,
@@ -19,11 +20,16 @@ use epilogos_workcell_core::{
     MaterialisationPlan, ObservationBundle, OutputRequirement, PersistenceScope, PlanOmission,
     PlanStatus, ProjectRuntimeRequirement, ProviderPortKind, ReconciliationResult,
     ReleaseDisposition, ReleaseResult, RequirementNecessity, ResourceRequirement,
-    RetentionExpectation, Tiered, WorkcellControlPlane, WorkcellError, WorkcellRef,
+    RetentionExpectation, SecretMaterialisationClass, SecretProjectionRequest,
+    SecretProjectionTarget, Tiered, WorkcellControlPlane, WorkcellError, WorkcellRef,
     WorkspaceAccess, WorkspaceRequirement,
 };
 use epilogos_workcell_keychain::{
-    store_bootstrap_material, KeychainAclPolicy, KeychainSecretProvider,
+    store_bootstrap_material as store_keychain_material, KeychainAclPolicy, KeychainSecretProvider,
+};
+use epilogos_workcell_secret_scan as secret_scan;
+use epilogos_workcell_secret_service::{
+    store_bootstrap_material as store_secret_service_material, SecretServiceSecretProvider,
 };
 use epilogos_workcell_runtime::{CollapsedLocalConfig, CollapsedLocalWorkcell};
 use epilogos_workcell_wire::{
@@ -107,6 +113,7 @@ fn run(args: Vec<String>) -> Result<(), WorkcellError> {
         "revoke" => command_revoke(&global, command_args),
         "connect" => command_connect(&global, command_args),
         "connections" => command_connections(&global, command_args),
+        "secret" => command_secret(&global, command_args),
         "system" => command_system(&global),
         "config" => command_config(&global, command_args),
         "config-contribution" => command_config_contribution(&global),
@@ -2742,20 +2749,39 @@ fn resolve_connection_credential(
     }
     if let Some(reference) = record_credential_ref {
         use epilogos_workcell_core::SecretProvider;
-        let provider = KeychainSecretProvider::new(KeychainAclPolicy::ThisDeviceUnlocked)?;
-        let material = provider.resolve(&ExternalRef::new(reference).map_err(WorkcellError::from)?)?;
+        let external = ExternalRef::new(reference).map_err(WorkcellError::from)?;
+        // Dispatch on the recorded ref's scheme, so each platform resolves
+        // from its own origin store and older keychain refs keep working.
+        let material = if reference.starts_with("linux-secret-service://") {
+            SecretServiceSecretProvider::new()?.resolve(&external)?
+        } else {
+            KeychainSecretProvider::new(KeychainAclPolicy::ThisDeviceUnlocked)?
+                .resolve(&external)?
+        };
         return Ok(Some(material.value.expose_for_materialisation().to_owned()));
     }
     Ok(None)
 }
 
-/// Keep the credential material in the keychain under a stable
-/// `keychain://workcell-connection/<label>` location.
+/// Keep the connection credential in this cell's origin secret source under
+/// a stable location: the macOS Keychain on macOS, the Linux Secret Service
+/// on Linux. One store law on every platform — material never lands in a
+/// config or state file, and the ref names the source it lives in.
+#[cfg(not(target_os = "linux"))]
 fn store_connection_credential(label: &str, credential: &str) -> Result<String, WorkcellError> {
     let reference = format!("keychain://workcell-connection/{label}");
     let external = ExternalRef::new(&reference).map_err(WorkcellError::from)?;
     let provider = KeychainSecretProvider::new(KeychainAclPolicy::ThisDeviceUnlocked)?;
-    store_bootstrap_material(&provider, &external, credential.as_bytes())?;
+    store_keychain_material(&provider, &external, credential.as_bytes())?;
+    Ok(reference)
+}
+
+#[cfg(target_os = "linux")]
+fn store_connection_credential(label: &str, credential: &str) -> Result<String, WorkcellError> {
+    let reference = format!("linux-secret-service://workcell-connection/{label}");
+    let external = ExternalRef::new(&reference).map_err(WorkcellError::from)?;
+    let provider = SecretServiceSecretProvider::new()?;
+    store_secret_service_material(&provider, &external, credential.as_bytes())?;
     Ok(reference)
 }
 
@@ -5123,6 +5149,504 @@ fn exit_code(error: &WorkcellError) -> u8 {
     }
 }
 
+// ---- Secret origin and projection -------------------------------------
+//
+// One origin store per machine — the machine where the person put the
+// secret. Everything in this command family keeps that law: exposure
+// discovery reports location and presence only, vaulting moves material
+// into the origin store without ever printing it, and projections record
+// authorised relations (refs, classes, purpose, scope) — never material.
+
+const SECRET_USAGE: &str = "usage: workcell secret scan | vault --from env:NAME|PATH [--select KEY] --ref REF [--provider secret-service|keychain] | project --name LABEL (--to-workcell REF --connection LABEL | --to-sandbox --allocation-ref REF [--sandbox-provider REF]) --credential-ref REF --source-provider REF --class CLASS --purpose P --scope S --by REF | projections | revoke-projection (--name LABEL | --ref PREF)";
+
+fn command_secret(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    let Some(subcommand) = args.first() else {
+        return Err(WorkcellError::InvalidDemand(SECRET_USAGE.into()));
+    };
+    let rest = &args[1..];
+    match subcommand.as_str() {
+        "scan" => secret_scan(global, rest),
+        "vault" => secret_vault(global, rest),
+        "project" => secret_project(global, rest),
+        "projections" => secret_projections(global, rest),
+        "revoke-projection" => secret_revoke_projection(global, rest),
+        other => Err(WorkcellError::InvalidDemand(format!(
+            "unknown secret subcommand `{other}`; {SECRET_USAGE}"
+        ))),
+    }
+}
+
+fn secret_scan(global: &GlobalArgs, _args: &[String]) -> Result<(), WorkcellError> {
+    let home = env::var("HOME").map_err(|_| {
+        WorkcellError::Unavailable(
+            "cannot determine the home directory (HOME is unset); the standard exposure scan needs it"
+                .into(),
+        )
+    })?;
+    let env_pairs: Vec<(String, String)> = env::vars().collect();
+    let report = secret_scan::run_standard_scan(
+        Path::new(&home),
+        env_pairs
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str())),
+    );
+    if global.json {
+        emit_json(report.to_json());
+    } else {
+        print!("{}", report.render_plain());
+        if !report.findings.is_empty() {
+            println!(
+                "vault a candidate into the origin store:\n  workcell secret vault --from <location> [--select <json.key>] --ref <provider ref>"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn secret_vault(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    let mut from: Option<String> = None;
+    let mut select: Option<String> = None;
+    let mut provider_name: Option<String> = None;
+    let mut reference: Option<String> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--from" => {
+                from = Some(require_value(args, index, "--from")?.to_owned());
+                index += 2;
+            }
+            "--select" => {
+                select = Some(require_value(args, index, "--select")?.to_owned());
+                index += 2;
+            }
+            "--provider" => {
+                provider_name = Some(require_value(args, index, "--provider")?.to_owned());
+                index += 2;
+            }
+            "--ref" => {
+                reference = Some(require_value(args, index, "--ref")?.to_owned());
+                index += 2;
+            }
+            other => {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "unknown vault option `{other}`"
+                )))
+            }
+        }
+    }
+    let from = from.ok_or_else(|| {
+        WorkcellError::InvalidDemand(
+            "vault needs a source: --from env:NAME or --from /path/to/file".into(),
+        )
+    })?;
+    let reference = reference.ok_or_else(|| {
+        WorkcellError::InvalidDemand(
+            "vault needs a destination ref: --ref linux-secret-service://<service>/<account> (or keychain://… on macOS)".into(),
+        )
+    })?;
+    let provider = provider_name.unwrap_or_else(default_origin_provider);
+
+    let material = read_vault_material(&from, select.as_deref())?;
+    let stored = store_in_origin(&provider, &reference, &material)?;
+    if global.json {
+        emit_json(json!({
+            "ok": true,
+            "stored": stored,
+            "provider": provider,
+            "bytes": material.len(),
+        }));
+    } else {
+        println!(
+            "stored {} bytes into `{provider}` as {stored}; the material was never printed",
+            material.len()
+        );
+    }
+    Ok(())
+}
+
+fn read_vault_material(from: &str, select: Option<&str>) -> Result<Vec<u8>, WorkcellError> {
+    if let Some(name) = from.strip_prefix("env:") {
+        if select.is_some() {
+            return Err(WorkcellError::InvalidDemand(
+                "--select applies to file sources only".into(),
+            ));
+        }
+        let value = env::var(name).map_err(|_| {
+            WorkcellError::Unavailable(format!(
+                "environment variable `{name}` is not set; nothing was vaulted"
+            ))
+        })?;
+        if value.trim().is_empty() {
+            return Err(WorkcellError::InvalidDemand(
+                "refusing to vault empty material".into(),
+            ));
+        }
+        return Ok(value.into_bytes());
+    }
+    let text = fs::read_to_string(from).map_err(|error| {
+        WorkcellError::Unavailable(format!("could not read `{from}`: {error}; nothing was vaulted"))
+    })?;
+    if let Some(select) = select {
+        return Ok(select_json_path(&text, select)?.into_bytes());
+    }
+    // Whole-file material (a PEM key, a token file) is legitimate vault
+    // material. A JSON object without --select is refused: the real
+    // material sits in one field, and storing the whole file would bury it.
+    if serde_json::from_str::<Value>(&text)
+        .map(|value| value.is_object())
+        .unwrap_or(false)
+    {
+        return Err(WorkcellError::InvalidDemand(format!(
+            "`{from}` is a JSON object; pass --select <dotted.key> to name the field that holds the material"
+        )));
+    }
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(WorkcellError::InvalidDemand(
+            "refusing to vault empty material".into(),
+        ));
+    }
+    Ok(trimmed.as_bytes().to_vec())
+}
+
+fn select_json_path(text: &str, select: &str) -> Result<String, WorkcellError> {
+    let value: Value = serde_json::from_str(text)
+        .map_err(|error| WorkcellError::Unavailable(format!("the source is not valid JSON: {error}")))?;
+    let mut current = &value;
+    for segment in select.split('.') {
+        let (key, index) = match segment.split_once('[') {
+            Some((key, rest)) => {
+                let index = rest.trim_end_matches(']').parse::<usize>().ok();
+                (key, index)
+            }
+            None => (segment, None),
+        };
+        current = current.get(key).ok_or_else(|| {
+            WorkcellError::Unavailable(format!(
+                "`{select}` does not name a field in the source; nothing was vaulted"
+            ))
+        })?;
+        if let Some(index) = index {
+            current = current.get(index).ok_or_else(|| {
+                WorkcellError::Unavailable(format!(
+                    "`{select}` does not name an array element in the source; nothing was vaulted"
+                ))
+            })?;
+        }
+    }
+    match current.as_str() {
+        Some(text) if !text.trim().is_empty() => Ok(text.to_owned()),
+        _ => Err(WorkcellError::Unavailable(format!(
+            "`{select}` does not name a non-empty string field; nothing was vaulted"
+        ))),
+    }
+}
+
+fn default_origin_provider() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        "secret-service".to_owned()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        "keychain".to_owned()
+    }
+}
+
+fn store_in_origin(
+    provider_name: &str,
+    reference: &str,
+    material: &[u8],
+) -> Result<String, WorkcellError> {
+    let external = ExternalRef::new(reference).map_err(WorkcellError::from)?;
+    match provider_name {
+        "secret-service" => {
+            let provider = SecretServiceSecretProvider::new()?;
+            store_secret_service_material(&provider, &external, material)?;
+        }
+        "keychain" => {
+            let provider = KeychainSecretProvider::new(KeychainAclPolicy::ThisDeviceUnlocked)?;
+            store_keychain_material(&provider, &external, material)?;
+        }
+        other => {
+            return Err(WorkcellError::InvalidDemand(format!(
+                "unknown secret provider `{other}`; known providers: secret-service, keychain"
+            )))
+        }
+    }
+    Ok(reference.to_owned())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn secret_project(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    let mut name: Option<String> = None;
+    let mut to_workcell: Option<String> = None;
+    let mut connection: Option<String> = None;
+    let mut to_sandbox = false;
+    let mut allocation_ref: Option<String> = None;
+    let mut sandbox_provider: Option<String> = None;
+    let mut credential_ref: Option<String> = None;
+    let mut source_provider: Option<String> = None;
+    let mut class: Option<String> = None;
+    let mut purpose: Option<String> = None;
+    let mut scope: Option<String> = None;
+    let mut requested_by: Option<String> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--name" => {
+                name = Some(require_value(args, index, "--name")?.to_owned());
+                index += 2;
+            }
+            "--to-workcell" => {
+                to_workcell = Some(require_value(args, index, "--to-workcell")?.to_owned());
+                index += 2;
+            }
+            "--connection" => {
+                connection = Some(require_value(args, index, "--connection")?.to_owned());
+                index += 2;
+            }
+            "--to-sandbox" => {
+                to_sandbox = true;
+                index += 1;
+            }
+            "--allocation-ref" => {
+                allocation_ref = Some(require_value(args, index, "--allocation-ref")?.to_owned());
+                index += 2;
+            }
+            "--sandbox-provider" => {
+                sandbox_provider =
+                    Some(require_value(args, index, "--sandbox-provider")?.to_owned());
+                index += 2;
+            }
+            "--credential-ref" => {
+                credential_ref = Some(require_value(args, index, "--credential-ref")?.to_owned());
+                index += 2;
+            }
+            "--source-provider" => {
+                source_provider =
+                    Some(require_value(args, index, "--source-provider")?.to_owned());
+                index += 2;
+            }
+            "--class" => {
+                class = Some(require_value(args, index, "--class")?.to_owned());
+                index += 2;
+            }
+            "--purpose" => {
+                purpose = Some(require_value(args, index, "--purpose")?.to_owned());
+                index += 2;
+            }
+            "--scope" => {
+                scope = Some(require_value(args, index, "--scope")?.to_owned());
+                index += 2;
+            }
+            "--by" => {
+                requested_by = Some(require_value(args, index, "--by")?.to_owned());
+                index += 2;
+            }
+            other => {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "unknown project option `{other}`"
+                )))
+            }
+        }
+    }
+    let name = name.ok_or_else(|| {
+        WorkcellError::InvalidDemand("project needs --name LABEL for the projection ref".into())
+    })?;
+    validate_label(&name)?;
+    let credential_ref = credential_ref.ok_or_else(|| {
+        WorkcellError::InvalidDemand("project needs --credential-ref REF".into())
+    })?;
+    let source_provider = source_provider.ok_or_else(|| {
+        WorkcellError::InvalidDemand("project needs --source-provider REF".into())
+    })?;
+    let class = class.ok_or_else(|| {
+        WorkcellError::InvalidDemand(
+            "project needs --class CLASS (e.g. credential-broker, file, process-env)".into(),
+        )
+    })?;
+    let class = SecretMaterialisationClass::parse(&class).ok_or_else(|| {
+        WorkcellError::InvalidDemand(format!(
+            "unknown materialisation class `{class}`; known classes: process-env, one-shot-child-process, fd-or-pipe, file, provider-native-lease, credential-broker, short-lived-federated-credential"
+        ))
+    })?;
+    let purpose = purpose.ok_or_else(|| {
+        WorkcellError::InvalidDemand("project needs --purpose PURPOSE".into())
+    })?;
+    let scope =
+        scope.ok_or_else(|| WorkcellError::InvalidDemand("project needs --scope SCOPE".into()))?;
+    let requested_by = requested_by.ok_or_else(|| {
+        WorkcellError::InvalidDemand("project needs --by REQUESTER-REF".into())
+    })?;
+
+    let target = match (to_workcell, to_sandbox) {
+        (Some(workcell_ref), false) => {
+            SecretProjectionTarget::Workcell {
+                workcell_ref: parse_workcell_ref(&workcell_ref)?,
+                connection_label: connection.ok_or_else(|| {
+                    WorkcellError::InvalidDemand(
+                        "a workcell projection needs --connection LABEL (the authorised cross-cell relation)"
+                            .into(),
+                    )
+                })?,
+            }
+        }
+        (None, true) => SecretProjectionTarget::Sandbox {
+            provider_ref: epilogos_workcell_core::ProviderRef::new(
+                sandbox_provider.as_deref().unwrap_or("provider:opensandbox"),
+            )
+            .map_err(WorkcellError::from)?,
+            allocation_ref: allocation_ref.ok_or_else(|| {
+                WorkcellError::InvalidDemand(
+                    "a sandbox projection needs --allocation-ref REF".into(),
+                )
+            })?,
+        },
+        (Some(_), true) => {
+            return Err(WorkcellError::InvalidDemand(
+                "a projection has one target: --to-workcell or --to-sandbox, not both".into(),
+            ))
+        }
+        (None, false) => {
+            return Err(WorkcellError::InvalidDemand(
+                "project needs a target: --to-workcell REF --connection LABEL, or --to-sandbox --allocation-ref REF"
+                    .into(),
+            ))
+        }
+    };
+
+    let request = SecretProjectionRequest {
+        credential_ref: ExternalRef::new(&credential_ref).map_err(WorkcellError::from)?,
+        source_provider_ref: epilogos_workcell_core::ProviderRef::new(&source_provider)
+            .map_err(WorkcellError::from)?,
+        target,
+        class,
+        purpose,
+        scope,
+        requested_by: ExternalRef::new(&requested_by).map_err(WorkcellError::from)?,
+    };
+    request.validate()?;
+
+    let workcell_ref = parse_workcell_ref(&global.workcell_ref)?;
+    let ledger = SecretProjectionLedger::new(&global.state_root, workcell_ref);
+    let projection_ref = format!("secret-projection:{name}");
+    let record =
+        SecretProjectionRecord::from_request(projection_ref.clone(), &request, now_unix_ms())?;
+    ledger.record(record)?;
+    if global.json {
+        emit_json(json!({
+            "ok": true,
+            "projection_ref": projection_ref,
+            "ledger": ledger.path().display().to_string(),
+        }));
+    } else {
+        println!(
+            "projection `{projection_ref}` recorded in {}; refs only — the credential stays in its origin store",
+            ledger.path().display()
+        );
+    }
+    Ok(())
+}
+
+fn secret_projections(global: &GlobalArgs, _args: &[String]) -> Result<(), WorkcellError> {
+    let workcell_ref = parse_workcell_ref(&global.workcell_ref)?;
+    let ledger = SecretProjectionLedger::new(&global.state_root, workcell_ref);
+    let records = ledger.list()?;
+    if global.json {
+        emit_json(json!({
+            "ok": true,
+            "projections": records.iter().map(|record| record.to_json()).collect::<Vec<_>>(),
+        }));
+    } else {
+        if records.is_empty() {
+            println!("no secret projections recorded in {}", ledger.path().display());
+        }
+        for record in records {
+            let target = match (&record.target_workcell_ref, &record.target_provider_ref) {
+                (Some(workcell), _) => format!(
+                    "workcell {workcell} (connection `{}`)",
+                    record.target_connection_label.clone().unwrap_or_default()
+                ),
+                (None, Some(provider)) => format!(
+                    "sandbox {provider}/{}",
+                    record.target_allocation_ref.clone().unwrap_or_default()
+                ),
+                _ => "unknown target".to_owned(),
+            };
+            println!(
+                "{} -> {} class={} purpose={} scope={} state={}",
+                record.projection_ref, target, record.class, record.purpose, record.scope, record.state
+            );
+        }
+    }
+    Ok(())
+}
+
+fn secret_revoke_projection(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    let mut name: Option<String> = None;
+    let mut projection_ref: Option<String> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--name" => {
+                name = Some(require_value(args, index, "--name")?.to_owned());
+                index += 2;
+            }
+            "--ref" => {
+                projection_ref = Some(require_value(args, index, "--ref")?.to_owned());
+                index += 2;
+            }
+            other => {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "unknown revoke-projection option `{other}`"
+                )))
+            }
+        }
+    }
+    let projection_ref = match (name, projection_ref) {
+        (Some(name), None) => format!("secret-projection:{name}"),
+        (None, Some(reference)) => reference,
+        (Some(_), Some(_)) => {
+            return Err(WorkcellError::InvalidDemand(
+                "pass --name LABEL or --ref PREF, not both".into(),
+            ))
+        }
+        (None, None) => {
+            return Err(WorkcellError::InvalidDemand(
+                "revoke-projection needs --name LABEL or --ref PREF".into(),
+            ))
+        }
+    };
+    let workcell_ref = parse_workcell_ref(&global.workcell_ref)?;
+    let ledger = SecretProjectionLedger::new(&global.state_root, workcell_ref);
+    match ledger.decision_for(&projection_ref)? {
+        ProjectionDecision::Unknown => {
+            return Err(WorkcellError::InvalidDemand(format!(
+                "no secret projection `{projection_ref}` exists in this ledger"
+            )))
+        }
+        ProjectionDecision::Revoked(_) => {
+            if global.json {
+                emit_json(json!({"ok": true, "projection_ref": projection_ref, "state": "revoked", "note": "already revoked"}));
+            } else {
+                println!("{projection_ref} was already revoked; the record is kept as audit evidence");
+            }
+            return Ok(());
+        }
+        ProjectionDecision::Active(_) => {}
+    }
+    ledger.revoke(&projection_ref, now_unix_ms())?;
+    if global.json {
+        emit_json(json!({"ok": true, "projection_ref": projection_ref, "state": "revoked"}));
+    } else {
+        println!(
+            "{projection_ref} revoked; the projected target is refused at its next use, and the record is kept as audit evidence"
+        );
+    }
+    Ok(())
+}
+
 fn print_help() {
     println!("CAW material operations: inspect / recover --receipt FILE; plan / prepare --demand-json FILE (full native demand including storage). Write restrictions: workcell-write-boundary capabilities / inspect / run. These do not create semantic sessions or execute Factory work.");
     println!(
@@ -5133,6 +5657,15 @@ Commands:\n  status       Summarise this local Workcell\n  discover     Discover
   place        Place request/release over those places (request --provider auto|herdr|tmux --name SLUG; release --place-ref REF --pid N --start-marker PS_LSTART)
   sandboxes    OpenSandbox server-side material (reconcile)\n  connections  Cross-cell connection records (list/show/disconnect)\n  providers    List provider inventory\n  system       Emit this Workcell's System settings disclosure (oi.product-settings-disclosure/v2)\n  config-contribution\n               Emit Workcell's configuration contribution (oi.configuration-contribution/v1)\n  config       Owner-native configuration transport: validate | plan | apply | reset\n  doctor       Verify the zero-setup local baseline\n\n\
 Cross-cell connection lifecycle:\n  workcell serve --listen HOST:PORT [--authorization TOKEN]\n      Serve this cell's control plane; grants are enforced per request.\n      Non-loopback listeners require a token or at least one active grant.\n  workcell authorise --client <label> --allow <operation>... [--advertise <port>...] [--expires-in <duration>] [--store-credential]\n      Grant a connecting client named operations; the credential is shown once.\n      `--expires-in 30m` (s|m|h|d) makes the grant expire at the next use,\n      refused as expired; without it the grant never expires.\n  workcell revoke --client <label> | --grant <ref>\n      Revoke grants; takes effect at the connecting client's next use.\n  workcell connect --endpoint HOST:PORT [--connection <label>] [--authorization TOKEN] [--store-credential]\n      Establish or reconnect the client side; reports both cells' protocol\n      and software, refuses unsupported combinations loudly.\n\n\
+Secret origin and projection:\n  workcell secret scan [--json]
+      Detect credential material outside a secret provider (env vars, shell\n      rc files, known auth files); reports location + presence only.
+  workcell secret vault --from env:NAME|PATH [--select KEY] --ref REF [--provider secret-service|keychain]
+      Move material into this machine's origin store; the value is never printed.
+  workcell secret project --name LABEL (--to-workcell REF --connection LABEL | --to-sandbox --allocation-ref REF)
+      --credential-ref REF --source-provider REF --class CLASS --purpose P --scope S --by REF
+      Record an authorised projection at the origin (refs only, never material).
+  workcell secret projections | revoke-projection (--name LABEL | --ref PREF)
+      Read the origin's projection ledger; revocation reaches the projected\n      target at its next use.\n\n\
 Global options:\n  --json                     Structured machine/agent output\n  --state-root PATH          Local Workcell state (default: $WORKCELL_HOME or ~/.workcell)\n  --workcell-ref REF         Workcell identity for new local operations\n  --receipt PATH             Material-world receipt for prepare/resume\n  --workspace-source PATH    Physical local source binding; never semantic identity\n  --services PATH            Operator-declared logical services (default: <state-root>/services.json)\n\n\
 Demand options for plan/prepare:\n  --demand-ref REF\n  --require VALUE | --prefer VALUE | --optional VALUE\n  --workspace writable|read-only [--workspace-ref REF] [--revision REV]\n  --project-runtime MODE\n  --connect VALUE | --prefer-connect VALUE | --optional-connect VALUE\n  --expose VALUE | --prefer-expose VALUE | --optional-expose VALUE\n  --output VALUE | --prefer-output VALUE | --optional-output VALUE\n  --resource key[=amount[:unit]]\n  --subject role=opaque-ref\n  --persistence SCOPE\n  --isolation VALUE\n  --retention release|preserve|suspend-if-supported|snapshot-if-supported\n  --extension key=value\n\n\
 Reconcile:\n  workcell --receipt WORLD.json reconcile --desired logical-ref=state"

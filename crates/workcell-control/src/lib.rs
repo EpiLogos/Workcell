@@ -2,6 +2,7 @@ mod client;
 pub mod codec;
 pub mod grants;
 mod network;
+pub mod projections;
 mod service;
 
 pub use client::{
@@ -14,6 +15,10 @@ pub use grants::{
     ConnectionGrants, CreateOutcome, GrantDecision, CONNECTIONS_DIRECTORY, GRANTS_FILE,
 };
 pub use network::{TcpControlServer, TcpControlTransport};
+pub use projections::{
+    ProjectionDecision, SecretProjectionLedger, SecretProjectionRecord, PROJECTIONS_FILE,
+    PROJECTIONS_SCHEMA, PROJECTION_STATE_ACTIVE, PROJECTION_STATE_REVOKED, SECRETS_DIRECTORY,
+};
 pub use service::ControlService;
 
 pub const CONTROL_PROTOCOL_VERSION: &str = "workcell.control/v1";

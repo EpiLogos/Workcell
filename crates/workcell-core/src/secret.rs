@@ -1,8 +1,10 @@
+use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::{BindingRef, ExternalRef, ProviderRef, Result, WorkcellError};
 
 pub const SECRET_MATERIALISATION_VERSION: &str = "workcell.secret-materialisation/v1";
+pub const SECRET_PROJECTION_VERSION: &str = "workcell.secret-projection/v1";
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum SecretMaterialisationClass {
@@ -13,6 +15,35 @@ pub enum SecretMaterialisationClass {
     ProviderNativeLease,
     CredentialBroker,
     ShortLivedFederatedCredential,
+}
+
+impl SecretMaterialisationClass {
+    /// Stable wire/ledger name. The ledger and CLI store this string; the
+    /// enum stays the in-memory truth.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ProcessEnv => "process-env",
+            Self::OneShotChildProcess => "one-shot-child-process",
+            Self::FdOrPipe => "fd-or-pipe",
+            Self::File => "file",
+            Self::ProviderNativeLease => "provider-native-lease",
+            Self::CredentialBroker => "credential-broker",
+            Self::ShortLivedFederatedCredential => "short-lived-federated-credential",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "process-env" => Some(Self::ProcessEnv),
+            "one-shot-child-process" => Some(Self::OneShotChildProcess),
+            "fd-or-pipe" => Some(Self::FdOrPipe),
+            "file" => Some(Self::File),
+            "provider-native-lease" => Some(Self::ProviderNativeLease),
+            "credential-broker" => Some(Self::CredentialBroker),
+            "short-lived-federated-credential" => Some(Self::ShortLivedFederatedCredential),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -264,6 +295,100 @@ pub fn authorise_broker_boundary<P: SecretProvider>(
     Ok((material, receipt))
 }
 
+/// Where a projection lands. One origin store stays the single origin; a
+/// target receives an authorised reference/materialisation relation, never
+/// a copy of the store.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum SecretProjectionTarget {
+    /// Another Workcell cell, reachable through an authorised cross-cell
+    /// connection (docs/CROSS-CELL-CONNECTIONS.md). The target receives a
+    /// materialisation relation it may present back at use time; material
+    /// crosses only an authorised sink boundary, never the control plane.
+    Workcell {
+        workcell_ref: crate::WorkcellRef,
+        connection_label: String,
+    },
+    /// A sandbox allocation fed through its credential broker (the existing
+    /// OpenSandbox Credential Vault seam).
+    Sandbox {
+        provider_ref: ProviderRef,
+        allocation_ref: String,
+    },
+}
+
+/// The origin-held half of the projection law: one origin, projection not
+/// replication, class/purpose/scope fixed at grant time. Persisted by the
+/// origin's ledger as refs only; the credential value is not representable
+/// in this type.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SecretProjectionRequest {
+    pub credential_ref: ExternalRef,
+    pub source_provider_ref: ProviderRef,
+    pub target: SecretProjectionTarget,
+    /// The one materialisation class the target is authorised to receive
+    /// the credential through.
+    pub class: SecretMaterialisationClass,
+    pub purpose: String,
+    pub scope: String,
+    /// Who requested the projection (agent-session/workload ref).
+    pub requested_by: ExternalRef,
+}
+
+impl SecretProjectionRequest {
+    pub fn validate(&self) -> Result<()> {
+        for (label, value) in [
+            ("purpose", self.purpose.as_str()),
+            ("scope", self.scope.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "secret projection {label} must not be empty"
+                )));
+            }
+        }
+        match &self.target {
+            SecretProjectionTarget::Sandbox { .. } => {
+                if self.class != SecretMaterialisationClass::CredentialBroker {
+                    return Err(WorkcellError::InvalidDemand(
+                        "sandbox projection materialises through the credential broker; \
+                         the class must be credential-broker"
+                            .into(),
+                    ));
+                }
+            }
+            SecretProjectionTarget::Workcell {
+                connection_label, ..
+            } => {
+                if connection_label.trim().is_empty() {
+                    return Err(WorkcellError::InvalidDemand(
+                        "secret projection connection label must not be empty".into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Portable evidence of a projection. Refs only: the embedded
+/// `SecretMaterialReceipt` already cannot carry a value, and nothing here
+/// adds one.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SecretProjectionReceipt {
+    pub version: &'static str,
+    pub credential_ref: ExternalRef,
+    pub source_provider_ref: ProviderRef,
+    pub target: SecretProjectionTarget,
+    pub class: SecretMaterialisationClass,
+    pub purpose: String,
+    pub scope: String,
+    pub requested_by: ExternalRef,
+    /// The receipt from the underlying trusted sink, when material moved in
+    /// this act. `None` when the projection is a recorded relation only.
+    pub materialisation: Option<SecretMaterialReceipt>,
+    pub provenance: BTreeMap<String, String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,5 +485,124 @@ mod tests {
         assert!(
             authorise_broker_boundary(&provider, &policy, &handle, &request, &widened).is_err()
         );
+    }
+
+    fn projection_request(
+        target: SecretProjectionTarget,
+        class: SecretMaterialisationClass,
+    ) -> SecretProjectionRequest {
+        SecretProjectionRequest {
+            credential_ref: ExternalRef::new("credential:github/operator").unwrap(),
+            source_provider_ref: ProviderRef::new("secret-provider:keychain/macos").unwrap(),
+            target,
+            class,
+            purpose: "github-api".into(),
+            scope: "repo:read".into(),
+            requested_by: ExternalRef::new("agent-session:fixture").unwrap(),
+        }
+    }
+
+    #[test]
+    fn class_names_round_trip_for_the_ledger() {
+        for class in [
+            SecretMaterialisationClass::ProcessEnv,
+            SecretMaterialisationClass::OneShotChildProcess,
+            SecretMaterialisationClass::FdOrPipe,
+            SecretMaterialisationClass::File,
+            SecretMaterialisationClass::ProviderNativeLease,
+            SecretMaterialisationClass::CredentialBroker,
+            SecretMaterialisationClass::ShortLivedFederatedCredential,
+        ] {
+            assert_eq!(
+                SecretMaterialisationClass::parse(class.as_str()),
+                Some(class)
+            );
+        }
+        assert_eq!(SecretMaterialisationClass::parse("nonsense"), None);
+    }
+
+    #[test]
+    fn sandbox_projection_requires_the_credential_broker_class() {
+        let target = SecretProjectionTarget::Sandbox {
+            provider_ref: ProviderRef::new("provider:opensandbox").unwrap(),
+            allocation_ref: "sbx_fixture".into(),
+        };
+        assert!(
+            projection_request(target.clone(), SecretMaterialisationClass::CredentialBroker)
+                .validate()
+                .is_ok()
+        );
+        let err = projection_request(target, SecretMaterialisationClass::ProcessEnv)
+            .validate()
+            .unwrap_err();
+        assert!(format!("{err:?}").contains("credential-broker"));
+    }
+
+    #[test]
+    fn workcell_projection_requires_a_connection_label() {
+        let labelled = SecretProjectionTarget::Workcell {
+            workcell_ref: crate::WorkcellRef::new("workcell:remote").unwrap(),
+            connection_label: "laptop".into(),
+        };
+        assert!(
+            projection_request(labelled, SecretMaterialisationClass::File)
+                .validate()
+                .is_ok()
+        );
+
+        let blank = SecretProjectionTarget::Workcell {
+            workcell_ref: crate::WorkcellRef::new("workcell:remote").unwrap(),
+            connection_label: "  ".into(),
+        };
+        let err = projection_request(blank, SecretMaterialisationClass::File)
+            .validate()
+            .unwrap_err();
+        assert!(format!("{err:?}").contains("connection label"));
+    }
+
+    #[test]
+    fn projection_request_refuses_empty_purpose_and_scope() {
+        let mut request = projection_request(
+            SecretProjectionTarget::Sandbox {
+                provider_ref: ProviderRef::new("provider:opensandbox").unwrap(),
+                allocation_ref: "sbx_fixture".into(),
+            },
+            SecretMaterialisationClass::CredentialBroker,
+        );
+        request.purpose = " ".into();
+        assert!(request.validate().is_err());
+        request.purpose = "github-api".into();
+        request.scope = String::new();
+        assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn projection_receipt_debug_carries_no_material_shape() {
+        let request = projection_request(
+            SecretProjectionTarget::Sandbox {
+                provider_ref: ProviderRef::new("provider:opensandbox").unwrap(),
+                allocation_ref: "sbx_fixture".into(),
+            },
+            SecretMaterialisationClass::CredentialBroker,
+        );
+        let receipt = SecretProjectionReceipt {
+            version: SECRET_PROJECTION_VERSION,
+            credential_ref: request.credential_ref.clone(),
+            source_provider_ref: request.source_provider_ref.clone(),
+            target: request.target.clone(),
+            class: request.class.clone(),
+            purpose: request.purpose.clone(),
+            scope: request.scope.clone(),
+            requested_by: request.requested_by.clone(),
+            materialisation: None,
+            provenance: BTreeMap::from([(
+                "secret.visibility".into(),
+                "use-without-read".into(),
+            )]),
+        };
+        assert_eq!(receipt.version, SECRET_PROJECTION_VERSION);
+        // The receipt type has no value field to leak; the Debug render must
+        // stay that way structurally.
+        assert!(!format!("{receipt:?}").contains("value"));
     }
 }

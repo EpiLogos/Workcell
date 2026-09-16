@@ -69,3 +69,36 @@ This is enough to retain cross-Workcell material provenance while allowing provi
 - the production placement seam contains no fixed cluster, host, credential, or concrete transport configuration.
 
 This remains intentionally below the Factory's semantic ownership layer and above individual provider adapters: Workcell placement decides **where an unchanged material demand can be satisfied**, not what the software-development subject means.
+
+## Secret origin and projection
+
+Placement moves an unchanged material demand between cells. It never moves
+the secret store. A credential is stored once, on the machine where the
+person put it — the origin cell's secret source (macOS Keychain,
+1Password, or the Linux Secret Service, all under the same
+`SecretProvider` contract). What follows placement is projection, not
+replication:
+
+- the origin cell holds a `SecretProjectionRequest` (source credential ref,
+  target workcell/sandbox relation, the one authorised materialisation
+  class, purpose, scope) in `<state-root>/secrets/projections.json`;
+- the target receives an authorised reference/materialisation relation.
+  Raw material crosses only the existing trusted sink boundaries — for a
+  sandbox, the OpenSandbox Credential Vault broker; for another workcell, a
+  materialisation presented back to the origin at use time over an
+  authorised cross-cell connection;
+- receipts carry refs, never values: a `SecretProjectionReceipt` embeds the
+  ordinary `SecretMaterialReceipt` and adds no material;
+- revocation at the origin reaches the projected target at its next use —
+  a revoked projection refuses before any materialisation and before any
+  provider-side write;
+- `workcell secret scan` sees credential material that never entered a
+  provider (environment variables, shell rc files, known auth files) and
+  reports location + presence only; `workcell secret vault` moves that
+  material into the origin store without the value ever being printed;
+  detection failure is a declared refusal, never a silent skip.
+
+No second store, no per-machine copies, no split state: a cell that cannot
+reach its origin provider materialises nothing rather than falling back to
+plaintext, and says so — "could not run" never collapses into "ran and
+found nothing".
