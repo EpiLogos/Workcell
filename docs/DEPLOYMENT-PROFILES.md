@@ -208,6 +208,45 @@ This specimen exists to answer two questions with evidence:
 
 Do not decide the second question from one provider before running the proof.
 
+## Profile: hosted services VM (desktop or workstation host)
+
+A person's daily machine can also be asked to host long-lived service stacks: compose fleets, databases, vaults. When it is, those stacks belong **inside a VM whose disk lives on durable storage**, not in the host OS.
+
+The reason is migration before isolation. A stack installed into the host OS entangles its lifecycle with the host's; relocating the Docker daemon's data-root, authoring containerd ordering units and moving compose trees are host-level operations, each performed against the machine a person is actively using. A VM boundary turns that entire class of work into a VM lifecycle operation: the disk image is the unit of state, and moving, snapshotting or rebuilding it leaves the host OS untouched.
+
+```text
+desktop host (ordinary daily-use OS, unchanged)
+        |
+        | rootless QEMU/KVM  (no hypervisor OS, no host root)
+        |
+services VM (disk image on durable storage)
+        ├─ Docker and the service stacks
+        ├─ hostfwd bindings on the service-facing address
+        └─ 9p/virtfs share to the existing backup pool
+```
+
+The profile differs from the reference Ubuntu specimen in role. That specimen is a dedicated server; this one shares a machine with a person's daily work, which is why the boundary matters more, not less.
+
+**Docker inside the VM is the considered default.** Docker in an LXC or other shared-kernel container is the weaker-isolation alternative: lighter in memory and startup, but a container-runtime or kernel escalation reaches the host a person's daily work depends on. Bare-metal Docker on a personal host is the anti-pattern this profile exists to prevent.
+
+**Rootless QEMU/KVM is the desktop-compatible mechanism.** The host stays an ordinary desktop OS: no hypervisor OS and no root for the VM runtime. QEMU is extracted user-side from the distro packages, KVM acceleration comes through `/dev/kvm` group access, and the VM reaches the network through usermode NAT.
+
+**hostfwd preserves existing exposures.** Service ports are forwarded bound to the service-facing address, for example the machine's tailnet address, so existing clients keep their configuration. Exposure is preserved across the migration, not reinvented, and the exposure declarations survive the move verbatim.
+
+**A file share keeps the backup pipeline in place.** Backup jobs running inside the VM write through a 9p/virtfs file share onto their existing pool locations on the host's durable storage, so the host-side timer and any off-machine puller keep their shape.
+
+### Evidence law
+
+The hosting shape of a machine is claimed from the machine's own declaration, a Control machine record or equivalent source-owned statement, not reconstructed from what happens to be running when someone looks. As everywhere in this document, a claim that a real environment satisfied a demand requires output from that actual environment.
+
+A migration into the services VM is complete only when the whole pipeline is verified against the new location: the backup timer produces dumps through the share and the off-machine puller collects from the pool before the previous arrangement is retired. The previous arrangement retires disabled, not deleted; its data is kept as a cold, verified-then-pruned copy until the VM fleet is confirmed good.
+
+### What this profile does not cover
+
+Fleet-scale sandboxing, meaning many isolated workloads under clustering, live migration or central management, is the Proxmox/cluster conversation, not a desktop-host profile. Sandbox-execution VMs, short-lived environments for scoped or untrusted work, belong to the OpenSandbox integration; see [`OPENSANDBOX-SOURCE-INTEGRATION.md`](OPENSANDBOX-SOURCE-INTEGRATION.md).
+
+The Workcell contract is unchanged by any of this: the VM is where the providers and their durable state live, not a new semantic execution model.
+
 ## Distributed composition
 
 A distributed Workcell remains one coherent operational resolution domain even when providers live in several places. The proof fixture uses opaque placement labels only. A production implementation may use ordinary SSH, Tailscale/private overlay, remote provider APIs, VMs, cloud private networking or other transport/fabric mechanisms without requiring a Kubernetes-shaped ontology.
