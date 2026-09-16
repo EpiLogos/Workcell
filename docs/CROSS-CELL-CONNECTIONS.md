@@ -180,11 +180,49 @@ registry lives only in the serving cell's state root; connection receipts
 live only in the client's. No machine identities, credentials, absolute paths
 or generated runtime state are shared through the connection surface — the
 records carry endpoint, identity refs and a credential *reference*, nothing
-path-shaped. What this case adds beyond the connection surface (shared-ground
-source conflicts) is owned by the composition lock, not by Workcell alone;
-the connection-side share of the case is proven by inspecting both state
-roots after the full run (cases 1–5, 7) for the absence of the other cell's
-paths, credentials or generated state.
+path-shaped. The connection-side share of the case is proven by inspecting
+both state roots after the full run (cases 1–5, 7) for the absence of the
+other cell's paths, credentials or generated state.
+
+The shared-ground half of the case — a scoped source change flowing between
+two machines that hold related ground, and a divergent change surfacing as an
+explicit conflict — belongs to the composition lock's ground/source
+synchronisation, which is Central's native source machinery, not Workcell's.
+It is run through Central's source transfer Actions
+(`projectcentral.source.transfer.export/apply/conflicts/resolve`; see Central
+`docs/SOURCE-TRANSFER.md`):
+
+1. **Related ground.** Both machines hold the same world (same project id),
+   with the shared fork content placed on both before the receiving ground
+   first reconciles: their shared lineage is shared *content revisions*,
+   never copied `.central` state, machine identities or credentials.
+2. **Scoped change, explicit direction.** The origin machine exports a
+   bundle naming the exact source refs, the destination world, and
+   operator-declared from/to ground labels — human-chosen names, the same
+   discipline as a connection label above, because machine identities are
+   not portable authored ground. The bundle carries world-relative paths and
+   content revisions only; inspect it for the §5 prohibitions before moving
+   it (no absolute paths, no credentials, no hostnames/usernames, no
+   generated state).
+3. **Transport.** The bundle moves as an ordinary file (`scp` or any file
+   channel the operator already trusts). Workcell's connection is not the
+   channel: its control plane is material and must not grow source
+   semantics — the three synchronisations are never collapsed.
+4. **Apply on the receiving ground.** Every entry either fast-forwards from
+   its recorded base through the ordinary compare-and-swap write, is already
+   present, or — when both grounds moved from the shared revision — records
+   an explicit conflict naming base, incoming and local revisions, with both
+   sides snapshotted and the source left byte-identical. Nothing is
+   overwritten in either direction, and the receiving ground's own write
+   authority governs every entry (human-authored ground refuses a declared
+   non-human transfer).
+5. **Resolution.** An explicit, recorded resolution closes the conflict:
+   keep-local, or accept-incoming on the exact recorded local revision.
+
+Evidence to capture mirrors the connection half: the bundle and both
+grounds' `.central/source-transfer` records with digests, the byte-identical
+conflicted source, the surfaced conflict record naming both revisions, and
+the prohibition scans over the bundle and both grounds' records.
 
 ### Case 7 — independent client teardown; remote world intact
 
