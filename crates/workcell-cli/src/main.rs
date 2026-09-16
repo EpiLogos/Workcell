@@ -1615,6 +1615,7 @@ fn command_place_release(_global: &GlobalArgs, args: &[String]) -> Result<(), Wo
     let mut place_ref: Option<&str> = None;
     let mut pid: Option<u32> = None;
     let mut start_marker: Option<&str> = None;
+    let mut provider_close = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -1636,6 +1637,12 @@ fn command_place_release(_global: &GlobalArgs, args: &[String]) -> Result<(), Wo
                 index += 1;
                 start_marker = args.get(index).map(String::as_str);
             }
+            // Escape hatch for a place whose generation proof has failed
+            // (e.g. a herdr room whose pane processes churned): close the
+            // provider-native room itself, never a live pid. Only valid on a
+            // failed proof — with a live proof the release refuses the flag
+            // and the caller releases normally.
+            "--provider-close" => provider_close = true,
             other => {
                 return Err(WorkcellError::InvalidDemand(format!(
                     "unknown place release flag `{other}`"
@@ -1646,7 +1653,7 @@ fn command_place_release(_global: &GlobalArgs, args: &[String]) -> Result<(), Wo
     }
     let (Some(place_ref), Some(pid), Some(start_marker)) = (place_ref, pid, start_marker) else {
         return Err(WorkcellError::InvalidDemand(
-            "usage: workcell place release --place-ref <ref> --pid <n> --start-marker \"<ps lstart>\""
+            "usage: workcell place release --place-ref <ref> --pid <n> --start-marker \"<ps lstart>\" [--provider-close]"
                 .into(),
         ));
     };
@@ -1661,7 +1668,7 @@ fn command_place_release(_global: &GlobalArgs, args: &[String]) -> Result<(), Wo
         start_marker: start_marker.to_owned(),
     };
 
-    match epilogos_workcell_runtime::release_place_live(&demand) {
+    match epilogos_workcell_runtime::release_place_live(&demand, provider_close) {
         Ok(result) => {
             emit_json(result);
             Ok(())

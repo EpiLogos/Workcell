@@ -51,6 +51,15 @@ pub const PLACE_CLASS_SELF: &str = "self";
 pub const PLACE_CLASS_OTHER: &str = "other";
 pub const PLACE_CLASS_UNOBSERVED: &str = "unobserved";
 
+/// Which evidence classified a pane. `ps-comm`: the pid-table `ps` command
+/// name decided — every tmux pane, and any pane whose provider reading was
+/// not consulted or did not match. `provider-foreground`: the pid-table comm
+/// did not match a harness alias, but the provider's own foreground-process
+/// reading (herdr `pane process-info`) named a known harness. Never a guess:
+/// an `unobserved` pane carries no evidence at all.
+pub const PLACE_EVIDENCE_PS_COMM: &str = "ps-comm";
+pub const PLACE_EVIDENCE_PROVIDER_FOREGROUND: &str = "provider-foreground";
+
 /// Command stems owned by this suite. A pane running one of these was
 /// launched by Workcell/Factory itself, not by an outside operator.
 pub const SELF_BINARY_STEMS: [&str; 2] = ["workcell", "factory"];
@@ -131,6 +140,10 @@ pub struct PaneObservation {
     pub process_start_marker: Option<String>,
     pub classification: &'static str,
     pub harness_slug: Option<String>,
+    /// Which evidence source produced `classification` — see
+    /// `PLACE_EVIDENCE_PS_COMM` / `PLACE_EVIDENCE_PROVIDER_FOREGROUND`.
+    /// `None` only for `unobserved` panes nothing classified.
+    pub classification_evidence: Option<&'static str>,
 }
 
 /// Provider-level census result: status, provenance, and how the parse went.
@@ -240,6 +253,7 @@ pub fn join_process_evidence(panes: &mut [PaneObservation], pid_table: &[Observe
     for pane in panes.iter_mut() {
         let Some(pid) = pane.pane_pid else {
             pane.classification = PLACE_CLASS_UNOBSERVED;
+            pane.classification_evidence = None;
             continue;
         };
         let Some(process) = by_pid.get(&pid) else {
@@ -247,6 +261,7 @@ pub fn join_process_evidence(panes: &mut [PaneObservation], pid_table: &[Observe
             // enumerations, or a provider that reports stale pids). The pane
             // stays visible, unobserved — never dropped.
             pane.classification = PLACE_CLASS_UNOBSERVED;
+            pane.classification_evidence = None;
             continue;
         };
         pane.process_start_marker = (!process.start_marker.is_empty())
@@ -255,14 +270,39 @@ pub fn join_process_evidence(panes: &mut [PaneObservation], pid_table: &[Observe
         let (classification, harness_slug) = classify_command(&process.comm);
         pane.classification = classification;
         pane.harness_slug = harness_slug;
+        pane.classification_evidence = Some(PLACE_EVIDENCE_PS_COMM);
+        // Found live on TM02-R: a herdr pane running the `pi` harness
+        // classified `other` because the pid-table comm named the shell while
+        // the harness ran in the pane's foreground. The provider's own
+        // process-info reading (already joined as `pane_command`) is a
+        // second, independent evidence source — consulted only when ps-comm
+        // did not match, only for herdr (tmux panes keep `ps-comm`), and only
+        // for the harness alias table. Neither source naming a harness stays
+        // `other`: never a guess.
+        if classification == PLACE_CLASS_OTHER && pane.provider == HERDR_PROVIDER {
+            if let Some(foreground) = pane.pane_command.as_deref() {
+                if let Some((_, slug)) = PID_ALIASES
+                    .iter()
+                    .find(|(alias, _)| alias == &command_stem(foreground))
+                {
+                    pane.classification = PLACE_CLASS_HARNESS;
+                    pane.harness_slug = Some((*slug).to_owned());
+                    pane.classification_evidence = Some(PLACE_EVIDENCE_PROVIDER_FOREGROUND);
+                }
+            }
+        }
     }
 }
 
-/// Classify one `ps comm` value. The stem is the executable basename: tmux
-/// and Herdr both report bare command names, and full paths classify the
-/// same way.
+/// The executable basename of a command string: tmux and Herdr both report
+/// bare command names, and full paths classify the same way.
+fn command_stem(command: &str) -> &str {
+    command.rsplit('/').next().unwrap_or(command)
+}
+
+/// Classify one `ps comm` value.
 pub fn classify_command(comm: &str) -> (&'static str, Option<String>) {
-    let stem = comm.rsplit('/').next().unwrap_or(comm);
+    let stem = command_stem(comm);
     if SELF_BINARY_STEMS.contains(&stem) {
         return (PLACE_CLASS_SELF, None);
     }
@@ -381,6 +421,29 @@ pub(crate) enum TmuxListError {
     Failed(String),
 }
 
+/// Whether a failed tmux stderr names the cold fact that no server is
+/// running. tmux words the cold case differently by version — "no server
+/// running on …" (older) or "error connecting to … (No such file or
+/// directory)" (3.6+/3.7+, observed on a rebooted host during the
+/// commissioned TM02-R re-test). One helper is shared by the census status
+/// classifier and the place-request name-free check so both providers of the
+/// contract tell the same cold truth; anything else is a genuinely
+/// unexpected failure, never silently read as cold or free.
+pub(crate) fn tmux_stderr_is_no_server(stderr: &str) -> bool {
+    stderr.contains("no server running")
+        || (stderr.contains("error connecting to") && stderr.contains("No such file or directory"))
+}
+
+/// Classify a failed `tmux list-panes` stderr. The cold case is a disclosed
+/// degraded state (`present-no-server` in the census), never an `error`.
+pub(crate) fn classify_tmux_list_failure(stderr: String) -> TmuxListError {
+    if tmux_stderr_is_no_server(&stderr) {
+        TmuxListError::NoServer(stderr)
+    } else {
+        TmuxListError::Failed(stderr)
+    }
+}
+
 /// `tmux list-panes -a -F <format>` against the default socket. Read-only:
 /// listing never starts a server; with none running tmux exits nonzero
 /// naming it.
@@ -392,10 +455,7 @@ pub(crate) fn run_tmux_list_panes() -> std::result::Result<String, TmuxListError
         .map_err(|error| TmuxListError::Failed(format!("run `tmux list-panes -a`: {error}")))?;
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     if !output.status.success() {
-        if stderr.contains("no server running") {
-            return Err(TmuxListError::NoServer(stderr));
-        }
-        return Err(TmuxListError::Failed(stderr));
+        return Err(classify_tmux_list_failure(stderr));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
@@ -465,6 +525,7 @@ pub(crate) fn tmux_rows_to_observations(rows: Vec<TmuxPaneRow>) -> Vec<PaneObser
                 process_start_marker: None,
                 classification: PLACE_CLASS_UNOBSERVED,
                 harness_slug: None,
+                classification_evidence: None,
             }
         })
         .collect()
@@ -608,6 +669,7 @@ pub fn scan_herdr_provider() -> (ProviderCensus, Vec<PaneObservation>) {
             process_start_marker: None,
             classification: PLACE_CLASS_UNOBSERVED,
             harness_slug: None,
+            classification_evidence: None,
         });
     }
 
@@ -871,6 +933,7 @@ pub fn pane_observation_json(pane: &PaneObservation) -> Value {
         "process_start_marker": pane.process_start_marker,
         "classification": pane.classification,
         "harness_slug": pane.harness_slug,
+        "classification_evidence": pane.classification_evidence,
     })
 }
 
@@ -982,6 +1045,45 @@ mod tests {
         assert_eq!(slug, None);
     }
 
+    #[test]
+    fn tmux_cold_stderr_classifies_as_no_server_across_wordings() {
+        // Regression pin, from the commissioned TM02-R re-test: on a cold
+        // machine the census used to report the tmux provider as `error`
+        // because only the older "no server running" wording was classified.
+        // Both cold wordings — pinned verbatim below — are `present-no-server`
+        // material; anything else stays `error`.
+        let cold_37 = "error connecting to /tmp/tmux-1000/default (No such file or directory)";
+        let cold_old = "no server running on /tmp/tmux-1000/default";
+        for cold in [cold_37, cold_old] {
+            assert!(
+                tmux_stderr_is_no_server(cold),
+                "`{cold}` is the cold no-server fact"
+            );
+            assert!(
+                matches!(
+                    classify_tmux_list_failure(cold.to_owned()),
+                    TmuxListError::NoServer(_)
+                ),
+                "`{cold}` must classify as NoServer, so the census says present-no-server"
+            );
+        }
+        for unexpected in [
+            "can't find session: agent-1",
+            "error connecting to /tmp/tmux-1000/default: permission denied",
+            "protocol version mismatch",
+            "",
+        ] {
+            assert!(
+                !tmux_stderr_is_no_server(unexpected),
+                "`{unexpected}` is not the cold fact"
+            );
+            assert!(matches!(
+                classify_tmux_list_failure(unexpected.to_owned()),
+                TmuxListError::Failed(_)
+            ));
+        }
+    }
+
     fn tmux_observation(place_key: &str, pane_id: &str, pid: Option<u32>) -> PaneObservation {
         PaneObservation {
             provider: TMUX_PROVIDER,
@@ -1001,6 +1103,7 @@ mod tests {
             process_start_marker: None,
             classification: PLACE_CLASS_UNOBSERVED,
             harness_slug: None,
+            classification_evidence: None,
         }
     }
 
@@ -1041,6 +1144,137 @@ mod tests {
             panes[3].classification, PLACE_CLASS_UNOBSERVED,
             "a pid the table does not name stays visible and unobserved"
         );
+
+        assert_eq!(
+            panes[0].classification_evidence,
+            Some(PLACE_EVIDENCE_PS_COMM),
+            "a ps-comm classification records its evidence"
+        );
+        assert_eq!(
+            panes[2].classification_evidence, None,
+            "an unobserved pane carries no classification evidence"
+        );
+        assert_eq!(panes[3].classification_evidence, None);
+    }
+
+    fn herdr_observation(place_key: &str, pane_id: &str, pid: Option<u32>) -> PaneObservation {
+        PaneObservation {
+            provider: HERDR_PROVIDER,
+            place_key: place_key.to_owned(),
+            session_name: None,
+            session_created: None,
+            window_index: None,
+            window_name: None,
+            pane_id: pane_id.to_owned(),
+            pane_pid: pid,
+            pane_command: None,
+            pane_dead: false,
+            pane_tty: None,
+            workspace_id: Some("w9".into()),
+            workspace_label: Some("agent-test".into()),
+            tab_id: None,
+            process_start_marker: None,
+            classification: PLACE_CLASS_UNOBSERVED,
+            harness_slug: None,
+            classification_evidence: None,
+        }
+    }
+
+    #[test]
+    fn herdr_foreground_evidence_classifies_what_the_pid_table_comm_missed() {
+        // Found live on TM02-R: the herdr pane ran the `pi` harness, but the
+        // pid-table comm did not match an alias while herdr's pane
+        // process-info named the foreground process. The provider reading
+        // upgrades the classification to `harness` and names WHICH evidence
+        // decided.
+        let mut panes = vec![herdr_observation("w9/w9:p1", "w9:p1", Some(4242))];
+        panes[0].pane_command = Some("pi".into());
+        let table = vec![pid(4242, "zsh", MARKER_A)];
+        join_process_evidence(&mut panes, &table);
+
+        assert_eq!(panes[0].classification, PLACE_CLASS_HARNESS);
+        assert_eq!(panes[0].harness_slug.as_deref(), Some("pi"));
+        assert_eq!(
+            panes[0].classification_evidence,
+            Some(PLACE_EVIDENCE_PROVIDER_FOREGROUND)
+        );
+    }
+
+    #[test]
+    fn herdr_panes_matching_on_the_pid_table_comm_keep_ps_comm_evidence() {
+        let mut panes = vec![herdr_observation("w9/w9:p1", "w9:p1", Some(4242))];
+        panes[0].pane_command = Some("codex".into());
+        let table = vec![pid(4242, "claude", MARKER_A)];
+        join_process_evidence(&mut panes, &table);
+
+        assert_eq!(panes[0].classification, PLACE_CLASS_HARNESS);
+        assert_eq!(panes[0].harness_slug.as_deref(), Some("claude-code"));
+        assert_eq!(
+            panes[0].classification_evidence,
+            Some(PLACE_EVIDENCE_PS_COMM),
+            "the provider reading is consulted only when ps-comm did not match"
+        );
+    }
+
+    #[test]
+    fn neither_evidence_source_naming_a_harness_stays_other() {
+        // tmux panes never take the provider-foreground upgrade, and a
+        // herdr foreground that names no known harness changes nothing:
+        // never a guess.
+        let mut panes = vec![
+            tmux_observation("main/%0", "%0", Some(10)),
+            herdr_observation("w9/w9:p1", "w9:p1", Some(11)),
+            herdr_observation("w9/w9:p2", "w9:p2", Some(12)),
+        ];
+        panes[0].pane_command = Some("claude".into());
+        panes[1].pane_command = Some("htop".into());
+        panes[2].pane_command = None;
+        let table = vec![
+            pid(10, "zsh", MARKER_A),
+            pid(11, "zsh", MARKER_A),
+            pid(12, "zsh", MARKER_A),
+        ];
+        join_process_evidence(&mut panes, &table);
+
+        assert_eq!(panes[0].classification, PLACE_CLASS_OTHER);
+        assert_eq!(
+            panes[0].classification_evidence,
+            Some(PLACE_EVIDENCE_PS_COMM),
+            "tmux panes keep ps-comm even when their pane command names a harness"
+        );
+        assert_eq!(panes[0].harness_slug, None);
+
+        assert_eq!(panes[1].classification, PLACE_CLASS_OTHER);
+        assert_eq!(
+            panes[1].classification_evidence,
+            Some(PLACE_EVIDENCE_PS_COMM)
+        );
+        assert_eq!(panes[2].classification, PLACE_CLASS_OTHER);
+    }
+
+    #[test]
+    fn census_json_discloses_the_classification_evidence_field() {
+        let mut pane = tmux_observation("main/%0", "%0", Some(4242));
+        pane.classification = PLACE_CLASS_HARNESS;
+        pane.harness_slug = Some("claude-code".into());
+        pane.classification_evidence = Some(PLACE_EVIDENCE_PS_COMM);
+        let census = assemble_census(
+            "workcell-host".into(),
+            "2026-09-15T12:00:00Z".into(),
+            vec![],
+            vec![pane],
+        );
+        let value = census_json(&census);
+        assert_eq!(value["panes"][0]["classification_evidence"], "ps-comm");
+        // The additive field is always present in the document, null when
+        // nothing classified the pane.
+        let unobserved = census_json(&assemble_census(
+            "h".into(),
+            "2026-09-15T12:00:00Z".into(),
+            vec![],
+            vec![tmux_observation("main/%1", "%1", None)],
+        ));
+        assert!(unobserved["panes"][0]["classification_evidence"].is_null());
     }
 
     #[test]
