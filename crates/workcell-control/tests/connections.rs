@@ -62,6 +62,7 @@ fn grant_for(
         credential_sha256: credential_sha256(credential),
         credential_ref: None,
         created_at_unix_ms: 0,
+        expires_at_unix_ms: None,
         state: "active".to_owned(),
         revoked_at_unix_ms: None,
         provenance: std::collections::BTreeMap::new(),
@@ -173,6 +174,44 @@ fn grant_scopes_operations_and_revocation_takes_effect_at_the_next_use() {
     assert_eq!(handshake["authorised"], false);
     assert!(handshake["reason"].as_str().unwrap().contains("revoked"));
     assert_eq!(handshake["protocol"], CONTROL_PROTOCOL_VERSION);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn expired_grants_refuse_loudly_and_distinctly_at_the_next_use() {
+    let (workcell, root) = local("expiry", "workcell:expiry");
+    let registry = grants_registry(&root, "workcell:expiry");
+    let expired_credential = "wck_expired_credential";
+
+    // A grant whose window closed the instant after creation: written into
+    // the registry exactly as `authorise --expires-in` would store it.
+    let mut expired = grant_for("laptop", expired_credential, &["status", "discover"], &[]);
+    expired.created_at_unix_ms = 0;
+    expired.expires_at_unix_ms = Some(1);
+    registry.create(expired).unwrap();
+
+    let mut service = ControlService::new(workcell).with_connection_grants(registry);
+    let mut client = ControlClient::new(DirectTransport::new(&mut service))
+        .with_authorization(expired_credential);
+
+    // The handshake refuses, and names the truth: the grant expired, not
+    // revoked and not unknown.
+    let handshake = client.handshake("laptop").unwrap();
+    assert_eq!(handshake["authorised"], false);
+    let reason = handshake["reason"].as_str().unwrap();
+    assert!(reason.contains("expired"), "{reason}");
+    assert!(reason.contains("grant:"), "{reason}");
+    assert!(!reason.contains("revoked"), "{reason}");
+
+    // Every operation under the expired grant refuses with the same named
+    // answer.
+    let error = client.status().unwrap_err();
+    let ControlClientError::AuthenticationFailed(message) = error else {
+        panic!("expected authentication failure, got {error:?}");
+    };
+    assert!(message.contains("expired"), "{message}");
+    assert!(message.contains("grant:"), "{message}");
 
     let _ = fs::remove_dir_all(root);
 }

@@ -1,9 +1,9 @@
 # Cross-cell connections
 
-A connection is a durable, revocable, permissioned relation between two
-Workcell cells — not a socket. One cell serves its control plane; another
-cell connects to it under a grant. Every command below is a production path:
-no fixture servers, no credential bypasses.
+A connection is a durable, revocable, expirable, permissioned relation
+between two Workcell cells — not a socket. One cell serves its control
+plane; another cell connects to it under a grant. Every command below is a
+production path: no fixture servers, no credential bypasses.
 
 This document is also the runbook for the acceptance campaign's §5 two-machine
 case list (`O-I docs/CONTEXT-FRAME-ACCEPTANCE-CAMPAIGN.md` §5). Each case maps
@@ -17,9 +17,15 @@ workcell serve --listen HOST:PORT [--authorization TOKEN]
     connection grants registry. A non-loopback listener requires a token or at
     least one active grant. The bound endpoint is printed to stderr.
 
-workcell authorise --client <label> --allow <operation>... [--advertise <port>...] [--store-credential]
+workcell authorise --client <label> --allow <operation>... [--advertise <port>...] [--expires-in <duration>] [--store-credential]
     Grant a connecting client named operations. The credential (`wck_…`) is
     shown once; only its SHA-256 is kept (in <state-root>/connections/grants.json).
+    An optional `--expires-in <duration>` (`<number><s|m|h|d>`, for example
+    `30m`, `12h`, `7d`) sets when the grant stops authorising: past that
+    instant it refuses at the client's next use as *expired* — named and
+    distinct from revocation — and the record is kept. A grant created
+    without `--expires-in` never expires. Zero, negative and malformed
+    durations are refused as usage errors.
 
 workcell revoke --client <label> | --grant <ref>
     Revoke grants. Revocation takes effect at the connecting client's next
@@ -116,7 +122,9 @@ workcell --state-root ~/wc-client connect --endpoint HOST:PORT ...
 #   only the connection record — never a retained remote-world receipt.
 ```
 
-### Case 4 — revoked access; unsupported version refuses loudly
+### Case 4 — expired and revoked access; unsupported version refuses loudly
+
+Revocation:
 
 ```bash
 # on the host cell:
@@ -124,6 +132,22 @@ workcell --workcell-ref workcell:host revoke --client laptop
 # at the client's next use (connect or any remote operation):
 #   → refused with "revoked"; the client record keeps state `refused`
 #     with the reason as detail. Audit evidence stays in grants.json.
+```
+
+Expiry:
+
+```bash
+# on the host cell:
+workcell --workcell-ref workcell:host authorise --client laptop \
+    --allow status --expires-in 30m
+# the authorise output and the grants registry carry `expires_at_unix_ms`;
+# the client's connection record carries the same instant after connect.
+# past that instant, at the client's next use:
+#   → refused with "expired" and the grant named — the same loud refusal
+#     shape as revocation, but a different word: access ended on its own
+#     terms, not by operator action. The record keeps state `refused` with
+#     the reason as detail; the expired grant stays in grants.json.
+# a grant authorised without --expires-in never expires.
 ```
 
 Version skew: the protocol version is the contract. A client pointed at a
@@ -179,7 +203,7 @@ workcell --workcell-ref workcell:host instances
 ## Where state lives
 
 ```text
-serving cell   <state-root>/connections/grants.json   grant records (digests only)
+serving cell   <state-root>/connections/grants.json   grant records (credential digests, optional expiries)
 client cell    <state-root>/connections/<label>.json  connection receipts
 ```
 

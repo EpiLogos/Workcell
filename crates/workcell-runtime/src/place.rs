@@ -19,6 +19,12 @@
 //! - release kills only after the live pid table proves the process still
 //!   matches the granted `(pid, process_start_marker)` generation. A recycled
 //!   pid is a stale binding, named and refused.
+//! - `--provider-close` is the one explicit escape hatch for a place whose
+//!   generation proof FAILED (herdr workspaces outlive their panes'
+//!   processes): it closes the provider-native room itself — never a live
+//!   pid — after the provider still names it, and emits a
+//!   `workcell.place-provider-close/v1` receipt justified by the failed
+//!   proof. A passed proof refuses the flag.
 //!
 //! Relation to the write-boundary discipline (`workcell-write-boundary
 //! inspect/run`): that path is a Landlock confinement for launched workload
@@ -34,13 +40,17 @@ use serde_json::{json, Value};
 
 use crate::instance_scan::{read_pid_table, ObservedProcess};
 use crate::place_scan::{
-    parse_herdr_pane_list, parse_herdr_process_info, parse_herdr_workspace_list,
-    parse_tmux_list_panes, tmux_rows_to_observations, utc_now_rfc3339, HerdrPaneRow, TmuxListError,
-    HERDR_PROVIDER, TMUX_PROVIDER,
+    classify_tmux_list_failure, parse_herdr_pane_list, parse_herdr_process_info,
+    parse_herdr_workspace_list, parse_tmux_list_panes, tmux_rows_to_observations,
+    tmux_stderr_is_no_server, utc_now_rfc3339, HerdrPaneRow, TmuxListError, HERDR_PROVIDER,
+    TMUX_PROVIDER,
 };
 
 pub const PLACE_GRANT_VERSION: &str = "workcell.place-grant/v1";
 pub const PLACE_REF_PREFIX: &str = "workcell:place:";
+/// The receipt for a `--provider-close` release: a provider-native close of a
+/// place whose generation proof failed, justified by that failed proof.
+pub const PLACE_PROVIDER_CLOSE_VERSION: &str = "workcell.place-provider-close/v1";
 
 /// The tmux socket component of every place_ref this module mints. Only the
 /// default socket is ever used, so the component is a constant, not an
@@ -57,6 +67,9 @@ pub const REFUSAL_INVALID_NAME: &str = "invalid-name";
 pub const REFUSAL_INVALID_PLACE_REF: &str = "invalid-place-ref";
 pub const REFUSAL_PLACE_GONE: &str = "place-gone";
 pub const REFUSAL_PLACE_MISMATCH: &str = "place-mismatch";
+/// `--provider-close` was given but the generation proof passed: the caller
+/// must release normally, never bypass a provable contract with a raw close.
+pub const REFUSAL_PROVIDER_CLOSE_REFUSED: &str = "provider-close-refused";
 
 /// A granted place: material evidence and an addressable location — never a
 /// caller identity. The `(pane_pid, process_start_marker)` pair scopes the
@@ -364,15 +377,15 @@ fn herdr_server_reachable() -> bool {
 }
 
 /// Whether a failed `tmux has-session` stderr means the name is free.
-/// Server-down and session-absent both mean free: tmux words the cold case
-/// differently by version — "no server running on …" (older) or "error
-/// connecting to … (No such file or directory)" (3.6+/3.7+, observed on a
-/// rebooted host). Anything else is a provider error, never silently free.
+/// Server-down and session-absent both mean free. The cold no-server wordings
+/// ("no server running on …" older, "error connecting to … (No such file or
+/// directory)" 3.6+/3.7+) are classified by the one shared helper the census
+/// uses, so the request path and the census cannot disagree about what tmux's
+/// cold stderr means; "can't find session" is the request-path addition for a
+/// live server that simply lacks the name. Anything else is a provider
+/// error, never silently free.
 fn tmux_name_is_free(has_stderr: &str) -> bool {
-    has_stderr.contains("no server running")
-        || has_stderr.contains("can't find session")
-        || (has_stderr.contains("error connecting to")
-            && has_stderr.contains("No such file or directory"))
+    tmux_stderr_is_no_server(has_stderr) || has_stderr.contains("can't find session")
 }
 
 /// tmux request: refuse an existing session by name (`already-exists`), then
@@ -529,10 +542,7 @@ fn run_tmux_session_panes(session: &str) -> std::result::Result<String, TmuxList
         })?;
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     if !output.status.success() {
-        if stderr.contains("no server running") {
-            return Err(TmuxListError::NoServer(stderr));
-        }
-        return Err(TmuxListError::Failed(stderr));
+        return Err(classify_tmux_list_failure(stderr));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
@@ -776,7 +786,9 @@ pub enum ProviderSnapshot {
 }
 
 /// The release decision. The kill happens only on `Release`, and only in the
-/// live executor.
+/// live executor. `ProviderClose` is the `--provider-close` path: the
+/// generation proof FAILED and the caller explicitly asked for the
+/// provider-native room itself to be closed, justified by that failed proof.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlaceReleaseDecision {
     Release {
@@ -784,13 +796,151 @@ pub enum PlaceReleaseDecision {
         session_name: Option<String>,
         workspace_id: Option<String>,
     },
+    ProviderClose {
+        provider: &'static str,
+        session_name: Option<String>,
+        workspace_id: Option<String>,
+        /// The typed refusal the failed generation proof produced — the
+        /// justification the close receipt must carry.
+        proof_failure: PlaceRefusal,
+    },
     Refuse(PlaceRefusal),
+}
+
+/// Whether a refusal kind is a failed generation proof — the only refusals
+/// `--provider-close` is valid for. Any other refusal (an invalid place ref,
+/// a provider that could not be read) stops the release with or without the
+/// flag.
+fn proof_failed(kind: &str) -> bool {
+    matches!(
+        kind,
+        REFUSAL_STALE_BINDING | REFUSAL_PLACE_GONE | REFUSAL_PLACE_MISMATCH
+    )
 }
 
 /// Pure decision core: prove the granted process generation is still the one
 /// bound to the place before any release. Fixture-friendly — no provider
 /// command runs here.
+///
+/// With `provider_close`, the flag is valid ONLY on a failed generation proof
+/// (stale binding, place gone, place mismatch): the decision becomes a
+/// provider-native close of the room itself. When the proof PASSES the flag
+/// is refused — a live, provable generation is released through the normal
+/// contract, never closed over it.
 pub fn decide_place_release(
+    demand: &PlaceReleaseDemand,
+    pid_table: &[ObservedProcess],
+    snapshot: &ProviderSnapshot,
+    provider_close: bool,
+) -> PlaceReleaseDecision {
+    let proof = decide_place_release_proof(demand, pid_table, snapshot);
+    match proof {
+        PlaceReleaseDecision::Release {
+            provider,
+            session_name,
+            workspace_id,
+        } => {
+            if provider_close {
+                return PlaceReleaseDecision::Refuse(PlaceRefusal {
+                    kind: REFUSAL_PROVIDER_CLOSE_REFUSED,
+                    provider: Some(provider),
+                    message: format!(
+                        "the generation proof passed for pid {} (live with the granted start \
+                         marker); release the place normally, without --provider-close",
+                        demand.pid
+                    ),
+                    evidence: json!({
+                        "place_ref": demand.place_ref,
+                        "granted_pid": demand.pid,
+                        "granted_start_marker": demand.start_marker,
+                    }),
+                });
+            }
+            PlaceReleaseDecision::Release {
+                provider,
+                session_name,
+                workspace_id,
+            }
+        }
+        PlaceReleaseDecision::Refuse(refusal) if provider_close && proof_failed(refusal.kind) => {
+            decide_provider_close(&demand.place_ref, snapshot, refusal)
+        }
+        other => other,
+    }
+}
+
+/// Turn a failed generation proof into a provider-native close decision. The
+/// address must still parse to the component the provider closes; a tmux
+/// session the snapshot already proved absent has nothing to close.
+fn decide_provider_close(
+    place_ref: &str,
+    snapshot: &ProviderSnapshot,
+    refusal: PlaceRefusal,
+) -> PlaceReleaseDecision {
+    let (provider, components) = match parse_place_ref(place_ref) {
+        Ok(parsed) => parsed,
+        // Unreachable: the proof decision already parsed this ref.
+        Err(error) => {
+            return PlaceReleaseDecision::Refuse(PlaceRefusal {
+                kind: REFUSAL_INVALID_PLACE_REF,
+                provider: None,
+                message: strip_error_prefix(&error.to_string()),
+                evidence: json!({ "place_ref": place_ref }),
+            })
+        }
+    };
+    match provider {
+        TMUX_PROVIDER => {
+            let Some(session_name) = components.get(1) else {
+                return PlaceReleaseDecision::Refuse(refusal);
+            };
+            let session_exists = match snapshot {
+                ProviderSnapshot::Tmux { session_exists, .. } => *session_exists,
+                // A mismatched snapshot is refused by the proof decision.
+                _ => return PlaceReleaseDecision::Refuse(refusal),
+            };
+            if !session_exists {
+                return PlaceReleaseDecision::Refuse(PlaceRefusal {
+                    kind: REFUSAL_PLACE_GONE,
+                    provider: Some(TMUX_PROVIDER),
+                    message: format!(
+                        "tmux session `{session_name}` no longer exists; there is nothing \
+                         left to provider-close"
+                    ),
+                    evidence: json!({
+                        "session_name": session_name,
+                        "failed_proof": refusal.to_json()["refusal"],
+                    }),
+                });
+            }
+            PlaceReleaseDecision::ProviderClose {
+                provider: TMUX_PROVIDER,
+                session_name: Some(session_name.clone()),
+                workspace_id: None,
+                proof_failure: refusal,
+            }
+        }
+        HERDR_PROVIDER => {
+            let Some(workspace_id) = components.first() else {
+                return PlaceReleaseDecision::Refuse(refusal);
+            };
+            // Workspace existence is verified live, through the proven
+            // `herdr workspace list` surface, immediately before the close.
+            PlaceReleaseDecision::ProviderClose {
+                provider: HERDR_PROVIDER,
+                session_name: None,
+                workspace_id: Some(workspace_id.clone()),
+                proof_failure: refusal,
+            }
+        }
+        _ => PlaceReleaseDecision::Refuse(refusal),
+    }
+}
+
+/// The unchanged generation-proof law, factored out of
+/// `decide_place_release`: prove the granted `(pid, start_marker)` generation
+/// is still bound to the place, and only then check the provider snapshot.
+fn decide_place_release_proof(
     demand: &PlaceReleaseDemand,
     pid_table: &[ObservedProcess],
     snapshot: &ProviderSnapshot,
@@ -952,7 +1102,17 @@ pub fn decide_place_release(
 /// Live release: gather the pid table and the provider snapshot, run the
 /// decision core, and only then execute the single bounded effect (`tmux
 /// kill-session -t <session>` / `herdr workspace close <workspace_id>`).
-pub fn release_place_live(demand: &PlaceReleaseDemand) -> Result<Value, PlaceRefusal> {
+///
+/// With `provider_close` (the CLI's `--provider-close`), a FAILED generation
+/// proof releases the room provider-natively — the same close command, run
+/// only after the provider itself still names the place, and receipted as a
+/// `workcell.place-provider-close/v1` document. A passed proof refuses the
+/// flag. Without the flag the behaviour is byte-identical to the plain
+/// release contract.
+pub fn release_place_live(
+    demand: &PlaceReleaseDemand,
+    provider_close: bool,
+) -> Result<Value, PlaceRefusal> {
     let (provider, _) = parse_place_ref(&demand.place_ref).map_err(|error| PlaceRefusal {
         kind: REFUSAL_INVALID_PLACE_REF,
         provider: None,
@@ -962,7 +1122,7 @@ pub fn release_place_live(demand: &PlaceReleaseDemand) -> Result<Value, PlaceRef
 
     let pid_table = read_pid_table().unwrap_or_default();
     let snapshot = gather_provider_snapshot(provider, demand)?;
-    match decide_place_release(demand, &pid_table, &snapshot) {
+    match decide_place_release(demand, &pid_table, &snapshot, provider_close) {
         PlaceReleaseDecision::Release {
             provider,
             session_name,
@@ -972,6 +1132,18 @@ pub fn release_place_live(demand: &PlaceReleaseDemand) -> Result<Value, PlaceRef
             session_name.as_deref(),
             workspace_id.as_deref(),
             demand,
+        ),
+        PlaceReleaseDecision::ProviderClose {
+            provider,
+            session_name,
+            workspace_id,
+            proof_failure,
+        } => execute_provider_close(
+            provider,
+            session_name.as_deref(),
+            workspace_id.as_deref(),
+            demand,
+            &proof_failure,
         ),
         PlaceReleaseDecision::Refuse(refusal) => Err(refusal),
     }
@@ -1178,6 +1350,234 @@ fn truncate(value: &str, max: usize) -> String {
     }
 }
 
+/// The `--provider-close` receipt. It names the close as provider-native,
+/// records the failed generation proof as the justification, and carries the
+/// provider's own output as evidence.
+fn provider_close_receipt(
+    place_ref: &str,
+    provider: &'static str,
+    action: &'static str,
+    session_name: Option<&str>,
+    workspace_id: Option<&str>,
+    proof_failure: &PlaceRefusal,
+    evidence: Value,
+) -> Value {
+    let mut value = json!({
+        "schema": PLACE_PROVIDER_CLOSE_VERSION,
+        "ok": true,
+        "provider_closed": true,
+        "place_ref": place_ref,
+        "provider": provider,
+        "close": "provider-native",
+        "action": action,
+        "justification": {
+            "generation_proof": "failed",
+            "refusal_kind": proof_failure.kind,
+            "refusal_message": proof_failure.message,
+            "refusal_evidence": proof_failure.evidence,
+        },
+        "evidence": evidence,
+        "closed_utc": utc_now_rfc3339(),
+    });
+    let object = value
+        .as_object_mut()
+        .expect("receipt document is an object");
+    match session_name {
+        Some(name) => {
+            object.insert("session_name".into(), json!(name));
+        }
+        None => {
+            object.insert("session_name".into(), Value::Null);
+        }
+    }
+    match workspace_id {
+        Some(id) => {
+            object.insert("workspace_id".into(), json!(id));
+        }
+        None => {
+            object.insert("workspace_id".into(), Value::Null);
+        }
+    }
+    value
+}
+
+/// The provider-native close behind `--provider-close`: verify the place
+/// still exists through the provider's own read-only surface, run the same
+/// close command a proved release runs, and emit the receipt. No pid is ever
+/// killed here — a live granted generation never reaches this path, because
+/// the decision core refuses the flag when the proof passes.
+fn execute_provider_close(
+    provider: &'static str,
+    session_name: Option<&str>,
+    workspace_id: Option<&str>,
+    demand: &PlaceReleaseDemand,
+    proof_failure: &PlaceRefusal,
+) -> Result<Value, PlaceRefusal> {
+    match (provider, session_name, workspace_id) {
+        (TMUX_PROVIDER, Some(session_name), _) => {
+            // Verify the session still exists by name, immediately before the
+            // close. Nothing here touches a pid: kill-session closes the
+            // session Workcell just verified, and a live granted generation
+            // was refused at the decision layer.
+            let has = Command::new("tmux")
+                .args(["has-session", "-t", session_name])
+                .stdin(Stdio::null())
+                .output()
+                .map_err(|error| PlaceRefusal {
+                    kind: REFUSAL_PROVIDER_ERROR,
+                    provider: Some(TMUX_PROVIDER),
+                    message: format!("run `tmux has-session -t {session_name}`: {error}"),
+                    evidence: Value::Null,
+                })?;
+            if !has.status.success() {
+                return Err(PlaceRefusal {
+                    kind: REFUSAL_PLACE_GONE,
+                    provider: Some(TMUX_PROVIDER),
+                    message: format!(
+                        "tmux session `{session_name}` no longer exists; there is nothing \
+                         left to provider-close"
+                    ),
+                    evidence: json!({
+                        "session_name": session_name,
+                        "has_session_stderr":
+                            String::from_utf8_lossy(&has.stderr).trim().to_owned(),
+                        "failed_proof": proof_failure.to_json()["refusal"],
+                    }),
+                });
+            }
+            let output = Command::new("tmux")
+                .args(["kill-session", "-t", session_name])
+                .stdin(Stdio::null())
+                .output()
+                .map_err(|error| PlaceRefusal {
+                    kind: REFUSAL_PROVIDER_ERROR,
+                    provider: Some(TMUX_PROVIDER),
+                    message: format!("run `tmux kill-session -t {session_name}`: {error}"),
+                    evidence: Value::Null,
+                })?;
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            if !output.status.success() {
+                return Err(PlaceRefusal {
+                    kind: REFUSAL_PROVIDER_ERROR,
+                    provider: Some(TMUX_PROVIDER),
+                    message: format!("`tmux kill-session -t {session_name}` failed: {stderr}"),
+                    evidence: json!({ "session_name": session_name, "stderr": stderr }),
+                });
+            }
+            Ok(provider_close_receipt(
+                &demand.place_ref,
+                TMUX_PROVIDER,
+                "tmux kill-session",
+                Some(session_name),
+                None,
+                proof_failure,
+                json!({
+                    "verified": format!(
+                        "`tmux has-session -t {session_name}` succeeded immediately before \
+                         the close"
+                    ),
+                    "close_stderr": stderr,
+                }),
+            ))
+        }
+        (HERDR_PROVIDER, _, Some(workspace_id)) => {
+            // Verify through the proven list surface that the workspace still
+            // exists, then close it with the proven close command.
+            let list = Command::new("herdr")
+                .args(["workspace", "list"])
+                .stdin(Stdio::null())
+                .output()
+                .map_err(|error| PlaceRefusal {
+                    kind: REFUSAL_PROVIDER_ERROR,
+                    provider: Some(HERDR_PROVIDER),
+                    message: format!("run `herdr workspace list`: {error}"),
+                    evidence: Value::Null,
+                })?;
+            if !list.status.success() {
+                return Err(PlaceRefusal {
+                    kind: REFUSAL_PROVIDER_ERROR,
+                    provider: Some(HERDR_PROVIDER),
+                    message: format!(
+                        "the herdr server did not answer `workspace list`; the \
+                         provider-native close of workspace `{workspace_id}` was not attempted: \
+                         {}",
+                        String::from_utf8_lossy(&list.stderr).trim()
+                    ),
+                    evidence: json!({ "workspace_id": workspace_id }),
+                });
+            }
+            let workspaces = parse_herdr_workspace_list(&String::from_utf8_lossy(&list.stdout))
+                .unwrap_or_default();
+            if !workspaces
+                .iter()
+                .any(|workspace| workspace.workspace_id == workspace_id)
+            {
+                return Err(PlaceRefusal {
+                    kind: REFUSAL_PLACE_GONE,
+                    provider: Some(HERDR_PROVIDER),
+                    message: format!(
+                        "herdr workspace `{workspace_id}` no longer exists; there is nothing \
+                         left to provider-close"
+                    ),
+                    evidence: json!({
+                        "workspace_id": workspace_id,
+                        "listed_workspace_ids": workspaces
+                            .iter()
+                            .map(|workspace| workspace.workspace_id.clone())
+                            .collect::<Vec<_>>(),
+                        "failed_proof": proof_failure.to_json()["refusal"],
+                    }),
+                });
+            }
+            let output = Command::new("herdr")
+                .args(["workspace", "close", workspace_id])
+                .stdin(Stdio::null())
+                .output()
+                .map_err(|error| PlaceRefusal {
+                    kind: REFUSAL_PROVIDER_ERROR,
+                    provider: Some(HERDR_PROVIDER),
+                    message: format!("run `herdr workspace close {workspace_id}`: {error}"),
+                    evidence: Value::Null,
+                })?;
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            if !output.status.success() {
+                return Err(PlaceRefusal {
+                    kind: REFUSAL_PROVIDER_ERROR,
+                    provider: Some(HERDR_PROVIDER),
+                    message: format!("`herdr workspace close {workspace_id}` failed: {stderr}"),
+                    evidence: json!({ "workspace_id": workspace_id, "stderr": stderr }),
+                });
+            }
+            Ok(provider_close_receipt(
+                &demand.place_ref,
+                HERDR_PROVIDER,
+                "herdr workspace close",
+                None,
+                Some(workspace_id),
+                proof_failure,
+                json!({
+                    "verified": format!(
+                        "`herdr workspace list` named workspace `{workspace_id}` immediately \
+                         before the close"
+                    ),
+                    "close_stdout_excerpt": truncate(&stdout, 2048),
+                    "close_stderr": stderr,
+                }),
+            ))
+        }
+        _ => Err(PlaceRefusal {
+            kind: REFUSAL_INVALID_PLACE_REF,
+            provider: Some(provider),
+            message: format!(
+                "place_ref `{}` lacks the address its provider needs to close",
+                demand.place_ref
+            ),
+            evidence: json!({ "place_ref": demand.place_ref }),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1214,6 +1614,10 @@ mod tests {
     #[test]
     fn schema_is_the_published_contract() {
         assert_eq!(PLACE_GRANT_VERSION, "workcell.place-grant/v1");
+        assert_eq!(
+            PLACE_PROVIDER_CLOSE_VERSION,
+            "workcell.place-provider-close/v1"
+        );
     }
 
     #[test]
@@ -1358,6 +1762,7 @@ mod tests {
                 session_exists: true,
                 pane_pids: vec![4242],
             },
+            false,
         );
         let PlaceReleaseDecision::Refuse(refusal) = decision else {
             panic!("expected a refusal, got {decision:?}");
@@ -1377,6 +1782,7 @@ mod tests {
                 session_exists: true,
                 pane_pids: vec![4242],
             },
+            false,
         );
         let PlaceReleaseDecision::Refuse(refusal) = decision else {
             panic!("expected a refusal, got {decision:?}");
@@ -1398,6 +1804,7 @@ mod tests {
                 session_exists: false,
                 pane_pids: vec![],
             },
+            false,
         );
         let PlaceReleaseDecision::Refuse(refusal) = decision else {
             panic!("expected a refusal, got {decision:?}");
@@ -1416,6 +1823,7 @@ mod tests {
                 session_exists: true,
                 pane_pids: vec![4242],
             },
+            false,
         );
         let PlaceReleaseDecision::Refuse(refusal) = decision else {
             panic!("expected a refusal, got {decision:?}");
@@ -1434,6 +1842,7 @@ mod tests {
                 session_exists: true,
                 pane_pids: vec![4242],
             },
+            false,
         );
         let PlaceReleaseDecision::Release {
             provider,
@@ -1461,6 +1870,7 @@ mod tests {
             &ProviderSnapshot::Herdr {
                 pane_pids: vec![4242],
             },
+            false,
         );
         assert!(matches!(
             refused,
@@ -1476,6 +1886,7 @@ mod tests {
             &ProviderSnapshot::Herdr {
                 pane_pids: vec![5000],
             },
+            false,
         );
         let PlaceReleaseDecision::Release {
             provider,
@@ -1487,6 +1898,160 @@ mod tests {
         };
         assert_eq!(provider, HERDR_PROVIDER);
         assert_eq!(workspace_id.as_deref(), Some("w9"));
+    }
+
+    #[test]
+    fn provider_close_with_a_live_proof_is_refused() {
+        // Found live on TM02-R: herdr workspaces outlive their panes'
+        // processes, so a churned room cannot be released through the
+        // contract. `--provider-close` is that escape hatch — and ONLY that:
+        // when the generation proof passes, the flag is refused and the
+        // caller releases normally.
+        let decision = decide_place_release(
+            &tmux_demand(4242, MARKER_B),
+            &pid_table(),
+            &ProviderSnapshot::Tmux {
+                session_exists: true,
+                pane_pids: vec![4242],
+            },
+            true,
+        );
+        let PlaceReleaseDecision::Refuse(refusal) = decision else {
+            panic!("expected a refusal, got {decision:?}");
+        };
+        assert_eq!(refusal.kind, REFUSAL_PROVIDER_CLOSE_REFUSED);
+        assert!(
+            refusal.message.contains("without --provider-close"),
+            "the refusal must send the caller to the normal release: {}",
+            refusal.message
+        );
+    }
+
+    #[test]
+    fn provider_close_on_a_stale_binding_decides_a_provider_native_close() {
+        let decision = decide_place_release(
+            &tmux_demand(4242, MARKER_A),
+            &pid_table(),
+            &ProviderSnapshot::Tmux {
+                session_exists: true,
+                pane_pids: vec![4242],
+            },
+            true,
+        );
+        let PlaceReleaseDecision::ProviderClose {
+            provider,
+            session_name,
+            workspace_id,
+            proof_failure,
+        } = decision
+        else {
+            panic!("expected a provider close, got {decision:?}");
+        };
+        assert_eq!(provider, TMUX_PROVIDER);
+        assert_eq!(session_name.as_deref(), Some("agent-test"));
+        assert_eq!(workspace_id, None);
+        // The failed proof travels with the close as its justification.
+        assert_eq!(proof_failure.kind, REFUSAL_STALE_BINDING);
+    }
+
+    #[test]
+    fn provider_close_on_a_herdr_mismatch_carries_the_workspace() {
+        // The live finding itself: the granted pane process churned, the pid
+        // was recycled, and the herdr room outlived the proof. The close
+        // decision names the workspace, never a pid to kill.
+        let demand = PlaceReleaseDemand {
+            place_ref: herdr_place_ref("w9", "w9:p1"),
+            pid: 5000,
+            start_marker: MARKER_B.into(),
+        };
+        let decision = decide_place_release(
+            &demand,
+            &pid_table(),
+            &ProviderSnapshot::Herdr {
+                pane_pids: vec![4242],
+            },
+            true,
+        );
+        let PlaceReleaseDecision::ProviderClose {
+            provider,
+            session_name,
+            workspace_id,
+            proof_failure,
+        } = decision
+        else {
+            panic!("expected a provider close, got {decision:?}");
+        };
+        assert_eq!(provider, HERDR_PROVIDER);
+        assert_eq!(session_name, None);
+        assert_eq!(workspace_id.as_deref(), Some("w9"));
+        assert_eq!(proof_failure.kind, REFUSAL_PLACE_MISMATCH);
+    }
+
+    #[test]
+    fn provider_close_on_a_gone_tmux_session_refuses() {
+        // The snapshot already proves the session absent: nothing left to
+        // close, so the flag must not mint a close decision.
+        let decision = decide_place_release(
+            &tmux_demand(4242, MARKER_B),
+            &pid_table(),
+            &ProviderSnapshot::Tmux {
+                session_exists: false,
+                pane_pids: vec![],
+            },
+            true,
+        );
+        let PlaceReleaseDecision::Refuse(refusal) = decision else {
+            panic!("expected a refusal, got {decision:?}");
+        };
+        assert_eq!(refusal.kind, REFUSAL_PLACE_GONE);
+        assert!(refusal.message.contains("nothing"));
+    }
+
+    #[test]
+    fn provider_close_receipt_names_the_close_and_carries_the_justification() {
+        let proof_failure = PlaceRefusal {
+            kind: REFUSAL_STALE_BINDING,
+            provider: Some(HERDR_PROVIDER),
+            message: "pid 5000 is not in the live pid table".into(),
+            evidence: json!({
+                "place_ref": herdr_place_ref("w9", "w9:p1"),
+                "granted_pid": 5000,
+                "granted_start_marker": MARKER_A,
+                "live_start_marker": Value::Null,
+            }),
+        };
+        let receipt = provider_close_receipt(
+            &herdr_place_ref("w9", "w9:p1"),
+            HERDR_PROVIDER,
+            "herdr workspace close",
+            None,
+            Some("w9"),
+            &proof_failure,
+            json!({
+                "verified": "`herdr workspace list` named workspace `w9`",
+                "close_stdout_excerpt": "{}",
+                "close_stderr": "",
+            }),
+        );
+        assert_eq!(receipt["schema"], PLACE_PROVIDER_CLOSE_VERSION);
+        assert_eq!(receipt["provider_closed"], true);
+        assert_eq!(receipt["close"], "provider-native");
+        assert_eq!(receipt["action"], "herdr workspace close");
+        assert_eq!(receipt["workspace_id"], "w9");
+        assert!(receipt["session_name"].is_null());
+        assert_eq!(
+            receipt["justification"]["generation_proof"], "failed",
+            "the close is justified by the failed generation proof"
+        );
+        assert_eq!(receipt["justification"]["refusal_kind"], "stale-binding");
+        assert_eq!(
+            receipt["justification"]["refusal_evidence"]["granted_start_marker"],
+            MARKER_A
+        );
+        assert_eq!(
+            receipt["evidence"]["close_stdout_excerpt"], "{}",
+            "the provider's own output is the receipt's evidence"
+        );
     }
 
     #[test]
@@ -1572,7 +2137,7 @@ mod tests {
             pid: grant.pane_pid,
             start_marker: grant.process_start_marker.clone(),
         };
-        let result = release_place_live(&demand);
+        let result = release_place_live(&demand, false);
         assert!(result.is_ok(), "live release failed: {result:?}");
         let value = result.unwrap();
         assert_eq!(value["released"], true);

@@ -312,6 +312,186 @@ fn lifecycle_authorise_connect_use_revoke_refusal() {
 }
 
 #[test]
+fn grant_expiry_refuses_loudly_at_the_next_use_and_leaves_other_grants_working() {
+    let root = temp_path("expiry");
+    let server_root = root.join("server");
+    let client_root = root.join("client");
+    fs::create_dir_all(&client_root).unwrap();
+
+    let (mut server, endpoint) = spawn_server(&server_root, "127.0.0.1:0");
+
+    // The expiring grant gets a short real-clock window; the keeper grant
+    // has none and must keep working after the window closes.
+    let grant = stdout_json(&run_string(&[
+        "--state-root",
+        &server_root.display().to_string(),
+        "--workcell-ref",
+        "workcell:home-server",
+        "authorise",
+        "--client",
+        "laptop",
+        "--allow",
+        "status",
+        "--allow",
+        "discover",
+        "--expires-in",
+        "5s",
+        "--json",
+    ]));
+    assert_eq!(grant["client"], "laptop");
+    let expires_at = grant["expires_at_unix_ms"].as_u64().expect("expiry stored");
+    assert!(
+        expires_at
+            > SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+    );
+    // Only the digest is persisted, with the expiry alongside it.
+    let grants_file =
+        fs::read_to_string(server_root.join("connections").join("grants.json")).unwrap();
+    assert!(grants_file.contains("\"expires_at_unix_ms\""));
+    let credential = grant["credential"].as_str().unwrap().to_owned();
+
+    let keeper_grant = stdout_json(&run_string(&[
+        "--state-root",
+        &server_root.display().to_string(),
+        "--workcell-ref",
+        "workcell:home-server",
+        "authorise",
+        "--client",
+        "keeper",
+        "--allow",
+        "status",
+        "--allow",
+        "discover",
+        "--json",
+    ]));
+    assert!(keeper_grant["expires_at_unix_ms"].is_null());
+    let keeper_credential = keeper_grant["credential"].as_str().unwrap().to_owned();
+
+    // Inside the window the connection works and the receipt carries the
+    // grant's expiry.
+    let connected = stdout_json(&run(&connect_args(
+        &client_root,
+        &endpoint,
+        "laptop",
+        &credential,
+    )));
+    assert_eq!(connected["connection"]["state"], "connected");
+    assert_eq!(connected["connection"]["expires_at_unix_ms"], expires_at);
+    let keeper_connected = stdout_json(&run(&connect_args(
+        &client_root,
+        &endpoint,
+        "keeper",
+        &keeper_credential,
+    )));
+    assert_eq!(keeper_connected["connection"]["state"], "connected");
+    assert!(keeper_connected["connection"]["expires_at_unix_ms"].is_null());
+
+    // Past the window, the same credential is refused as expired — named,
+    // loud, and a different word from revocation.
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    if expires_at + 200 > now_ms {
+        thread::sleep(Duration::from_millis(expires_at + 200 - now_ms));
+    }
+    let refused = run(&connect_args(
+        &client_root,
+        &endpoint,
+        "laptop",
+        &credential,
+    ));
+    assert!(!refused.status.success());
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("expired"), "unexpected refusal: {stderr}");
+    assert!(
+        !stderr.contains("revoked"),
+        "expired must not masquerade as revoked: {stderr}"
+    );
+
+    // The client record keeps the refusal honestly, with the expiry still
+    // disclosed.
+    let shown = stdout_json(&run_string(&[
+        "--state-root",
+        &client_root.display().to_string(),
+        "connections",
+        "show",
+        "laptop",
+        "--json",
+    ]));
+    assert_eq!(shown["connection"]["state"], "refused");
+    assert!(shown["connection"]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("expired"));
+    assert_eq!(shown["connection"]["expires_at_unix_ms"], expires_at);
+
+    // The listing discloses the expiry too, and the keeper connection —
+    // same server, no expiry — is unaffected.
+    let listed = stdout_json(&run_string(&[
+        "--state-root",
+        &client_root.display().to_string(),
+        "connections",
+        "list",
+        "--json",
+    ]));
+    let by_label = |label: &str| {
+        listed["connections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["label"] == label)
+            .expect("connection listed")
+            .clone()
+    };
+    assert_eq!(by_label("laptop")["expires_at_unix_ms"], expires_at);
+    assert!(by_label("keeper")["expires_at_unix_ms"].is_null());
+    let keeper_again = run(&connect_args(
+        &client_root,
+        &endpoint,
+        "keeper",
+        &keeper_credential,
+    ));
+    assert!(
+        keeper_again.status.success(),
+        "{}",
+        String::from_utf8_lossy(&keeper_again.stderr)
+    );
+
+    // Non-positive and malformed lifetimes are usage errors, refused
+    // before anything is granted.
+    for bad in ["0m", "-5m", "banana"] {
+        let invalid = run_string(&[
+            "--state-root",
+            &server_root.display().to_string(),
+            "--workcell-ref",
+            "workcell:home-server",
+            "authorise",
+            "--client",
+            "sloppy",
+            "--allow",
+            "status",
+            "--expires-in",
+            bad,
+            "--json",
+        ]);
+        assert!(!invalid.status.success(), "`{bad}` must refuse");
+        let invalid_stderr = String::from_utf8_lossy(&invalid.stderr);
+        assert!(
+            invalid_stderr.contains("--expires-in"),
+            "`{bad}` refusal must be a usage error: {invalid_stderr}"
+        );
+    }
+
+    server.kill().unwrap();
+    let _ = server.wait();
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn disconnect_offline_state_and_reconnect_reconcile() {
     let root = temp_path("reconnect");
     let server_root = root.join("server");

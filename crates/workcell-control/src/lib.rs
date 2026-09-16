@@ -10,8 +10,8 @@ pub use client::{
 };
 use epilogos_workcell_core::WorkcellError;
 pub use grants::{
-    credential_sha256, generate_credential, grant_ref_for, validate_label, ConnectionGrants,
-    CreateOutcome, GrantDecision, CONNECTIONS_DIRECTORY, GRANTS_FILE,
+    credential_sha256, generate_credential, grant_ref_for, parse_duration_millis, validate_label,
+    ConnectionGrants, CreateOutcome, GrantDecision, CONNECTIONS_DIRECTORY, GRANTS_FILE,
 };
 pub use network::{TcpControlServer, TcpControlTransport};
 pub use service::ControlService;

@@ -189,6 +189,10 @@ where
                     "credential matches grant `{}`, which was revoked on this Workcell",
                     grant.grant_ref
                 ))),
+                GrantDecision::Expired { grant } => Ok(AccessDecision::Refused(format!(
+                    "credential matches grant `{}`, which expired on this Workcell; ask the serving operator to run `workcell authorise` again",
+                    grant.grant_ref
+                ))),
                 GrantDecision::UnknownCredential => Ok(AccessDecision::Refused(
                     "no active connection grant matches the presented credential; ask the serving operator to run `workcell authorise`".into(),
                 )),
@@ -210,6 +214,7 @@ where
                     "client_label": grant.client_label,
                     "operations": grant.operations,
                     "advertise": grant.advertise,
+                    "expires_at_unix_ms": grant.expires_at_unix_ms,
                 })),
                 None,
             ),

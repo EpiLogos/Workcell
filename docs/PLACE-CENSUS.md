@@ -26,7 +26,12 @@ The command enumerates the two providers this release knows:
   is running, tmux says so on stderr; the census records the provider as
   `present-no-server` with that exact stderr. That is a disclosed degraded
   state, not an error: the provider is installed and the machine genuinely
-  has no tmux places right now.
+  has no tmux places right now. Both of tmux's cold wordings are classified
+  as this state through the one helper the place-request path also uses —
+  `no server running on …` on older releases, and `error connecting to …
+  (No such file or directory)` on 3.6+/3.7+ (found live on a rebooted host
+  during the commissioned TM02-R re-test, where the census used to report a
+  bare `error`). A genuinely unexpected tmux failure is still `error`.
 - **herdr** — presence and version from `herdr --version`; workspaces and
   panes from `herdr workspace list` and `herdr pane list`, which emit JSON
   envelopes on herdr 0.8.x. Each pane is read once with `herdr pane
@@ -54,6 +59,24 @@ Each pane is classified by its process command stem:
   operator; Workcell only insists on knowing what is in them;
 - `unobserved` — the pane has no pid, or its pid is not in the pid table (a
   dead pane, or a provider reporting stale state). The pane stays visible.
+
+Every classified pane also carries `classification_evidence`, naming WHICH
+evidence decided:
+
+- `ps-comm` — the pid-table `ps` command stem decided. Every tmux pane, and
+  any pane whose provider reading was not consulted or did not match;
+- `provider-foreground` — the pid-table comm did not match a harness alias,
+  but the herdr provider's `pane process-info` named a foreground process
+  whose stem is a known harness. Found live on TM02-R: a herdr pane running
+  the `pi` harness classified `other` because its pid-table comm named the
+  shell; the provider's own reading now classifies it, and the record says
+  so.
+
+The fallback applies only to herdr panes (tmux panes keep `ps-comm`), only
+after `ps-comm` missed, and only against the harness alias table — never the
+self stems. If neither evidence source names a known harness, the pane stays
+`other`. The field is additive in `workcell.place-census/v1` and is `null`
+for `unobserved` panes nothing classified.
 
 A pane whose id or session name reappears bound to a different process
 generation is a **place reuse finding**: named with both pids, never merged
@@ -130,6 +153,42 @@ marker, is a stale binding: refused with both markers in evidence. A pid that
 is alive but no longer a pane process of the named place is a
 `place-mismatch`: the place moved on, and it is not ours to kill.
 
+### When the proof cannot be made: `--provider-close`
+
+```bash
+workcell place release --place-ref <ref> --pid <n> --start-marker "<ps lstart>" --provider-close
+```
+
+The generation contract has a blind spot the commissioned TM02-R re-test
+found live: a herdr workspace can outlive its pane processes. The pane's pid
+churns, the proof becomes unmakeable, the release correctly refuses — and
+the room itself is left standing, with nothing in the contract to end it. The
+operator's only recourse was a bare `herdr workspace close` by hand.
+
+`--provider-close` is that recourse, brought inside the contract:
+
+- **It is valid only on a failed generation proof.** The release runs the
+  same proof first; the flag changes the outcome only when the proof refused
+  as `stale-binding`, `place-gone` or `place-mismatch`. Any other refusal
+  stands with or without the flag.
+- **A passed proof refuses the flag** (`provider-close-refused`). A live,
+  provable generation is released through the normal contract, never closed
+  over it. A live pid is never killed outside the generation proof.
+- **The provider must still name the place.** A tmux session is verified
+  with `tmux has-session` immediately before `tmux kill-session -t
+  <session>`; a herdr workspace is verified present in `herdr workspace
+  list` immediately before `herdr workspace close <workspace_id>`. A place
+  that has vanished is a `place-gone` refusal — there is nothing left to
+  close.
+- **The close is receipted.** On success the command emits a
+  `workcell.place-provider-close/v1` document naming the close as
+  provider-native (`"close": "provider-native"`), carrying the failed
+  generation proof as its `justification` (the refusal kind, message and
+  evidence — granted and live start markers included), and the provider's
+  own output as `evidence`, with the close's UTC time.
+
+Without the flag, release behaviour is unchanged, byte for byte.
+
 The write-boundary discipline (`workcell-write-boundary inspect/run`) is a
 kernel-enforced Landlock confinement for launched workload processes in the
 control plane; it does not apply to a one-shot CLI invoking tmux or herdr
@@ -139,8 +198,12 @@ before any destructive step.
 
 ## Schema versions and tests
 
-- `workcell.place-census/v1` — the census document (`workcell places`).
+- `workcell.place-census/v1` — the census document (`workcell places`). The
+  `classification_evidence` pane field is an additive revision of this
+  schema: new field, disclosed here, existing fields untouched.
 - `workcell.place-grant/v1` — the place grant and its release proof.
+- `workcell.place-provider-close/v1` — the receipt for a
+  `--provider-close` release.
 
 Both are versioned constants in `workcell-runtime` and asserted in tests,
 like every other schema in this repository. The tmux row parser, the herdr
