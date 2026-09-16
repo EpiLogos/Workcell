@@ -1,7 +1,7 @@
 //! Cross-cell connection records on the wire.
 //!
-//! A connection is a durable, revocable, permissioned relation between two
-//! cells, not a socket. Two record types carry it:
+//! A connection is a durable, revocable, expirable, permissioned relation
+//! between two cells, not a socket. Two record types carry it:
 //!
 //! * `workcell.connection/v1` — the client-side receipt of one relation:
 //!   endpoint identity, agreed protocol, granted operations, credential
@@ -57,6 +57,10 @@ pub struct ConnectionRecord {
     /// compatibility observations from the last successful handshake.
     pub detail: Option<String>,
     pub connected_at_unix_ms: Option<u64>,
+    /// When the serving cell's grant stops authorising, as disclosed by the
+    /// last handshake. `None` when the grant has no expiry or the cell never
+    /// authorised this client.
+    pub expires_at_unix_ms: Option<u64>,
     pub last_reconciled_at_unix_ms: u64,
     pub provenance: BTreeMap<String, String>,
 }
@@ -86,6 +90,11 @@ pub struct ConnectionGrant {
     /// to keep the material.
     pub credential_ref: Option<String>,
     pub created_at_unix_ms: u64,
+    /// When the grant stops authorising, in Unix milliseconds. `None` is a
+    /// grant created without `--expires-in`: it never expires. An expired
+    /// grant is refused at the next use — named and distinct from
+    /// revocation; the record itself is kept as audit evidence.
+    pub expires_at_unix_ms: Option<u64>,
     pub state: String,
     pub revoked_at_unix_ms: Option<u64>,
     pub provenance: BTreeMap<String, String>,
@@ -94,6 +103,13 @@ pub struct ConnectionGrant {
 impl ConnectionGrant {
     pub fn is_active(&self) -> bool {
         self.state == GRANT_STATE_ACTIVE
+    }
+
+    /// Whether the grant's window has closed at `now_unix_ms`. A grant
+    /// without an expiry never expires.
+    pub fn is_expired_at(&self, now_unix_ms: u64) -> bool {
+        self.expires_at_unix_ms
+            .is_some_and(|expiry| expiry <= now_unix_ms)
     }
 }
 
@@ -126,6 +142,7 @@ pub fn connection_value(record: &ConnectionRecord) -> Result<Value> {
         "state": record.state,
         "detail": record.detail,
         "connected_at_unix_ms": record.connected_at_unix_ms,
+        "expires_at_unix_ms": record.expires_at_unix_ms,
         "last_reconciled_at_unix_ms": record.last_reconciled_at_unix_ms,
         "provenance": record.provenance,
     }))
@@ -153,6 +170,7 @@ pub fn decode_connection_value(value: &Value) -> Result<ConnectionRecord> {
         state: state_name(string_field(record, "state")?)?.to_owned(),
         detail: optional_string_field(record, "detail")?.map(str::to_owned),
         connected_at_unix_ms: optional_u64_field(record, "connected_at_unix_ms")?,
+        expires_at_unix_ms: optional_u64_field_or_absent(record, "expires_at_unix_ms")?,
         last_reconciled_at_unix_ms: u64_field(record, "last_reconciled_at_unix_ms")?,
         provenance: string_map_field(record, "provenance")?,
     })
@@ -175,6 +193,7 @@ pub fn grant_value(grant: &ConnectionGrant) -> Result<Value> {
         "credential_sha256": grant.credential_sha256,
         "credential_ref": grant.credential_ref,
         "created_at_unix_ms": grant.created_at_unix_ms,
+        "expires_at_unix_ms": grant.expires_at_unix_ms,
         "state": grant.state,
         "revoked_at_unix_ms": grant.revoked_at_unix_ms,
         "provenance": grant.provenance,
@@ -204,6 +223,9 @@ pub fn decode_grant_value(value: &Value) -> Result<ConnectionGrant> {
         credential_sha256: string_field(grant, "credential_sha256")?.to_owned(),
         credential_ref: optional_string_field(grant, "credential_ref")?.map(str::to_owned),
         created_at_unix_ms: u64_field(grant, "created_at_unix_ms")?,
+        // Absent decodes as `None`: registries written before grant expiry
+        // existed hold grants that never expire.
+        expires_at_unix_ms: optional_u64_field_or_absent(grant, "expires_at_unix_ms")?,
         state: state.to_owned(),
         revoked_at_unix_ms: optional_u64_field(grant, "revoked_at_unix_ms")?,
         provenance: string_map_field(grant, "provenance")?,
@@ -270,6 +292,20 @@ fn optional_u64_field(map: &Map<String, Value>, key: &str) -> Result<Option<u64>
     }
 }
 
+/// Like [`optional_u64_field`], but a field that is absent entirely also
+/// decodes as `None`: records and registries written before the field
+/// existed must keep decoding, and absence is no expiry.
+fn optional_u64_field_or_absent(map: &Map<String, Value>, key: &str) -> Result<Option<u64>> {
+    match map.get(key) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| invalid(format!("field `{key}` must be an unsigned integer or null"))),
+    }
+}
+
 fn string<'a>(value: &'a Value, label: &str) -> Result<&'a str> {
     value
         .as_str()
@@ -314,6 +350,7 @@ mod tests {
             state: "connected".into(),
             detail: Some("reconnected; remote software unchanged".into()),
             connected_at_unix_ms: Some(1000),
+            expires_at_unix_ms: None,
             last_reconciled_at_unix_ms: 2000,
             provenance: BTreeMap::from([("created_by".into(), "workcell connect".into())]),
         }
@@ -368,6 +405,7 @@ mod tests {
             credential_sha256: "64-hex-digest".into(),
             credential_ref: None,
             created_at_unix_ms: 5,
+            expires_at_unix_ms: Some(9000),
             state: GRANT_STATE_ACTIVE.into(),
             revoked_at_unix_ms: None,
             provenance: BTreeMap::new(),
@@ -386,5 +424,66 @@ mod tests {
         let mut revoked_state = value;
         revoked_state["state"] = json!("forgotten");
         assert!(decode_grant_value(&revoked_state).is_err());
+    }
+
+    #[test]
+    fn expiry_is_carved_into_the_grant_and_never_implied() {
+        let mut grant = sample_grant();
+        assert!(!grant.is_expired_at(8999));
+        assert!(grant.is_expired_at(9000));
+
+        // A grant created without an expiry never expires, at any time.
+        grant.expires_at_unix_ms = None;
+        assert!(!grant.is_expired_at(0));
+        assert!(!grant.is_expired_at(u64::MAX));
+        assert_eq!(
+            decode_grant_value(&grant_value(&grant).unwrap()).unwrap(),
+            grant
+        );
+    }
+
+    #[test]
+    fn records_written_before_expiry_existed_still_decode() {
+        // Older registries and receipts carry no `expires_at_unix_ms` field
+        // at all; absence decodes as no expiry, never as an error.
+        let mut grant = grant_value(&sample_grant()).unwrap();
+        grant
+            .as_object_mut()
+            .unwrap()
+            .remove("expires_at_unix_ms")
+            .expect("sample grant carries the field");
+        assert_eq!(decode_grant_value(&grant).unwrap().expires_at_unix_ms, None);
+
+        let mut record = connection_value(&sample_record()).unwrap();
+        record
+            .as_object_mut()
+            .unwrap()
+            .remove("expires_at_unix_ms")
+            .expect("sample record carries the field");
+        assert_eq!(
+            decode_connection_value(&record).unwrap().expires_at_unix_ms,
+            None
+        );
+
+        // A present-but-non-numeric expiry is still refused loudly.
+        grant["expires_at_unix_ms"] = json!("soon");
+        assert!(decode_grant_value(&grant).is_err());
+    }
+
+    fn sample_grant() -> ConnectionGrant {
+        ConnectionGrant {
+            grant_ref: "grant:home-client-9a11".into(),
+            client_label: "home-client".into(),
+            protocol: "workcell.control/v1".into(),
+            operations: vec!["status".into()],
+            advertise: Vec::new(),
+            credential_sha256: "64-hex-digest".into(),
+            credential_ref: None,
+            created_at_unix_ms: 5,
+            expires_at_unix_ms: Some(9000),
+            state: GRANT_STATE_ACTIVE.into(),
+            revoked_at_unix_ms: None,
+            provenance: BTreeMap::new(),
+        }
     }
 }

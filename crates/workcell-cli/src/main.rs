@@ -7,9 +7,9 @@ use std::{
 };
 
 use epilogos_workcell_control::{
-    check_compatibility, credential_sha256, generate_credential, grant_ref_for, software_version,
-    validate_label, ConnectionGrants, ControlClient, ControlClientError, ControlService,
-    CreateOutcome, TcpControlServer, TcpControlTransport, CONTROL_OPERATIONS,
+    check_compatibility, credential_sha256, generate_credential, grant_ref_for, parse_duration_millis,
+    software_version, validate_label, ConnectionGrants, ControlClient, ControlClientError,
+    ControlService, CreateOutcome, TcpControlServer, TcpControlTransport, CONTROL_OPERATIONS,
     CONTROL_PROTOCOL_VERSION, GRANTS_FILE,
 };
 use epilogos_workcell_core::{
@@ -196,8 +196,9 @@ fn command_status(global: &GlobalArgs) -> Result<(), WorkcellError> {
             "offers": discovery.offers.len(),
             "persisted_world_receipts": receipts,
             "connections": connections.iter().map(connection_status_json).collect::<Vec<_>>(),
-            "connection_grants": grants_summary.map(|(active, revoked)| json!({
+            "connection_grants": grants_summary.map(|(active, expired, revoked)| json!({
                 "active": active,
+                "expired": expired,
                 "revoked": revoked,
             })),
             "state_root": global.state_root,
@@ -214,20 +215,34 @@ fn command_status(global: &GlobalArgs) -> Result<(), WorkcellError> {
             println!("connections: {}", connections.len());
             for record in &connections {
                 println!(
-                    "  {} [{}] -> {} ({})",
+                    "  {} [{}] -> {} ({}){}",
                     record.label,
                     record.state,
                     record.endpoint,
                     record.remote_workcell_ref.as_deref().unwrap_or("remote identity unknown"),
+                    expiry_note(record.expires_at_unix_ms),
                 );
             }
         }
-        if let Some((active, revoked)) = grants_summary {
-            println!("connection grants: {active} active, {revoked} revoked");
+        if let Some((active, expired, revoked)) = grants_summary {
+            print!("connection grants: {active} active");
+            if expired > 0 {
+                print!(", {expired} expired");
+            }
+            println!(", {revoked} revoked");
         }
         println!("state root: {}", global.state_root.display());
     }
     Ok(())
+}
+
+/// The ` expires at …` suffix naming when a connection's grant stops
+/// authorising; empty for grants without an expiry.
+fn expiry_note(expires_at_unix_ms: Option<u64>) -> String {
+    match expires_at_unix_ms {
+        Some(expires_at) => format!(" expires at {expires_at} (unix ms)"),
+        None => String::new(),
+    }
 }
 
 fn connection_status_json(record: &ConnectionRecord) -> Value {
@@ -237,18 +252,34 @@ fn connection_status_json(record: &ConnectionRecord) -> Value {
         "endpoint": record.endpoint,
         "protocol": record.protocol,
         "remote_workcell_ref": record.remote_workcell_ref,
+        "expires_at_unix_ms": record.expires_at_unix_ms,
     })
 }
 
-/// Active/revoked grant counts when this state root holds a grants registry.
-fn grants_status_summary(global: &GlobalArgs) -> Result<Option<(usize, usize)>, WorkcellError> {
+/// Active/expired/revoked grant counts when this state root holds a grants
+/// registry. "Active" counts grants that still authorise: an expired grant
+/// is kept and counted as expired, not silently active.
+fn grants_status_summary(
+    global: &GlobalArgs,
+) -> Result<Option<(usize, usize, usize)>, WorkcellError> {
     let registry = ConnectionGrants::new(&global.state_root, parse_workcell_ref(&global.workcell_ref)?);
     if !registry.path().exists() {
         return Ok(None);
     }
-    let grants = registry.list()?;
-    let active = grants.iter().filter(|grant| grant.is_active()).count();
-    Ok(Some((active, grants.len() - active)))
+    let now = now_unix_ms();
+    let mut active = 0;
+    let mut expired = 0;
+    let mut revoked = 0;
+    for grant in registry.list()? {
+        if !grant.is_active() {
+            revoked += 1;
+        } else if grant.is_expired_at(now) {
+            expired += 1;
+        } else {
+            active += 1;
+        }
+    }
+    Ok(Some((active, expired, revoked)))
 }
 
 fn command_discover(global: &GlobalArgs) -> Result<(), WorkcellError> {
@@ -1871,13 +1902,13 @@ fn command_sandboxes(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
 // ---------------------------------------------------------------------------
 // Cross-cell connection lifecycle
 //
-// A connection is a durable, revocable, permissioned relation between two
-// cells. `serve` exposes this cell behind the connection grants registry;
-// `authorise`/`revoke` manage grants (receipted, auditable, revocation takes
-// effect at the next use); `connect` establishes the client side with an
-// explicit compatibility handshake. Capability advertisement is not
-// authorisation: discovery discloses, grants permit, and the two are
-// reported separately everywhere.
+// A connection is a durable, revocable, expirable, permissioned relation
+// between two cells. `serve` exposes this cell behind the connection grants
+// registry; `authorise`/`revoke` manage grants (receipted, auditable,
+// revocation and expiry take effect at the next use); `connect` establishes
+// the client side with an explicit compatibility handshake. Capability
+// advertisement is not authorisation: discovery discloses, grants permit,
+// and the two are reported separately everywhere.
 // ---------------------------------------------------------------------------
 
 fn command_serve(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
@@ -1961,6 +1992,7 @@ fn command_authorise(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
     let mut client_label = None;
     let mut operations: Vec<String> = Vec::new();
     let mut advertise: Vec<String> = Vec::new();
+    let mut expires_in: Option<String> = None;
     let mut store_credential = false;
     let mut index = 0;
     while index < args.len() {
@@ -1977,6 +2009,10 @@ fn command_authorise(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
                 advertise.push(require_value(args, index, "--advertise")?.to_owned());
                 index += 2;
             }
+            "--expires-in" => {
+                expires_in = Some(require_value(args, index, "--expires-in")?.to_owned());
+                index += 2;
+            }
             "--store-credential" => {
                 store_credential = true;
                 index += 1;
@@ -1990,7 +2026,7 @@ fn command_authorise(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
     }
     let label = client_label.ok_or_else(|| {
         WorkcellError::InvalidDemand(
-            "usage: workcell authorise --client <label> --allow <operation>... [--advertise <port>...] [--store-credential]".into(),
+            "usage: workcell authorise --client <label> --allow <operation>... [--advertise <port>...] [--expires-in <duration>] [--store-credential]".into(),
         )
     })?;
     validate_label(&label)?;
@@ -2007,6 +2043,21 @@ fn command_authorise(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
             )));
         }
     }
+    // An optional lifetime: the grant stops authorising at
+    // created + duration and refuses at the next use, named and distinct
+    // from revocation. Without it the grant never expires.
+    let expires_at_unix_ms = match expires_in.as_deref() {
+        None => None,
+        Some(duration) => Some(
+            now_unix_ms()
+                .checked_add(parse_duration_millis(duration)?)
+                .ok_or_else(|| {
+                    WorkcellError::InvalidDemand(format!(
+                        "`--expires-in {duration}` overflows the expiry timestamp; choose a shorter lifetime"
+                    ))
+                })?,
+        ),
+    };
 
     let credential = generate_credential()?;
     let credential_ref = if store_credential {
@@ -2026,6 +2077,7 @@ fn command_authorise(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
         credential_sha256: credential_sha256(&credential),
         credential_ref: credential_ref.clone(),
         created_at_unix_ms: now_unix_ms(),
+        expires_at_unix_ms,
         state: "active".to_owned(),
         revoked_at_unix_ms: None,
         provenance: BTreeMap::from([("created_by".to_owned(), "workcell authorise".to_owned())]),
@@ -2048,6 +2100,7 @@ fn command_authorise(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
             "client": label,
             "operations": operations,
             "advertise": advertise,
+            "expires_at_unix_ms": expires_at_unix_ms,
             "credential": credential,
             "credential_ref": credential_ref,
             "note": "the credential is shown once and stored nowhere; only its SHA-256 is kept",
@@ -2057,6 +2110,10 @@ fn command_authorise(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
         println!("operations: {}", operations.join(", "));
         if !advertise.is_empty() {
             println!("advertised ports: {}", advertise.join(", "));
+        }
+        match expires_at_unix_ms {
+            Some(expires_at) => println!("expires: {expires_at} (unix ms)"),
+            None => println!("expires: never"),
         }
         println!("credential: {credential}");
         println!(
@@ -2259,7 +2316,8 @@ fn command_connect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellE
     }
 
     // 3. Granted scope. A null grant means the cell granted full access
-    //    through its operator token; otherwise the grant names the truth.
+    //    through its operator token; otherwise the grant names the truth —
+    //    including when it stops authorising.
     let grant_payload = handshake.get("grant").filter(|value| !value.is_null());
     let granted_operations: Vec<String> = grant_payload
         .and_then(|grant| grant["operations"].as_array())
@@ -2271,6 +2329,8 @@ fn command_connect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellE
                 .collect()
         })
         .unwrap_or_else(|| CONTROL_OPERATIONS.iter().map(|value| value.to_string()).collect());
+    let expires_at_unix_ms: Option<u64> = grant_payload
+        .and_then(|grant| grant["expires_at_unix_ms"].as_u64());
 
     // 4. Probes under the grant: identity and, when discovery is granted,
     //    what the cell advertises to this connection specifically.
@@ -2365,6 +2425,7 @@ fn command_connect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellE
             .as_ref()
             .and_then(|record| record.connected_at_unix_ms)
             .or(Some(now)),
+        expires_at_unix_ms,
         last_reconciled_at_unix_ms: now,
         provenance: existing
             .as_ref()
@@ -2386,6 +2447,7 @@ fn command_connect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellE
                 "protocol": compatibility.server_protocol,
                 "remote_workcell_ref": remote_workcell_ref,
                 "granted_operations": granted_operations,
+                "expires_at_unix_ms": expires_at_unix_ms,
                 "advertised_ports": advertised_ports,
                 "advertised_offers": advertised_offers,
                 "credential_ref": credential_ref,
@@ -2415,6 +2477,10 @@ fn command_connect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellE
             println!("remote workcell: {workcell_ref}");
         }
         println!("granted operations: {}", granted_operations.join(", "));
+        match expires_at_unix_ms {
+            Some(expires_at) => println!("grant expires: {expires_at} (unix ms)"),
+            None => println!("grant expires: never"),
+        }
         if granted_operations.iter().any(|operation| operation == "discover") {
             println!(
                 "advertised capabilities: {advertised_offers} offer(s) across ports: {}",
@@ -2458,11 +2524,12 @@ fn command_connections(global: &GlobalArgs, args: &[String]) -> Result<(), Workc
                 }
                 for record in &records {
                     println!(
-                        "{} [{}] -> {} ({})",
+                        "{} [{}] -> {} ({}){}",
                         record.label,
                         record.state,
                         record.endpoint,
                         record.remote_workcell_ref.as_deref().unwrap_or("remote identity unknown"),
+                        expiry_note(record.expires_at_unix_ms),
                     );
                 }
             }
@@ -2546,6 +2613,7 @@ fn reconciled_record(
             state: "disconnected".to_owned(),
             detail: None,
             connected_at_unix_ms: None,
+            expires_at_unix_ms: None,
             last_reconciled_at_unix_ms: now_unix_ms(),
             provenance: BTreeMap::from([(
                 "created_by".to_owned(),
@@ -5053,7 +5121,7 @@ Commands:\n  status       Summarise this local Workcell\n  discover     Discover
   places       Census of persistent process places (tmux, herdr) — read-only
   place        Place request/release over those places (request --provider auto|herdr|tmux --name SLUG; release --place-ref REF --pid N --start-marker PS_LSTART)
   sandboxes    OpenSandbox server-side material (reconcile)\n  connections  Cross-cell connection records (list/show/disconnect)\n  providers    List provider inventory\n  system       Emit this Workcell's System settings disclosure (oi.product-settings-disclosure/v2)\n  config-contribution\n               Emit Workcell's configuration contribution (oi.configuration-contribution/v1)\n  config       Owner-native configuration transport: validate | plan | apply | reset\n  doctor       Verify the zero-setup local baseline\n\n\
-Cross-cell connection lifecycle:\n  workcell serve --listen HOST:PORT [--authorization TOKEN]\n      Serve this cell's control plane; grants are enforced per request.\n      Non-loopback listeners require a token or at least one active grant.\n  workcell authorise --client <label> --allow <operation>... [--advertise <port>...] [--store-credential]\n      Grant a connecting client named operations; the credential is shown once.\n  workcell revoke --client <label> | --grant <ref>\n      Revoke grants; takes effect at the connecting client's next use.\n  workcell connect --endpoint HOST:PORT [--connection <label>] [--authorization TOKEN] [--store-credential]\n      Establish or reconnect the client side; reports both cells' protocol\n      and software, refuses unsupported combinations loudly.\n\n\
+Cross-cell connection lifecycle:\n  workcell serve --listen HOST:PORT [--authorization TOKEN]\n      Serve this cell's control plane; grants are enforced per request.\n      Non-loopback listeners require a token or at least one active grant.\n  workcell authorise --client <label> --allow <operation>... [--advertise <port>...] [--expires-in <duration>] [--store-credential]\n      Grant a connecting client named operations; the credential is shown once.\n      `--expires-in 30m` (s|m|h|d) makes the grant expire at the next use,\n      refused as expired; without it the grant never expires.\n  workcell revoke --client <label> | --grant <ref>\n      Revoke grants; takes effect at the connecting client's next use.\n  workcell connect --endpoint HOST:PORT [--connection <label>] [--authorization TOKEN] [--store-credential]\n      Establish or reconnect the client side; reports both cells' protocol\n      and software, refuses unsupported combinations loudly.\n\n\
 Global options:\n  --json                     Structured machine/agent output\n  --state-root PATH          Local Workcell state (default: $WORKCELL_HOME or ~/.workcell)\n  --workcell-ref REF         Workcell identity for new local operations\n  --receipt PATH             Material-world receipt for prepare/resume\n  --workspace-source PATH    Physical local source binding; never semantic identity\n  --services PATH            Operator-declared logical services (default: <state-root>/services.json)\n\n\
 Demand options for plan/prepare:\n  --demand-ref REF\n  --require VALUE | --prefer VALUE | --optional VALUE\n  --workspace writable|read-only [--workspace-ref REF] [--revision REV]\n  --project-runtime MODE\n  --connect VALUE | --prefer-connect VALUE | --optional-connect VALUE\n  --expose VALUE | --prefer-expose VALUE | --optional-expose VALUE\n  --output VALUE | --prefer-output VALUE | --optional-output VALUE\n  --resource key[=amount[:unit]]\n  --subject role=opaque-ref\n  --persistence SCOPE\n  --isolation VALUE\n  --retention release|preserve|suspend-if-supported|snapshot-if-supported\n  --extension key=value\n\n\
 Reconcile:\n  workcell --receipt WORLD.json reconcile --desired logical-ref=state"

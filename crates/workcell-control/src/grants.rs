@@ -6,6 +6,10 @@
 //! auditable: revocation marks the record and keeps it, and every authorise
 //! check re-reads the registry so a revocation takes effect at the next use
 //! — including from another process such as the `workcell revoke` command.
+//! A grant may also carry an expiry (`--expires-in`): past that instant it
+//! refuses at the next use with its own named decision, distinct from
+//! revocation, and the record is kept. A grant created without an expiry
+//! never expires.
 //!
 //! The store is one JSON file under the workcell state root
 //! (`<state-root>/connections/grants.json`), following the same law as the
@@ -60,6 +64,12 @@ pub enum GrantDecision {
     /// Kept distinct from `UnknownCredential` so the client hears the truth:
     /// access existed and was withdrawn.
     Revoked {
+        grant: Box<ConnectionGrant>,
+    },
+    /// The credential matches an active grant whose window has closed.
+    /// Kept distinct from `Revoked` so the client hears the truth: access
+    /// ended on its own terms, not by operator action.
+    Expired {
         grant: Box<ConnectionGrant>,
     },
 }
@@ -213,10 +223,11 @@ impl ConnectionGrants {
     }
 
     pub fn active_count(&self) -> Result<usize> {
+        let now = unix_millis();
         Ok(self
             .list()?
             .into_iter()
-            .filter(|grant| grant.is_active())
+            .filter(|grant| grant.is_active() && !grant.is_expired_at(now))
             .count())
     }
 
@@ -255,12 +266,15 @@ impl ConnectionGrants {
 
     /// Check a presented credential against this operation, reading the
     /// registry file fresh so a concurrent `workcell revoke` takes effect
-    /// at the next use.
+    /// at the next use. An expired grant refuses here for as long as it
+    /// sits in the registry — evaluation is at use time, never at write
+    /// time.
     pub fn authorise(&self, credential: Option<&str>, operation: &str) -> Result<GrantDecision> {
         let Some(credential) = credential.filter(|value| !value.is_empty()) else {
             return Ok(GrantDecision::NoCredential);
         };
         let digest = credential_sha256(credential);
+        let now = unix_millis();
         let file = self.load()?;
         for value in file["grants"]
             .as_object()
@@ -276,6 +290,13 @@ impl ConnectionGrants {
                 // anonymity: the client's credential was known and was
                 // withdrawn here.
                 return Ok(GrantDecision::Revoked {
+                    grant: Box::new(grant),
+                });
+            }
+            if grant.is_expired_at(now) {
+                // Same law for expiry: the credential was known and its
+                // window closed. Named, and distinct from revocation.
+                return Ok(GrantDecision::Expired {
                     grant: Box::new(grant),
                 });
             }
@@ -419,6 +440,30 @@ pub fn generate_credential() -> Result<String> {
     ))
 }
 
+/// Parse a grant lifetime (`30m`, `12h`, `7d`, `45s`) into milliseconds.
+/// Zero, negative and malformed values are refused with the usage line, so
+/// a typo never creates a grant that is born expired.
+pub fn parse_duration_millis(raw: &str) -> Result<u64> {
+    let invalid = || {
+        WorkcellError::InvalidDemand(format!(
+            "invalid `--expires-in` duration `{raw}`; use `<number><s|m|h|d>` (for example `30m`, `12h`, `7d`) with a value above zero"
+        ))
+    };
+    let mut digits = raw.chars();
+    let unit_millis = match digits.next_back() {
+        Some('s') => 1_000_u64,
+        Some('m') => 60 * 1_000,
+        Some('h') => 60 * 60 * 1_000,
+        Some('d') => 24 * 60 * 60 * 1_000,
+        _ => return Err(invalid()),
+    };
+    let amount: u64 = digits.as_str().parse().map_err(|_| invalid())?;
+    if amount == 0 {
+        return Err(invalid());
+    }
+    amount.checked_mul(unit_millis).ok_or_else(invalid)
+}
+
 pub fn unix_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -462,6 +507,7 @@ mod tests {
             credential_sha256: credential_sha256(credential),
             credential_ref: None,
             created_at_unix_ms: unix_millis(),
+            expires_at_unix_ms: None,
             state: GRANT_STATE_ACTIVE.to_owned(),
             revoked_at_unix_ms: None,
             provenance: BTreeMap::new(),
@@ -522,6 +568,74 @@ mod tests {
         }
         assert_eq!(grants.list().unwrap().len(), 1);
         assert_eq!(grants.active_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn expired_grants_refuse_as_expired_distinct_from_revoked() {
+        let grants = registry("expiry");
+        let expired_credential = generate_credential().unwrap();
+        let live_credential = generate_credential().unwrap();
+        let now = unix_millis();
+
+        // One grant whose window already closed, one with a future expiry,
+        // one created without an expiry.
+        let mut expired = grant_for("laptop", &expired_credential, &["status"]);
+        expired.expires_at_unix_ms = Some(now.saturating_sub(1));
+        grants.create(expired).unwrap();
+        let mut live = grant_for("tablet", &live_credential, &["status"]);
+        live.expires_at_unix_ms = Some(now + 60_000);
+        grants.create(live).unwrap();
+
+        // The expired grant names itself and says `expired`, and never
+        // masquerades as unknown or revoked.
+        match grants
+            .authorise(Some(&expired_credential), "status")
+            .unwrap()
+        {
+            GrantDecision::Expired { grant } => {
+                assert_eq!(grant.client_label, "laptop");
+                assert!(grant.is_expired_at(now));
+            }
+            other => panic!("expected expired decision, got {other:?}"),
+        }
+
+        // A future expiry is still inside the window: allowed like any
+        // active grant.
+        assert!(matches!(
+            grants.authorise(Some(&live_credential), "status").unwrap(),
+            GrantDecision::Allowed { .. }
+        ));
+
+        // An expired grant cannot authorise, so it is not an active grant:
+        // the serve-side gate must not lean on it.
+        assert_eq!(grants.active_count().unwrap(), 1);
+        assert_eq!(grants.list().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn durations_parse_and_non_positive_or_malformed_values_are_refused() {
+        assert_eq!(parse_duration_millis("45s").unwrap(), 45_000);
+        assert_eq!(parse_duration_millis("30m").unwrap(), 30 * 60_000);
+        assert_eq!(parse_duration_millis("12h").unwrap(), 12 * 60 * 60_000);
+        assert_eq!(parse_duration_millis("7d").unwrap(), 7 * 24 * 60 * 60_000);
+        for bad in [
+            "0m",
+            "0",
+            "-5m",
+            "banana",
+            "30",
+            "30x",
+            "",
+            "m",
+            "30分",
+            "99999999999999999999d",
+        ] {
+            let error = parse_duration_millis(bad).unwrap_err();
+            assert!(
+                matches!(error, WorkcellError::InvalidDemand(_)),
+                "`{bad}` should be a usage error, got {error:?}"
+            );
+        }
     }
 
     #[test]
