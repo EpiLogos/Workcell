@@ -16,6 +16,8 @@ members = [
   "crates/workcell-placement",
   "crates/workcell-runtime",
   "crates/workcell-sdk",
+  "crates/workcell-secret-scan",
+  "crates/workcell-secret-service",
   "crates/workcell-tailscale",
   "crates/workcell-wire",
   "crates/workcell-workspace",

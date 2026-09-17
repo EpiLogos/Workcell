@@ -242,11 +242,42 @@ workcell --workcell-ref workcell:host instances
 # client disconnect.
 ```
 
+## Secret projection rides the connection, never the payload
+
+A connection is also how a credential reaches work on another cell without
+leaving its origin store. The origin cell holds a `SecretProjectionRequest`
+against the connected target (`workcell secret project …`, recorded in
+`<state-root>/secrets/projections.json`), and the projection travels as an
+authorised reference/materialisation relation under the same grant
+discipline as everything else on this surface:
+
+- capability advertisement is not authorisation, and neither is knowing a
+  credential ref: material only ever moves through the approved sink
+  boundary for the target's materialisation class — a sandbox's Credential
+  Vault broker, or a use-time materialisation presented back to the origin
+  over an authorised connection. A denied route performs zero
+  provider-side writes;
+- the control plane carries refs, classes, purpose and scope — never
+  material. Receipts name the projection and the sink; they never contain
+  the value;
+- `workcell secret revoke-projection` marks the record revoked and keeps
+  it as audit evidence. The projected target is refused at its next
+  materialisation with a declared refusal naming the projection — the same
+  "takes effect at the connecting client's next use" semantics as grant
+  revocation;
+- a declined origin or an unavailable source is a declared refusal with a
+  reason, never a silent fallback to plaintext and never an empty result;
+- `workcell secret scan` / `workcell secret vault` keep the origin honest
+  about material that never entered a provider: detection reports location
+  and presence only, and vaulting moves the value into the origin store
+  without ever printing it.
+
 ## Where state lives
 
 ```text
-serving cell   <state-root>/connections/grants.json   grant records (credential digests, optional expiries)
-client cell    <state-root>/connections/<label>.json  connection receipts
+serving cell   <state-root>/connections/grants.json    grant records (credential digests, optional expiries)
+client cell    <state-root>/connections/<label>.json   connection receipts
+origin cell    <state-root>/secrets/projections.json   secret projection records (refs only)
 ```
 
 Both are ordinary durable state: inspectable, carried by the cell's own

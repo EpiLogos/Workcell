@@ -89,6 +89,8 @@ Application protocols remain opaque unless a Workcell provider port genuinely ow
 
 Private reachability and public exposure remain distinct material properties. A provider may offer both, but a public path must not silently satisfy private-only intent and a private binding must not be reported as public.
 
+For where long-lived service stacks physically belong when the host is a person's daily machine, see the hosted services VM profile in [`DEPLOYMENT-PROFILES.md`](DEPLOYMENT-PROFILES.md).
+
 ## Full destination
 
 The implementation must cover all canonical Workcell territories without collapsing them:

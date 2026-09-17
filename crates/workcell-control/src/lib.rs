@@ -1,7 +1,9 @@
 mod client;
 pub mod codec;
 pub mod grants;
+pub mod machines;
 mod network;
+pub mod projections;
 mod service;
 
 pub use client::{
@@ -13,7 +15,15 @@ pub use grants::{
     credential_sha256, generate_credential, grant_ref_for, parse_duration_millis, validate_label,
     ConnectionGrants, CreateOutcome, GrantDecision, CONNECTIONS_DIRECTORY, GRANTS_FILE,
 };
+pub use machines::{
+    RemoteMachineDeclaration, RemoteMachineRegistry, MACHINES_FILE, MACHINES_SCHEMA,
+    MACHINE_CREDENTIAL_SCHEMES,
+};
 pub use network::{TcpControlServer, TcpControlTransport};
+pub use projections::{
+    ProjectionDecision, SecretProjectionLedger, SecretProjectionRecord, PROJECTIONS_FILE,
+    PROJECTIONS_SCHEMA, PROJECTION_STATE_ACTIVE, PROJECTION_STATE_REVOKED, SECRETS_DIRECTORY,
+};
 pub use service::ControlService;
 
 pub const CONTROL_PROTOCOL_VERSION: &str = "workcell.control/v1";
