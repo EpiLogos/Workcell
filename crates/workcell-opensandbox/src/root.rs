@@ -8,8 +8,8 @@ mod composition;
 mod credential;
 mod data_plane;
 mod egress;
-mod projection;
 mod project_world;
+mod projection;
 mod reconcile;
 mod volume;
 
@@ -17,7 +17,7 @@ pub use composition::*;
 pub use credential::*;
 pub use data_plane::*;
 pub use egress::*;
-pub use projection::*;
 pub use project_world::*;
+pub use projection::*;
 pub use reconcile::*;
 pub use volume::*;

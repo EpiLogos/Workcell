@@ -17,10 +17,10 @@
 //!      evidence (`use-without-read`).
 
 use epilogos_workcell_core::{
-    authorise_broker_boundary, BrokerHandle, BrokerPolicy, BrokerRoute, ProviderAllocation,
-    Result, SecretMaterialisationClass, SecretMaterialisationRequest, SecretProjectionReceipt,
+    authorise_broker_boundary, BrokerHandle, BrokerPolicy, BrokerRoute, ProviderAllocation, Result,
+    SecretMaterialisationClass, SecretMaterialisationRequest, SecretProjectionReceipt,
     SecretProjectionRequest, SecretProjectionTarget, SecretProvider, SecretRevocationState,
-    SECRET_PROJECTION_VERSION, WorkcellError,
+    WorkcellError, SECRET_PROJECTION_VERSION,
 };
 
 use super::credential::{
@@ -108,13 +108,7 @@ where
     // runs, surfaced here so a projection-level caller sees the refusal
     // before any endpoint discovery or sink write happens inside
     // `materialise`. Cheap, read-only, and it keeps the parity test honest.
-    authorise_broker_boundary(
-        source_provider,
-        policy,
-        handle,
-        request,
-        route,
-    )?;
+    authorise_broker_boundary(source_provider, policy, handle, request, route)?;
 
     let materialisation = broker.materialise(OpenSandboxCredentialMaterialisation {
         allocation,
@@ -429,7 +423,10 @@ mod tests {
         );
         let error = result.unwrap_err();
         let rendered = format!("{error:?}");
-        assert!(rendered.contains("revoked"), "refusal must say revoked: {rendered}");
+        assert!(
+            rendered.contains("revoked"),
+            "refusal must say revoked: {rendered}"
+        );
         assert!(rendered.contains("origin"));
         assert!(transport.requests().is_empty());
     }
@@ -495,13 +492,19 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(receipt.version, epilogos_workcell_core::SECRET_PROJECTION_VERSION);
+        assert_eq!(
+            receipt.version,
+            epilogos_workcell_core::SECRET_PROJECTION_VERSION
+        );
         assert!(receipt.materialisation.is_some());
         assert_eq!(
             receipt.provenance.get("secret.visibility"),
             Some(&"use-without-read".to_owned())
         );
-        assert_eq!(receipt.provenance.get("sandbox.vault_revision"), Some(&"9".to_owned()));
+        assert_eq!(
+            receipt.provenance.get("sandbox.vault_revision"),
+            Some(&"9".to_owned())
+        );
         assert_eq!(
             receipt
                 .provenance

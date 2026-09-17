@@ -595,10 +595,7 @@ mod tests {
             scope: request.scope.clone(),
             requested_by: request.requested_by.clone(),
             materialisation: None,
-            provenance: BTreeMap::from([(
-                "secret.visibility".into(),
-                "use-without-read".into(),
-            )]),
+            provenance: BTreeMap::from([("secret.visibility".into(), "use-without-read".into())]),
         };
         assert_eq!(receipt.version, SECRET_PROJECTION_VERSION);
         // The receipt type has no value field to leak; the Debug render must

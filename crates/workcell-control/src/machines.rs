@@ -26,8 +26,7 @@ pub const MACHINES_SCHEMA: &str = "workcell.remote-machines/v1";
 /// Secret-reference schemes a machine declaration may name. The declaration
 /// is a location, never a value: anything that does not start with one of
 /// these schemes is refused rather than stored.
-pub const MACHINE_CREDENTIAL_SCHEMES: [&str; 2] =
-    ["keychain://", "linux-secret-service://"];
+pub const MACHINE_CREDENTIAL_SCHEMES: [&str; 2] = ["keychain://", "linux-secret-service://"];
 
 /// One declared remote machine.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -194,7 +193,9 @@ impl RemoteMachineRegistry {
                 "machine label must not be empty".into(),
             ));
         }
-        if declaration.endpoint.trim().is_empty() || declaration.endpoint.contains(char::is_whitespace) {
+        if declaration.endpoint.trim().is_empty()
+            || declaration.endpoint.contains(char::is_whitespace)
+        {
             return Err(WorkcellError::InvalidDemand(
                 "machine endpoint must be a non-empty HOST:PORT without whitespace".into(),
             ));
@@ -265,10 +266,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        (
-            RemoteMachineRegistry::new(&root),
-            root,
-        )
+        (RemoteMachineRegistry::new(&root), root)
     }
 
     fn declaration(label: &str) -> RemoteMachineDeclaration {
@@ -292,7 +290,10 @@ mod tests {
         let listed = registry.list().unwrap();
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].label, "alpha");
-        assert_eq!(registry.get("zeta").unwrap().unwrap().endpoint, "100.92.62.101:7777");
+        assert_eq!(
+            registry.get("zeta").unwrap().unwrap().endpoint,
+            "100.92.62.101:7777"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 

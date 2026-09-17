@@ -63,22 +63,31 @@ impl SecretProjectionRecord {
         created_at_unix_ms: u64,
     ) -> Result<Self> {
         request.validate()?;
-        let (target_workcell_ref, target_connection_label, target_provider_ref, target_allocation_ref) =
-            match &request.target {
-                SecretProjectionTarget::Workcell {
-                    workcell_ref,
-                    connection_label,
-                } => (
-                    Some(workcell_ref.to_string()),
-                    Some(connection_label.clone()),
-                    None,
-                    None,
-                ),
-                SecretProjectionTarget::Sandbox {
-                    provider_ref,
-                    allocation_ref,
-                } => (None, None, Some(provider_ref.to_string()), Some(allocation_ref.clone())),
-            };
+        let (
+            target_workcell_ref,
+            target_connection_label,
+            target_provider_ref,
+            target_allocation_ref,
+        ) = match &request.target {
+            SecretProjectionTarget::Workcell {
+                workcell_ref,
+                connection_label,
+            } => (
+                Some(workcell_ref.to_string()),
+                Some(connection_label.clone()),
+                None,
+                None,
+            ),
+            SecretProjectionTarget::Sandbox {
+                provider_ref,
+                allocation_ref,
+            } => (
+                None,
+                None,
+                Some(provider_ref.to_string()),
+                Some(allocation_ref.clone()),
+            ),
+        };
         Ok(Self {
             projection_ref: projection_ref.into(),
             credential_ref: request.credential_ref.as_str().to_owned(),
@@ -122,12 +131,13 @@ impl SecretProjectionRecord {
             }
             (None, None, Some(provider_ref), Some(allocation_ref)) => {
                 SecretProjectionTarget::Sandbox {
-                    provider_ref: epilogos_workcell_core::ProviderRef::new(provider_ref)
-                        .map_err(|message| {
+                    provider_ref: epilogos_workcell_core::ProviderRef::new(provider_ref).map_err(
+                        |message| {
                             WorkcellError::InvalidDemand(format!(
                                 "projection record holds an invalid provider ref: {message}"
                             ))
-                        })?,
+                        },
+                    )?,
                     allocation_ref: allocation_ref.to_owned(),
                 }
             }
@@ -163,12 +173,13 @@ impl SecretProjectionRecord {
             class,
             purpose: self.purpose.clone(),
             scope: self.scope.clone(),
-            requested_by: epilogos_workcell_core::ExternalRef::new(&self.requested_by)
-                .map_err(|message| {
+            requested_by: epilogos_workcell_core::ExternalRef::new(&self.requested_by).map_err(
+                |message| {
                     WorkcellError::InvalidDemand(format!(
                         "projection record holds an invalid requester ref: {message}"
                     ))
-                })?,
+                },
+            )?,
         })
     }
 
@@ -199,17 +210,10 @@ impl SecretProjectionRecord {
                 .and_then(Value::as_str)
                 .map(str::to_owned)
                 .ok_or_else(|| {
-                    WorkcellError::InvalidDemand(format!(
-                        "projection record is missing `{name}`"
-                    ))
+                    WorkcellError::InvalidDemand(format!("projection record is missing `{name}`"))
                 })
         };
-        let optional = |name: &str| {
-            value
-                .get(name)
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        };
+        let optional = |name: &str| value.get(name).and_then(Value::as_str).map(str::to_owned);
         let provenance = value
             .get("provenance")
             .and_then(Value::as_object)
@@ -267,7 +271,10 @@ pub struct SecretProjectionLedger {
 impl SecretProjectionLedger {
     pub fn new(state_root: impl AsRef<Path>, workcell_ref: WorkcellRef) -> Self {
         Self {
-            path: state_root.as_ref().join(SECRETS_DIRECTORY).join(PROJECTIONS_FILE),
+            path: state_root
+                .as_ref()
+                .join(SECRETS_DIRECTORY)
+                .join(PROJECTIONS_FILE),
             workcell_ref,
         }
     }
@@ -396,7 +403,11 @@ impl SecretProjectionLedger {
 
     /// Revoke a projection. The record is kept as audit evidence; the
     /// revocation reaches the projected target at its next use.
-    pub fn revoke(&self, projection_ref: &str, revoked_at_unix_ms: u64) -> Result<SecretProjectionRecord> {
+    pub fn revoke(
+        &self,
+        projection_ref: &str,
+        revoked_at_unix_ms: u64,
+    ) -> Result<SecretProjectionRecord> {
         let decision = self.decision_for(projection_ref)?;
         let mut record = match decision {
             ProjectionDecision::Active(record) | ProjectionDecision::Revoked(record) => *record,
@@ -449,7 +460,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let ledger = SecretProjectionLedger::new(&root, WorkcellRef::new("workcell:origin").unwrap());
+        let ledger =
+            SecretProjectionLedger::new(&root, WorkcellRef::new("workcell:origin").unwrap());
         (ledger, root)
     }
 
@@ -467,7 +479,10 @@ mod tests {
         let listed = ledger.list().unwrap();
         assert_eq!(listed, vec![record.clone()]);
 
-        match ledger.decision_for("secret-projection:github-operator").unwrap() {
+        match ledger
+            .decision_for("secret-projection:github-operator")
+            .unwrap()
+        {
             ProjectionDecision::Active(record) => {
                 let request = record.to_request().unwrap();
                 assert_eq!(request, sandbox_request());
@@ -480,9 +495,19 @@ mod tests {
     #[test]
     fn duplicate_projection_ref_is_a_named_conflict() {
         let (ledger, root) = ledger();
-        let record = SecretProjectionRecord::from_request("secret-projection:dupe", &sandbox_request(), 1_000).unwrap();
+        let record = SecretProjectionRecord::from_request(
+            "secret-projection:dupe",
+            &sandbox_request(),
+            1_000,
+        )
+        .unwrap();
         ledger.record(record).unwrap();
-        let second = SecretProjectionRecord::from_request("secret-projection:dupe", &sandbox_request(), 2_000).unwrap();
+        let second = SecretProjectionRecord::from_request(
+            "secret-projection:dupe",
+            &sandbox_request(),
+            2_000,
+        )
+        .unwrap();
         let err = ledger.record(second).unwrap_err();
         assert!(format!("{err:?}").contains("already exists"));
         std::fs::remove_dir_all(&root).ok();
@@ -491,7 +516,12 @@ mod tests {
     #[test]
     fn revocation_marks_keeps_and_reaches_the_next_decision() {
         let (ledger, root) = ledger();
-        let record = SecretProjectionRecord::from_request("secret-projection:revme", &sandbox_request(), 1_000).unwrap();
+        let record = SecretProjectionRecord::from_request(
+            "secret-projection:revme",
+            &sandbox_request(),
+            1_000,
+        )
+        .unwrap();
         ledger.record(record).unwrap();
 
         let revoked = ledger.revoke("secret-projection:revme", 2_000).unwrap();
@@ -529,7 +559,9 @@ mod tests {
             connection_label: "laptop".into(),
         };
         request.class = SecretMaterialisationClass::File;
-        let record = SecretProjectionRecord::from_request("secret-projection:remote", &request, 1_000).unwrap();
+        let record =
+            SecretProjectionRecord::from_request("secret-projection:remote", &request, 1_000)
+                .unwrap();
         ledger.record(record).unwrap();
         match ledger.decision_for("secret-projection:remote").unwrap() {
             ProjectionDecision::Active(record) => {

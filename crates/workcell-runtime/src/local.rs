@@ -171,9 +171,7 @@ impl CollapsedLocalConfig {
         resolved
             .target_owned
             .extend(self.services.target_owned.iter().cloned());
-        resolved
-            .execution
-            .extend(self.opensandbox.iter().cloned());
+        resolved.execution.extend(self.opensandbox.iter().cloned());
 
         // Each provider refuses duplicates within itself. One logical ref
         // declared under both lifetimes would produce two offers for the same
@@ -618,14 +616,15 @@ impl CollapsedLocalWorkcell {
                 let provider_key = binding.provider_ref.as_str().to_owned();
                 if !execution_allocations.contains_key(&provider_key) {
                     let allocation = if binding.provider_ref == execution_ref {
-                        self.execution.prepare_execution(&ExecutionMaterialRequest {
-                            demand_ref: demand.demand_ref.clone(),
-                            affordances: execution_affordances.clone(),
-                            resources: demand.resources.clone(),
-                            connectivity: execution_connectivity.clone(),
-                            isolation_trust: demand.isolation_trust.clone(),
-                            retention: demand.retention.clone(),
-                        })?
+                        self.execution
+                            .prepare_execution(&ExecutionMaterialRequest {
+                                demand_ref: demand.demand_ref.clone(),
+                                affordances: execution_affordances.clone(),
+                                resources: demand.resources.clone(),
+                                connectivity: execution_connectivity.clone(),
+                                isolation_trust: demand.isolation_trust.clone(),
+                                retention: demand.retention.clone(),
+                            })?
                     } else {
                         self.opensandbox
                             .as_mut()
@@ -1021,8 +1020,8 @@ mod tests {
         // Nothing listens here: the declaration is present, its lifecycle
         // server is not reachable, and discovery must say exactly that.
         deployment.lifecycle_base_url = "http://127.0.0.1:1".into();
-        let workcell = CollapsedLocalWorkcell::new(config(&root).with_opensandbox(deployment))
-            .unwrap();
+        let workcell =
+            CollapsedLocalWorkcell::new(config(&root).with_opensandbox(deployment)).unwrap();
 
         let discovery = workcell.discover().unwrap();
         let offer = discovery

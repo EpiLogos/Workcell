@@ -110,10 +110,7 @@ impl ScanReport {
                 if self.findings.len() == 1 { "" } else { "s" }
             ));
             for finding in &self.findings {
-                let line = finding
-                    .line
-                    .map(|n| format!(":{n}"))
-                    .unwrap_or_default();
+                let line = finding.line.map(|n| format!(":{n}")).unwrap_or_default();
                 let reference = if finding.reference_only {
                     " [reference into a vault, not raw material]"
                 } else {
@@ -142,10 +139,7 @@ impl ScanReport {
                 refusal.target, refusal.reason
             ));
         }
-        out.push_str(&format!(
-            "targets scanned: {}\n",
-            self.scanned.len()
-        ));
+        out.push_str(&format!("targets scanned: {}\n", self.scanned.len()));
         out
     }
 }
@@ -291,7 +285,12 @@ pub fn scan_json_text(location: &str, text: &str) -> Result<Vec<ExposureFinding>
     Ok(findings)
 }
 
-fn walk_json(location: &str, value: &serde_json::Value, path: String, findings: &mut Vec<ExposureFinding>) {
+fn walk_json(
+    location: &str,
+    value: &serde_json::Value,
+    path: String,
+    findings: &mut Vec<ExposureFinding>,
+) {
     match value {
         serde_json::Value::Object(map) => {
             for (key, child) in map {
@@ -449,7 +448,9 @@ pub fn run_standard_scan<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
             Err(error) => {
                 report.refusals.push(ScanRefusal {
                     target: location,
-                    reason: format!("exists but could not be read ({error}); detection did not run"),
+                    reason: format!(
+                        "exists but could not be read ({error}); detection did not run"
+                    ),
                 });
                 continue;
             }
@@ -460,9 +461,11 @@ pub fn run_standard_scan<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
                 Ok(findings) => report.findings.extend(findings),
                 Err(refusal) => report.refusals.push(refusal),
             },
-            AuthFileShape::Netrc => report
-                .findings
-                .extend(scan_keyvalue_text(&location, &text, ExposureKind::Netrc)),
+            AuthFileShape::Netrc => {
+                report
+                    .findings
+                    .extend(scan_keyvalue_text(&location, &text, ExposureKind::Netrc))
+            }
             AuthFileShape::KeyValue => report.findings.extend(scan_keyvalue_text(
                 &location,
                 &text,
@@ -558,13 +561,16 @@ mod tests {
     #[test]
     fn keyvalue_and_netrc_shapes_are_detected() {
         let ini = format!("aws_secret_access_key = {RAW_DUMMY}\nregion = eu-west-1\n");
-        let ini_findings = scan_keyvalue_text("/home/u/.aws/credentials", &ini, ExposureKind::KeyValueAuthFile);
+        let ini_findings = scan_keyvalue_text(
+            "/home/u/.aws/credentials",
+            &ini,
+            ExposureKind::KeyValueAuthFile,
+        );
         assert_eq!(ini_findings.len(), 1);
         assert_eq!(ini_findings[0].key, "aws_secret_access_key");
 
         let netrc = format!("machine example.com login frank password {RAW_DUMMY}\n");
-        let netrc_findings =
-            scan_keyvalue_text("/home/u/.netrc", &netrc, ExposureKind::Netrc);
+        let netrc_findings = scan_keyvalue_text("/home/u/.netrc", &netrc, ExposureKind::Netrc);
         assert_eq!(netrc_findings.len(), 1);
         assert_eq!(netrc_findings[0].key, "password");
     }

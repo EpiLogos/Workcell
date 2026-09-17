@@ -1598,7 +1598,10 @@ mod tests {
         assert_eq!(requests.len(), 1);
         let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
         assert_eq!(body["networkPolicy"]["defaultAction"], "deny");
-        assert_eq!(body["networkPolicy"]["egress"][0]["target"], "api.github.com");
+        assert_eq!(
+            body["networkPolicy"]["egress"][0]["target"],
+            "api.github.com"
+        );
         assert_eq!(body["networkPolicy"]["egress"][0]["action"], "allow");
         assert_eq!(body["credentialProxy"]["enabled"], true);
     }
@@ -1611,8 +1614,8 @@ mod tests {
             allowed_hosts: vec!["api.github.com".into()],
             credential_proxy: true,
         });
-        let error = OpenSandboxExecutionProvider::new(config, StdHttpOpenSandboxTransport)
-            .unwrap_err();
+        let error =
+            OpenSandboxExecutionProvider::new(config, StdHttpOpenSandboxTransport).unwrap_err();
         assert!(
             error.to_string().contains("default-deny"),
             "unexpected error: {error}"

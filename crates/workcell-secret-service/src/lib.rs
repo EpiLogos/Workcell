@@ -73,11 +73,13 @@ impl SecretServiceCredentialRef {
     }
 
     pub fn parse(value: &str) -> Result<Self> {
-        let rest = value.strip_prefix(SECRET_SERVICE_REF_SCHEME).ok_or_else(|| {
-            WorkcellError::InvalidDemand(format!(
-                "secret service credential ref must start with {SECRET_SERVICE_REF_SCHEME}"
-            ))
-        })?;
+        let rest = value
+            .strip_prefix(SECRET_SERVICE_REF_SCHEME)
+            .ok_or_else(|| {
+                WorkcellError::InvalidDemand(format!(
+                    "secret service credential ref must start with {SECRET_SERVICE_REF_SCHEME}"
+                ))
+            })?;
         let (service, account) = rest.split_once('/').ok_or_else(|| {
             WorkcellError::InvalidDemand(
                 "secret service credential ref must be linux-secret-service://<service>/<account>"
@@ -156,14 +158,13 @@ impl SecretProvider for SecretServiceSecretProvider {
 
     fn resolve(&self, credential_ref: &ExternalRef) -> Result<ProviderSecretMaterial> {
         let parsed = SecretServiceCredentialRef::parse(credential_ref.as_str())?;
-        let bytes = service::read_item(parsed.service(), parsed.account())?
-            .ok_or_else(|| {
-                WorkcellError::Unavailable(format!(
-                    "secret service entry not found: {SECRET_SERVICE_REF_SCHEME}{}/{}/",
-                    parsed.service(),
-                    parsed.account()
-                ))
-            })?;
+        let bytes = service::read_item(parsed.service(), parsed.account())?.ok_or_else(|| {
+            WorkcellError::Unavailable(format!(
+                "secret service entry not found: {SECRET_SERVICE_REF_SCHEME}{}/{}/",
+                parsed.service(),
+                parsed.account()
+            ))
+        })?;
         let value = String::from_utf8(bytes).map_err(|_| {
             WorkcellError::Unavailable(
                 "secret service entry is not UTF-8 material; refusing to materialise opaque bytes"
@@ -207,7 +208,7 @@ mod service {
 
     use epilogos_workcell_core::{Result, WorkcellError};
     use zbus::zvariant::{ObjectPath, OwnedObjectPath, Value};
-    use zbus::{proxy, blocking::Connection};
+    use zbus::{blocking::Connection, proxy};
 
     use crate::SECRET_SERVICE_SCHEMA_ATTRIBUTE;
 
@@ -277,9 +278,7 @@ mod service {
         })
     }
 
-    fn open_session(
-        service: &SecretServiceApiProxyBlocking<'_>,
-    ) -> Result<OwnedObjectPath> {
+    fn open_session(service: &SecretServiceApiProxyBlocking<'_>) -> Result<OwnedObjectPath> {
         let (_, session) = service
             .open_session("plain", Value::from(""))
             .map_err(|error| unavailable("session could not be opened", error))?;
@@ -375,7 +374,12 @@ mod service {
         let (item_path, prompt_path) = collection
             .create_item(
                 properties,
-                (session, Vec::new(), material.to_vec(), "text/plain".to_owned()),
+                (
+                    session,
+                    Vec::new(),
+                    material.to_vec(),
+                    "text/plain".to_owned(),
+                ),
                 true,
             )
             .map_err(|error| unavailable("item could not be stored", error))?;
@@ -469,10 +473,9 @@ mod tests {
 
     #[test]
     fn credential_ref_parses_scheme_and_segments() {
-        let parsed = SecretServiceCredentialRef::parse(
-            "linux-secret-service://workcell/op-service-account",
-        )
-        .unwrap();
+        let parsed =
+            SecretServiceCredentialRef::parse("linux-secret-service://workcell/op-service-account")
+                .unwrap();
         assert_eq!(parsed.service(), "workcell");
         assert_eq!(parsed.account(), "op-service-account");
     }
@@ -481,7 +484,9 @@ mod tests {
     fn credential_ref_rejects_wrong_scheme_and_bad_shapes() {
         assert!(SecretServiceCredentialRef::parse("keychain://svc/acct").is_err());
         assert!(SecretServiceCredentialRef::parse("linux-secret-service://only-service").is_err());
-        assert!(SecretServiceCredentialRef::parse("linux-secret-service://svc/acct/extra").is_err());
+        assert!(
+            SecretServiceCredentialRef::parse("linux-secret-service://svc/acct/extra").is_err()
+        );
         assert!(SecretServiceCredentialRef::parse("linux-secret-service:// /acct").is_err());
         assert!(SecretServiceCredentialRef::new("bad service", "acct").is_err());
         assert!(SecretServiceCredentialRef::new("svc", "bad/acct").is_err());
@@ -502,7 +507,10 @@ mod tests {
     #[test]
     fn provider_carries_stable_ref_and_acl_story() {
         let provider = SecretServiceSecretProvider::new().unwrap();
-        assert_eq!(provider.provider_ref().as_str(), SECRET_SERVICE_PROVIDER_REF);
+        assert_eq!(
+            provider.provider_ref().as_str(),
+            SECRET_SERVICE_PROVIDER_REF
+        );
         let acl = provider.acl_policy();
         assert!(acl.contains("default (login) collection"));
         assert!(acl.contains("never synced"));
@@ -586,9 +594,8 @@ mod tests {
                 .as_nanos()
         );
         let service_name = "workcell-secret-service-test";
-        let credential = secret_service_ref(&format!(
-            "linux-secret-service://{service_name}/{unique}"
-        ));
+        let credential =
+            secret_service_ref(&format!("linux-secret-service://{service_name}/{unique}"));
         let provider = SecretServiceSecretProvider::new().unwrap();
 
         store_bootstrap_material(&provider, &credential, b"roundtrip-fixture-material").unwrap();

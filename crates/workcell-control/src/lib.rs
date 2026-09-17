@@ -16,8 +16,8 @@ pub use grants::{
     ConnectionGrants, CreateOutcome, GrantDecision, CONNECTIONS_DIRECTORY, GRANTS_FILE,
 };
 pub use machines::{
-    RemoteMachineDeclaration, RemoteMachineRegistry, MACHINE_CREDENTIAL_SCHEMES, MACHINES_FILE,
-    MACHINES_SCHEMA,
+    RemoteMachineDeclaration, RemoteMachineRegistry, MACHINES_FILE, MACHINES_SCHEMA,
+    MACHINE_CREDENTIAL_SCHEMES,
 };
 pub use network::{TcpControlServer, TcpControlTransport};
 pub use projections::{

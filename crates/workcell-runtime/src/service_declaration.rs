@@ -628,10 +628,8 @@ mod tests {
 
     #[test]
     fn an_unknown_execution_kind_is_refused() {
-        let error = parse_service_declarations(
-            r#"{"execution":[{"kind":"hypervisor-mystery"}]}"#,
-        )
-        .unwrap_err();
+        let error = parse_service_declarations(r#"{"execution":[{"kind":"hypervisor-mystery"}]}"#)
+            .unwrap_err();
         assert!(
             error.to_string().contains("unknown kind"),
             "unexpected error: {error}"
