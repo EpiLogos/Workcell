@@ -22,6 +22,12 @@ use epilogos_workcell_core::{
     ServiceMaterialRequest, ServiceProvider, WorkcellError,
 };
 
+pub mod probe;
+
+pub use probe::{
+    classify_listen_output, probe_live_share, LiveShareState, ProbeTransport, SshProbeTransport,
+};
+
 pub const SMB_SHARE_PROVIDER_REF: &str = "provider:fileshare-smb";
 
 /// Loopback plus the Tailscale IPv4 and IPv6 ranges. Nothing else may talk to

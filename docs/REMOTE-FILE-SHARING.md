@@ -113,6 +113,13 @@ ssh <alias> ss -tln | grep 445       the LISTEN line — see design law above
 sftp <user>@<host>                   terminal-side SFTP; separates server faults from Finder faults
 ```
 
+The LISTEN line reads itself programmatically too:
+`epilogos_workcell_fileshare::probe_live_share` over an `SshProbeTransport`
+returns the named state — `served`, `loopback-only`, `not-listening`,
+`unreachable` — instead of making you parse LISTEN lines. It is an evidence
+probe over the SSH alias, deliberately not a control API, and deliberately
+separate from the provider's disk-truth `observe`.
+
 Write probe one-liners in bash or quote defensively: under zsh, `set -- $var`
 does not word-split, and a broken loop made a healthy port read as closed once
 already (2026-09-16). A false "closed" costs more than the quoting.
