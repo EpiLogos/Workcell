@@ -5577,7 +5577,7 @@ fn secret_deliver(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellEr
     let request = SecretMaterialisationRequest {
         credential_ref: ExternalRef::new(&record.credential_ref).map_err(WorkcellError::from)?,
         provider_ref: origin_provider.provider_ref().clone(),
-        binding_ref: BindingRef::new(&format!("binding:{binding_name}"))
+        binding_ref: BindingRef::new(format!("binding:{binding_name}"))
             .map_err(WorkcellError::from)?,
         consumer_ref: ExternalRef::new("agent-session:secret-deliver")
             .map_err(WorkcellError::from)?,

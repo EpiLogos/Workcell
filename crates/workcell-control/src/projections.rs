@@ -374,7 +374,7 @@ impl SecretProjectionLedger {
         let mut records = Vec::new();
         if let Some(projections) = file.get("projections").and_then(Value::as_object) {
             for (projection_ref, value) in projections {
-                let mut record = SecretProjectionRecord::from_json(value)?;
+                let record = SecretProjectionRecord::from_json(value)?;
                 if record.projection_ref != *projection_ref {
                     return Err(WorkcellError::Unavailable(format!(
                         "secret projection ledger key `{projection_ref}` does not match its record ref `{}`",

@@ -158,7 +158,7 @@ impl SecretProvider for SecretServiceSecretProvider {
 
     fn resolve(&self, credential_ref: &ExternalRef) -> Result<ProviderSecretMaterial> {
         let parsed = SecretServiceCredentialRef::parse(credential_ref.as_str())?;
-        let bytes = service::read_item(parsed.service(), parsed.account())?.ok_or_else(|| {
+        let bytes = service::read_item(parsed.attributes())?.ok_or_else(|| {
             WorkcellError::Unavailable(format!(
                 "secret service entry not found: {SECRET_SERVICE_REF_SCHEME}{}/{}/",
                 parsed.service(),
@@ -193,13 +193,13 @@ pub fn store_bootstrap_material(
         ));
     }
     let parsed = SecretServiceCredentialRef::parse(credential_ref.as_str())?;
-    service::write_item(parsed.service(), parsed.account(), material)
+    service::write_item(parsed.attributes(), material)
 }
 
 /// Remove bootstrap material. Intended for rotation flows and test cleanup.
 pub fn remove_bootstrap_material(credential_ref: &ExternalRef) -> Result<()> {
     let parsed = SecretServiceCredentialRef::parse(credential_ref.as_str())?;
-    service::delete_item(parsed.service(), parsed.account())
+    service::delete_item(parsed.attributes())
 }
 
 #[cfg(target_os = "linux")]
@@ -301,7 +301,9 @@ mod service {
         Ok(items.into_iter().next())
     }
 
-    pub fn read_item(service_name: &str, account: &str) -> Result<Option<Vec<u8>>> {
+    pub fn read_item(
+        attributes: std::collections::HashMap<String, String>,
+    ) -> Result<Option<Vec<u8>>> {
         let connection = connect()?;
         let service_proxy = SecretServiceApiProxyBlocking::builder(&connection)
             .build()
@@ -314,14 +316,6 @@ mod service {
             .build()
             .map_err(|error| unavailable("collection proxy could not be built", error))?;
 
-        let attributes = HashMap::from([
-            (
-                SECRET_SERVICE_SCHEMA_ATTRIBUTE.to_owned(),
-                crate::SECRET_SERVICE_SCHEMA.to_owned(),
-            ),
-            ("service".to_owned(), service_name.to_owned()),
-            ("account".to_owned(), account.to_owned()),
-        ]);
         let Some(item_path) = find_item(&collection, &attributes)? else {
             return Ok(None);
         };
@@ -340,7 +334,10 @@ mod service {
         Ok(Some(value))
     }
 
-    pub fn write_item(service_name: &str, account: &str, material: &[u8]) -> Result<()> {
+    pub fn write_item(
+        attributes: std::collections::HashMap<String, String>,
+        material: &[u8],
+    ) -> Result<()> {
         let connection = connect()?;
         let service_proxy = SecretServiceApiProxyBlocking::builder(&connection)
             .build()
@@ -353,14 +350,12 @@ mod service {
             .build()
             .map_err(|error| unavailable("collection proxy could not be built", error))?;
 
-        let attributes = HashMap::from([
-            (
-                SECRET_SERVICE_SCHEMA_ATTRIBUTE.to_owned(),
-                crate::SECRET_SERVICE_SCHEMA.to_owned(),
-            ),
-            ("service".to_owned(), service_name.to_owned()),
-            ("account".to_owned(), account.to_owned()),
-        ]);
+        let service_name = attributes
+            .get("service")
+            .expect("the shared ref constructor always carries the service attribute");
+        let account = attributes
+            .get("account")
+            .expect("the shared ref constructor always carries the account attribute");
         let properties = HashMap::from([
             (
                 "org.freedesktop.Secret.Item.Label".to_owned(),
@@ -395,7 +390,7 @@ mod service {
         Ok(())
     }
 
-    pub fn delete_item(service_name: &str, account: &str) -> Result<()> {
+    pub fn delete_item(attributes: std::collections::HashMap<String, String>) -> Result<()> {
         let connection = connect()?;
         let service_proxy = SecretServiceApiProxyBlocking::builder(&connection)
             .build()
@@ -407,14 +402,6 @@ mod service {
             .build()
             .map_err(|error| unavailable("collection proxy could not be built", error))?;
 
-        let attributes = HashMap::from([
-            (
-                SECRET_SERVICE_SCHEMA_ATTRIBUTE.to_owned(),
-                crate::SECRET_SERVICE_SCHEMA.to_owned(),
-            ),
-            ("service".to_owned(), service_name.to_owned()),
-            ("account".to_owned(), account.to_owned()),
-        ]);
         let Some(item_path) = find_item(&collection, &attributes)? else {
             // Deleting an absent item is already the desired state.
             return Ok(());
@@ -450,15 +437,20 @@ mod service {
         ))
     }
 
-    pub fn read_item(_service: &str, _account: &str) -> Result<Option<Vec<u8>>> {
+    pub fn read_item(
+        _attributes: std::collections::HashMap<String, String>,
+    ) -> Result<Option<Vec<u8>>> {
         Err(linux_only("resolve"))
     }
 
-    pub fn write_item(_service: &str, _account: &str, _material: &[u8]) -> Result<()> {
+    pub fn write_item(
+        _attributes: std::collections::HashMap<String, String>,
+        _material: &[u8],
+    ) -> Result<()> {
         Err(linux_only("store"))
     }
 
-    pub fn delete_item(_service: &str, _account: &str) -> Result<()> {
+    pub fn delete_item(_attributes: std::collections::HashMap<String, String>) -> Result<()> {
         Err(linux_only("delete"))
     }
 }

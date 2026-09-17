@@ -246,7 +246,6 @@ mod tests {
     struct ProjectionGrant {
         provider: StatefulOriginProvider,
         broker: OpenSandboxCredentialBroker<ProjectionTransport>,
-        transport: ProjectionTransport,
         projection: SecretProjectionRequest,
         request: SecretMaterialisationRequest,
         policy: BrokerPolicy,
@@ -319,7 +318,6 @@ mod tests {
         ProjectionGrant {
             provider,
             broker,
-            transport,
             projection,
             request,
             policy,
@@ -526,7 +524,7 @@ mod tests {
     fn clone_allocation(allocation: &ProviderAllocation) -> ProviderAllocation {
         ProviderAllocation {
             provider_ref: allocation.provider_ref.clone(),
-            port: allocation.port.clone(),
+            port: allocation.port,
             material_ref: allocation.material_ref.clone(),
             health: allocation.health.clone(),
             properties: allocation.properties.clone(),

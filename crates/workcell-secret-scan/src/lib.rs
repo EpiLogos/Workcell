@@ -411,9 +411,7 @@ pub fn standard_targets(home: &std::path::Path) -> Vec<(std::path::PathBuf, Auth
         .iter()
         .map(|name| (home.join(name), AuthFileShape::KeyValue))
         .collect();
-    for name in [".netrc"] {
-        targets.push((home.join(name), AuthFileShape::Netrc));
-    }
+    targets.push((home.join(".netrc"), AuthFileShape::Netrc));
     let auth_files = [
         ".pi/agent/auth.json",
         ".openai/auth.json",
