@@ -9,6 +9,10 @@ This document is also the runbook for the acceptance campaign's §5 two-machine
 case list (`O-I docs/CONTEXT-FRAME-ACCEPTANCE-CAMPAIGN.md` §5). Each case maps
 to the commands whose output proves it, with the evidence fields named.
 
+For human-facing file access to a cell's machine — Finder over the tailnet —
+see `REMOTE-FILE-SHARING.md`. That surface is deliberately outside the control
+protocol: it serves a person at a desktop, not an agent at a Workcell seam.
+
 ## The surface
 
 ```text

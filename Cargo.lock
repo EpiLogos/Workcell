@@ -223,6 +223,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "epilogos-workcell-fileshare"
+version = "0.1.0"
+dependencies = [
+ "epilogos-workcell-core",
+ "epilogos-workcell-sdk",
+]
+
+[[package]]
 name = "epilogos-workcell-interop"
 version = "0.1.0"
 dependencies = [

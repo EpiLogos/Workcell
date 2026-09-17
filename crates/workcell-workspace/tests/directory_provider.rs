@@ -13,12 +13,17 @@ use epilogos_workcell_core::{
 use epilogos_workcell_workspace::DirectoryWorkspaceProvider;
 
 fn temp_path(label: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
+    // A process-wide counter: tests in one binary share a pid, and a loaded
+    // run can quantise two same-instant calls onto one clock tick.
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "epilogos-workcell-{label}-{}-{nonce}",
+        "epilogos-workcell-{label}-{}-{nonce}-{seq}",
         std::process::id()
     ))
 }
