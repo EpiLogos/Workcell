@@ -210,8 +210,6 @@ mod service {
     use zbus::zvariant::{ObjectPath, OwnedObjectPath, Value};
     use zbus::{blocking::Connection, proxy};
 
-    use crate::SECRET_SERVICE_SCHEMA_ATTRIBUTE;
-
     #[proxy(
         interface = "org.freedesktop.Secret.Service",
         default_service = "org.freedesktop.secrets",
@@ -381,9 +379,7 @@ mod service {
         if prompt_path.as_str() != "/" {
             return Err(unavailable(
                 "storing requires an interactive collection-unlock prompt; unlock the default keyring and retry",
-                ObjectPath::try_from(prompt_path)
-                    .map(|path| format!("prompt {path}"))
-                    .unwrap_or_else(|_| "an unlock prompt".to_owned()),
+                format!("prompt {}", ObjectPath::from(prompt_path)),
             ));
         }
         debug_assert!(!item_path.as_str().is_empty());
@@ -418,9 +414,7 @@ mod service {
         if prompt_path.as_str() != "/" {
             return Err(unavailable(
                 "deletion requires an interactive prompt; unlock the default keyring and retry",
-                ObjectPath::try_from(prompt_path)
-                    .map(|path| format!("prompt {path}"))
-                    .unwrap_or_else(|_| "a deletion prompt".to_owned()),
+                format!("prompt {}", ObjectPath::from(prompt_path)),
             ));
         }
         Ok(())
