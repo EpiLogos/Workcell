@@ -121,7 +121,11 @@ where
         loop {
             let (mut stream, _) = self.listener.accept()?;
             if let Err(error) = self.handle_stream(&mut stream) {
-                eprintln!("workcell control connection failed: {error}");
+                // A per-connection failure is the daemon's ordinary weather:
+                // clients time out, reset, or vanish mid-frame. Diagnostics
+                // are best-effort — a closed or full stderr must never panic
+                // the writer and kill a serving listener.
+                let _ = writeln!(io::stderr(), "workcell control connection failed: {error}");
             }
         }
     }

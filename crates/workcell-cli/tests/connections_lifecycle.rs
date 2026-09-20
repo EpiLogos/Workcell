@@ -79,6 +79,19 @@ fn spawn_server(server_root: &Path, listen: &str) -> (std::process::Child, Strin
     let mut piped = child.stderr.take().expect("piped stderr");
     loop {
         if let Some(address) = endpoint_from_stderr(&stderr) {
+            // Keep draining the daemon's stderr on a background thread.
+            // Dropping the read end here would make the daemon's next
+            // diagnostic write fail with EPIPE — and a `println!`-family
+            // macro panics on a failed write, killing the process under
+            // test for the crime of being logged to.
+            thread::spawn(move || {
+                let mut sink = [0u8; 1024];
+                while let Ok(read) = piped.read(&mut sink) {
+                    if read == 0 {
+                        break;
+                    }
+                }
+            });
             return (child, address);
         }
         if std::time::Instant::now() > deadline {
@@ -678,6 +691,54 @@ fn connect_without_a_grant_is_refused_and_says_how_to_fix_it() {
     assert_eq!(shown["connection"]["state"], "refused");
     // The refused record carries no remote identity.
     assert!(shown["connection"]["remote_workcell_ref"].is_null());
+
+    server.kill().unwrap();
+    let _ = server.wait();
+    let _ = fs::remove_dir_all(root);
+}
+#[test]
+fn a_failed_connection_never_kills_a_serving_daemon_with_a_closed_stderr() {
+    // Regression for the CI serve-dies race (#94): once a harness stops
+    // reading a daemon's stderr, any diagnostic write would EPIPE-panic
+    // `eprintln!` and kill the listener. One bad connection — an oversized
+    // frame declared and abandoned — must not end the daemon; the next
+    // real request must still be answered (an application-level refusal,
+    // not a transport failure).
+    let root = temp_path("stderr-resilience");
+    let server_root = root.join("server");
+    let client_root = root.join("client");
+    fs::create_dir_all(&client_root).unwrap();
+
+    let (mut server, endpoint) = spawn_server(&server_root, "127.0.0.1:0");
+
+    // Intentionally drop the daemon's stderr read end, the way a harness
+    // that stops reading after disclosure would.
+    drop(server.stderr.take());
+
+    let mut bad = std::net::TcpStream::connect(&endpoint).unwrap();
+    // Declare a frame far above the transport limit, then hang up without
+    // sending it: a per-connection failure on the daemon side.
+    std::io::Write::write_all(&mut bad, &0x7fff_ffff_u32.to_be_bytes()).unwrap();
+    drop(bad);
+    thread::sleep(Duration::from_millis(200));
+
+    // The daemon must still answer: a bogus credential gets the
+    // application-level refusal, not a transport failure.
+    let stranger = run(&connect_args(
+        &client_root,
+        &endpoint,
+        "stranger",
+        "wck_not_a_real_credential",
+    ));
+    assert!(
+        !stranger.status.success(),
+        "an unauthorised connect must still be refused by the living daemon"
+    );
+    let stderr = String::from_utf8_lossy(&stranger.stderr);
+    assert!(
+        stderr.contains("no active connection grant matches"),
+        "the daemon must answer at the application level, got: {stderr}"
+    );
 
     server.kill().unwrap();
     let _ = server.wait();
