@@ -87,9 +87,13 @@ fn service(
 }
 
 fn request() -> ServiceMaterialRequest {
+    request_with("service:existing-gateway")
+}
+
+fn request_with(connection: &str) -> ServiceMaterialRequest {
     ServiceMaterialRequest {
         demand_ref: DemandRef::new("demand:external-service").unwrap(),
-        connection: LogicalConnectionRequirement::new("service:existing-gateway").unwrap(),
+        connection: LogicalConnectionRequirement::new(connection).unwrap(),
         persistence: Some(epilogos_workcell_core::PersistenceScope::Project),
         retention: RetentionExpectation::Release,
     }
@@ -171,6 +175,145 @@ fn observe_existing_never_takes_ownership_of_target_configuration_or_lifecycle()
         .unwrap();
     assert!(!released.changed);
     assert!(state.exists(), "target-owned service must remain running");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+fn executable(path: &Path) {
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).unwrap();
+}
+
+#[test]
+fn ensure_running_polls_a_slow_start_instead_of_refusing_one_sample() {
+    let root = temp_root("slow-start");
+    fs::create_dir_all(&root).unwrap();
+    // The start command returns immediately; the material it launches only
+    // becomes healthy ~600ms later. One probe taken right after start would
+    // mistake that launch for a failure.
+    let script = root.join("slow-service.sh");
+    let state = root.join("running");
+    fs::write(
+        &script,
+        r#"#!/bin/sh
+set -eu
+case "$1" in
+  status|ready) test -f "$TARGET_STATE" ;;
+  start) ( sleep 0.6; : > "$TARGET_STATE" ) & ;;
+  stop) rm -f "$TARGET_STATE" ;;
+  *) exit 64 ;;
+esac
+"#,
+    )
+    .unwrap();
+    executable(&script);
+
+    let mut provider = ExternalManagedServiceProvider::new(
+        ProviderRef::new("provider:external-service-fixture").unwrap(),
+        [ExternalManagedService::new(
+            "service:slow-gateway",
+            "target-native://slow-gateway",
+            command(&script, &state, "status"),
+        )
+        .unwrap()
+        .with_readiness(command(&script, &state, "ready"))
+        .with_start(command(&script, &state, "start"))
+        .with_stop(command(&script, &state, "stop"))
+        .with_acquisition(ExternalServiceAcquisition::EnsureRunning)
+        .with_readiness_timing(5_000, 50)],
+    )
+    .unwrap();
+
+    let allocation = provider
+        .resolve_service(&request_with("service:slow-gateway"))
+        .unwrap();
+    assert_eq!(
+        allocation
+            .properties
+            .get("started_by_provider")
+            .map(String::as_str),
+        Some("true"),
+        "a start that becomes healthy inside the window must be owned"
+    );
+    let released = provider
+        .release_service(&allocation, &RetentionExpectation::Release)
+        .unwrap();
+    assert!(released.changed);
+    assert!(
+        !state.exists(),
+        "release must stop what ensure-running started"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_start_that_never_becomes_healthy_is_stopped_not_leaked() {
+    let root = temp_root("never-ready");
+    fs::create_dir_all(&root).unwrap();
+    let script = root.join("never-ready-service.sh");
+    let state = root.join("running");
+    let rolled_back = root.join("rolled-back");
+    fs::write(
+        &script,
+        r#"#!/bin/sh
+set -eu
+case "$1" in
+  status|ready) exit 1 ;;
+  start) : > "$DECOY_STATE" ;;
+  stop) : > "$ROLLED_BACK_STATE" ;;
+  *) exit 64 ;;
+esac
+"#,
+    )
+    .unwrap();
+    executable(&script);
+
+    let target_state = state.to_string_lossy().to_string();
+    let decoy = root.join("decoy").to_string_lossy().to_string();
+    let rollback_marker = rolled_back.to_string_lossy().to_string();
+    let op = |operation: &str| {
+        ExternalServiceCommand::new(script.to_string_lossy().to_string())
+            .unwrap()
+            .with_arg(operation)
+            .with_env("TARGET_STATE", target_state.clone())
+            .unwrap()
+            .with_env("DECOY_STATE", decoy.clone())
+            .unwrap()
+            .with_env("ROLLED_BACK_STATE", rollback_marker.clone())
+            .unwrap()
+    };
+    let mut provider = ExternalManagedServiceProvider::new(
+        ProviderRef::new("provider:external-service-fixture").unwrap(),
+        [ExternalManagedService::new(
+            "service:never-ready",
+            "target-native://never-ready",
+            op("status"),
+        )
+        .unwrap()
+        .with_start(op("start"))
+        .with_stop(op("stop"))
+        .with_acquisition(ExternalServiceAcquisition::EnsureRunning)
+        .with_readiness_timing(1_000, 50)],
+    )
+    .unwrap();
+
+    let request = ServiceMaterialRequest {
+        demand_ref: DemandRef::new("demand:external-service").unwrap(),
+        connection: LogicalConnectionRequirement::new("service:never-ready").unwrap(),
+        persistence: None,
+        retention: RetentionExpectation::Release,
+    };
+    let error = provider.resolve_service(&request).unwrap_err();
+    assert!(
+        format!("{error}").contains("readiness window"),
+        "the refusal must name the exhausted window, got: {error}"
+    );
+    assert!(
+        rolled_back.exists(),
+        "the declared stop must run when the window is exhausted: a refused allocation must not leak the process it started"
+    );
 
     let _ = fs::remove_dir_all(root);
 }

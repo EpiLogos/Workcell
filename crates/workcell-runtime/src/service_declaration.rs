@@ -344,6 +344,19 @@ fn parse_service(entry: &Value) -> Result<DeclaredServices> {
             let mut service = ExternalManagedService::new(&logical_ref, &endpoint, status)?;
             if let Some(value) = object.get("readiness") {
                 service = service.with_readiness(parse_command(&logical_ref, "readiness", value)?);
+                let timeout_ms = value.get("timeout_ms").and_then(Value::as_u64);
+                let interval_ms = value.get("interval_ms").and_then(Value::as_u64);
+                match (timeout_ms, interval_ms) {
+                    (Some(timeout), Some(interval)) => {
+                        service = service.with_readiness_timing(timeout, interval);
+                    }
+                    (None, None) => {}
+                    _ => {
+                        return Err(WorkcellError::InvalidDemand(format!(
+                            "declared service `{logical_ref}` readiness needs both `timeout_ms` and `interval_ms`"
+                        )))
+                    }
+                }
             }
             if let Some(value) = object.get("start") {
                 service = service.with_start(parse_command(&logical_ref, "start", value)?);
