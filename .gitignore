@@ -1,3 +1,6 @@
 /target/
 /.ci-helper/
 /.central/
+
+# Agent NOW field: session returns and episode evidence are moving state, never source
+ProjectCentral/agents/now/
