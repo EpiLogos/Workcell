@@ -110,6 +110,8 @@ pub struct ExternalManagedService {
     pub stop: Option<ExternalServiceCommand>,
     pub restart: Option<ExternalServiceCommand>,
     pub acquisition: ExternalServiceAcquisition,
+    pub readiness_timeout_ms: Option<u64>,
+    pub readiness_interval_ms: Option<u64>,
     pub metadata: BTreeMap<String, String>,
 }
 
@@ -140,6 +142,8 @@ impl ExternalManagedService {
             stop: None,
             restart: None,
             acquisition: ExternalServiceAcquisition::ObserveExisting,
+            readiness_timeout_ms: None,
+            readiness_interval_ms: None,
             metadata: BTreeMap::new(),
         })
     }
@@ -153,6 +157,16 @@ impl ExternalManagedService {
 
     pub fn with_readiness(mut self, command: ExternalServiceCommand) -> Self {
         self.readiness = Some(command);
+        self
+    }
+
+    /// How long a command probe may keep polling before the service is
+    /// called not ready. A start command usually returns before the
+    /// material it launches is reachable, so the window must cover the
+    /// launch, not just the probe itself.
+    pub fn with_readiness_timing(mut self, timeout_ms: u64, interval_ms: u64) -> Self {
+        self.readiness_timeout_ms = Some(timeout_ms);
+        self.readiness_interval_ms = Some(interval_ms);
         self
     }
 
@@ -469,9 +483,20 @@ impl ServiceProvider for ExternalManagedServiceProvider {
                     }
                     run_required(start, "start external service")?;
                     started_by_provider = true;
-                    if run_probe(&service.status) == HealthState::Unavailable {
+                    if !probe_becomes_healthy(
+                        &service.status,
+                        service.readiness_timeout_ms,
+                        service.readiness_interval_ms,
+                    ) {
+                        // A refused allocation must not leak the process it
+                        // started: run the declared stop best-effort and name
+                        // the exhausted window instead of leaving material
+                        // nothing can release.
+                        if let Some(stop) = &service.stop {
+                            let _ = stop.run();
+                        }
                         return Err(WorkcellError::Unavailable(format!(
-                            "logical service `{logical_ref}` remained unavailable after target-native start"
+                            "logical service `{logical_ref}` remained unavailable after target-native start within its readiness window; stopped the started process"
                         )));
                     }
                 }
@@ -479,7 +504,11 @@ impl ServiceProvider for ExternalManagedServiceProvider {
         }
 
         if let Some(readiness) = &service.readiness {
-            if run_probe(readiness) == HealthState::Unavailable {
+            if !probe_becomes_healthy(
+                readiness,
+                service.readiness_timeout_ms,
+                service.readiness_interval_ms,
+            ) {
                 return Err(WorkcellError::Unavailable(format!(
                     "logical service `{logical_ref}` is running but not ready"
                 )));
@@ -575,6 +604,32 @@ fn run_probe(command: &ExternalServiceCommand) -> HealthState {
         Ok(status) if status.success() => HealthState::Healthy,
         Ok(_) => HealthState::Unavailable,
         Err(_) => HealthState::Unavailable,
+    }
+}
+
+/// Default polling bounds for a command probe whose declaration does not
+/// state its own window: long enough for a detached daemon to bind, short
+/// enough that a genuinely failed start is still refused promptly.
+const DEFAULT_READINESS_WINDOW_MS: u64 = 5_000;
+const DEFAULT_READINESS_INTERVAL_MS: u64 = 200;
+
+fn probe_becomes_healthy(
+    command: &ExternalServiceCommand,
+    timeout_ms: Option<u64>,
+    interval_ms: Option<u64>,
+) -> bool {
+    let window = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_READINESS_WINDOW_MS));
+    let interval = Duration::from_millis(interval_ms.unwrap_or(DEFAULT_READINESS_INTERVAL_MS));
+    let deadline = Instant::now() + window;
+    loop {
+        if run_probe(command) == HealthState::Healthy {
+            return true;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        thread::sleep(interval.min(deadline - now));
     }
 }
 
