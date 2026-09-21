@@ -378,3 +378,104 @@ fn unknown_flags_are_named_as_options_not_commands() {
         "a bare token stays a command: {stderr}"
     );
 }
+
+#[test]
+fn workcell_target_secret_projection_is_refused_at_record_time() {
+    let state = temp_path("secret-project-workcell-refused");
+    let refused = run(&[
+        "--state-root",
+        path_arg(&state),
+        "--workcell-ref",
+        "workcell:owner-machine-test",
+        "secret",
+        "project",
+        "--name",
+        "blocked-workcell-projection",
+        "--to-workcell",
+        "workcell:remote-cell",
+        "--connection",
+        "cell-relation-test",
+        "--credential-ref",
+        "secret-ref:test-credential",
+        "--source-provider",
+        "provider:keychain",
+        "--class",
+        "credential-broker",
+        "--purpose",
+        "cross-cell-relation-test",
+        "--scope",
+        "scope:test",
+        "--by",
+        "agent:test",
+    ]);
+    assert!(
+        !refused.status.success(),
+        "a workcell-target projection must refuse instead of recording a grant"
+    );
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("not yet materialisable"),
+        "the refusal names the target as not yet materialisable: {stderr}"
+    );
+    assert!(
+        stderr.contains("--to-sandbox"),
+        "the refusal names sandbox-target projections as the materialisable path: {stderr}"
+    );
+    assert!(
+        stderr.contains("revoke-projection"),
+        "the refusal points at the ledger/revoke surface: {stderr}"
+    );
+    assert!(
+        !state.join("secrets").join("projections.json").exists(),
+        "no durable grant may be recorded for a workcell target"
+    );
+
+    let _ = fs::remove_dir_all(state);
+}
+
+#[test]
+fn sandboxes_reconcile_no_longer_accepts_a_raw_api_key() {
+    // The raw literal is refused as an unknown flag, before any connection.
+    let refused = run(&[
+        "sandboxes",
+        "reconcile",
+        "--server",
+        "http://127.0.0.1:9",
+        "--api-key",
+        "test-only-marker-not-a-secret",
+    ]);
+    assert!(!refused.status.success());
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("unknown sandboxes reconcile flag `--api-key`"),
+        "the raw credential flag is gone: {stderr}"
+    );
+
+    // The usage no longer advertises a literal key, and keeps the env form.
+    let usage = run(&["sandboxes", "reconcile"]);
+    assert!(!usage.status.success());
+    let usage_text = String::from_utf8_lossy(&usage.stderr);
+    assert!(
+        !usage_text.contains("--api-key <key>"),
+        "usage must not advertise a raw key literal: {usage_text}"
+    );
+    assert!(
+        usage_text.contains("--api-key-env <ENV>"),
+        "usage keeps the environment-variable form: {usage_text}"
+    );
+
+    // The environment form still parses (failure here is the missing server,
+    // not an unknown flag).
+    let env_form = run(&[
+        "sandboxes",
+        "reconcile",
+        "--api-key-env",
+        "WORKCELL_TEST_KEY_ENV",
+    ]);
+    assert!(!env_form.status.success());
+    let env_text = String::from_utf8_lossy(&env_form.stderr);
+    assert!(
+        env_text.contains("--server <url>"),
+        "`--api-key-env` still parses; the failure is the missing server: {env_text}"
+    );
+}

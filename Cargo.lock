@@ -377,6 +377,7 @@ dependencies = [
  "epilogos-workcell-control",
  "epilogos-workcell-core",
  "epilogos-workcell-keychain",
+ "epilogos-workcell-onepassword",
  "epilogos-workcell-opensandbox",
  "epilogos-workcell-runtime",
  "epilogos-workcell-secret-scan",
