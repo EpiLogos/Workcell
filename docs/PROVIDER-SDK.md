@@ -74,12 +74,19 @@ author's proof should not cost the SDK anything.
 
 ## Admission boundary
 
-Proving a provider through the SDK is conformance, not installation. Whether
-a provider is *registered into a Workcell composition* — so that planning
-can select it for ordinary demands — is decided by the runtime composition
-(`workcell-runtime` / `workcell-cli`), and that registration is Workcell
-owner work: see the OpenSandbox precedent
-(`OPENSANDBOX-SOURCE-INTEGRATION.md`, including the composition-registration
-step that turned a conforming provider into a selectable one). An external
-provider ships its crate and its conformance proof; admission names the
-composition seam it needs.
+Proving a provider through the SDK is conformance; *selection* happens at
+composition. `CollapsedLocalConfig::with_external_execution_provider` is the
+admission seam: the composing host supplies a factory that constructs the
+provider (as `Box<dyn ExecutionProvider>` — boxes implement the ports), and
+the registered provider joins discovery and planning exactly like the
+built-in ports. Duplicate identities are refused by the same law, and a
+failing construction refuses the whole composition rather than starting half
+a Workcell. The proof lives in
+`crates/workcell-runtime/tests/external_provider_registration.rs`: a
+registered external provider is discoverable, and a demand for its affordance
+plans a binding naming its identity.
+
+Whether an ordinary deployment declares your provider is still a decision of
+whoever composes that Workcell (the CLI and Control Service compose from
+their own configuration); the seam makes that a one-line declaration, not a
+runtime change.

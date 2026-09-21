@@ -49,3 +49,36 @@ pub trait ExecutionProvider: ProviderPort {
         retention: &RetentionExpectation,
     ) -> Result<ProviderReleaseResult>;
 }
+
+/// Boxes compose like the providers they hold. This is what lets a host
+/// register an external provider constructed behind a factory without the
+/// runtime knowing its concrete type — the admission seam the provider SDK
+/// names (`docs/PROVIDER-SDK.md`).
+impl<T: ExecutionProvider + ?Sized> ExecutionProvider for Box<T> {
+    fn prepare_execution(
+        &mut self,
+        request: &ExecutionMaterialRequest,
+    ) -> Result<ProviderAllocation> {
+        (**self).prepare_execution(request)
+    }
+
+    fn execute_operation(
+        &mut self,
+        allocation: &ProviderAllocation,
+        operation: &ProviderOperation,
+    ) -> Result<ProviderOperationResult> {
+        (**self).execute_operation(allocation, operation)
+    }
+
+    fn observe_execution(&self, allocation: &ProviderAllocation) -> Result<ProviderObservation> {
+        (**self).observe_execution(allocation)
+    }
+
+    fn release_execution(
+        &mut self,
+        allocation: &ProviderAllocation,
+        retention: &RetentionExpectation,
+    ) -> Result<ProviderReleaseResult> {
+        (**self).release_execution(allocation, retention)
+    }
+}

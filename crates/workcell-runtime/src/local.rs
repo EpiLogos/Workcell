@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::BTreeMap, fs, path::PathBuf, rc::Rc};
+use std::{cell::RefCell, collections::BTreeMap, fs, path::PathBuf, rc::Rc, sync::Arc};
 
 use epilogos_workcell_artifact::DirectoryArtifactStorageProvider;
 use epilogos_workcell_core::{
@@ -36,6 +36,13 @@ pub const TARGET_SERVICE_PROVIDER_REF: &str = "provider:collapsed-local-target-s
 /// Workcell materialises sandbox execution through.
 pub const OPENSANDBOX_PROVIDER_REF: &str = "provider:opensandbox";
 
+/// A factory the composing host supplies for one external execution provider:
+/// conformance (the SDK's testkit) proves the provider; this registration is
+/// what makes planning able to select it. Construction happens at composition
+/// time, and a failing construction refuses the composition honestly.
+pub type ExternalExecutionProviderFactory =
+    Arc<dyn Fn() -> Result<Box<dyn ExecutionProvider>> + Send + Sync>;
+
 /// Where a collapsed-local Workcell reads its operator-declared services.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum ServiceDeclarationSource {
@@ -52,7 +59,7 @@ pub enum ServiceDeclarationSource {
     None,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CollapsedLocalConfig {
     pub workcell_ref: WorkcellRef,
     pub state_root: PathBuf,
@@ -79,6 +86,29 @@ pub struct CollapsedLocalConfig {
     /// unsatisfiable. File declarations (`services.json` `execution` section)
     /// are merged at composition time.
     pub opensandbox: Option<OpenSandboxConfig>,
+    /// Execution providers the composing host brings from its own technology
+    /// — the admission seam the provider SDK names. Registered alongside the
+    /// built-in ports; duplicate identities are refused like any other.
+    pub external_execution: Vec<ExternalExecutionProviderFactory>,
+}
+
+impl std::fmt::Debug for CollapsedLocalConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Factories are opaque code; the Debug surface names how many are
+        // declared, never their contents.
+        f.debug_struct("CollapsedLocalConfig")
+            .field("workcell_ref", &self.workcell_ref)
+            .field("state_root", &self.state_root)
+            .field("workspace_source", &self.workspace_source)
+            .field("artifact_channels", &self.artifact_channels)
+            .field("services", &self.services)
+            .field("service_declaration", &self.service_declaration)
+            .field("host_lifetime", &self.host_lifetime)
+            .field("directories", &self.directories)
+            .field("opensandbox", &self.opensandbox)
+            .field("external_execution", &self.external_execution.len())
+            .finish()
+    }
 }
 
 impl CollapsedLocalConfig {
@@ -93,7 +123,19 @@ impl CollapsedLocalConfig {
             host_lifetime: HostLifetime::OneShotCommand,
             directories: Vec::new(),
             opensandbox: None,
+            external_execution: Vec::new(),
         }
+    }
+
+    /// Register an external execution provider factory. Every provider the
+    /// factories construct joins discovery like the built-in ports; a
+    /// duplicate identity or a failing construction refuses the composition.
+    pub fn with_external_execution_provider(
+        mut self,
+        factory: ExternalExecutionProviderFactory,
+    ) -> Self {
+        self.external_execution.push(factory);
+        self
     }
 
     pub fn with_directory_storage(mut self, directory: DirectoryStorage) -> Self {
@@ -447,6 +489,13 @@ impl CollapsedLocalWorkcell {
         control.register_execution_provider(execution.clone())?;
         if let Some(provider) = &opensandbox {
             control.register_execution_provider(provider.clone())?;
+        }
+        // External providers the host declared: constructed at composition
+        // time, registered like any other port. The control plane refuses a
+        // duplicate identity here with the same law the built-ins answer to.
+        for factory in &config.external_execution {
+            let provider = factory()?;
+            control.register_execution_provider(provider)?;
         }
         control.register_artifact_provider(artifacts.clone())?;
         control.register_service_provider(managed_services.clone())?;

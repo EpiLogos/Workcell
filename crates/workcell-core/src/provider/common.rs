@@ -34,6 +34,20 @@ pub trait ProviderPort {
     fn offers(&self) -> Result<Vec<OperationalOffer>>;
 }
 
+impl<T: ProviderPort + ?Sized> ProviderPort for Box<T> {
+    fn provider_ref(&self) -> &ProviderRef {
+        (**self).provider_ref()
+    }
+
+    fn port_kind(&self) -> ProviderPortKind {
+        (**self).port_kind()
+    }
+
+    fn offers(&self) -> Result<Vec<OperationalOffer>> {
+        (**self).offers()
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderAllocation {
     pub provider_ref: ProviderRef,
