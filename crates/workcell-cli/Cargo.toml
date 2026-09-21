@@ -24,6 +24,7 @@ path = "src/bin/workcell-control-client.rs"
 epilogos-workcell-control = { path = "../workcell-control" }
 epilogos-workcell-core = { path = "../workcell-core" }
 epilogos-workcell-keychain = { path = "../workcell-keychain" }
+epilogos-workcell-onepassword = { path = "../workcell-onepassword" }
 epilogos-workcell-opensandbox = { path = "../workcell-opensandbox" }
 epilogos-workcell-runtime = { path = "../workcell-runtime" }
 epilogos-workcell-secret-scan = { path = "../workcell-secret-scan" }

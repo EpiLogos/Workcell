@@ -7,6 +7,12 @@
 //! connect` resolves the material from this cell's origin secret source at
 //! connect time. No second connection truth, no plaintext in state.
 //!
+//! The declared `operations` are the operator's recorded expectation, and
+//! `workcell connect` puts them to work: drift between the declaration and
+//! the scope the cell actually grants is reported in the connection's
+//! reconciliation notes, in both directions. The grant remains the
+//! authority; the declaration is what makes the drift nameable.
+//!
 //! The store is one JSON file under the workcell state root
 //! (`<state-root>/machines.json`), following the same law as the other
 //! registries: a missing file is an empty registry, an unreadable or invalid

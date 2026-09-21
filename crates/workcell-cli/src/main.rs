@@ -28,6 +28,7 @@ use epilogos_workcell_core::{
 use epilogos_workcell_keychain::{
     store_bootstrap_material as store_keychain_material, KeychainAclPolicy, KeychainSecretProvider,
 };
+use epilogos_workcell_onepassword::{OnePasswordCli, OnePasswordSecretProvider};
 use epilogos_workcell_secret_scan as secret_scan;
 use epilogos_workcell_secret_service::{
     store_bootstrap_material as store_secret_service_material, SecretServiceSecretProvider,
@@ -1743,7 +1744,6 @@ fn command_sandboxes(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
 
     let mut server = None;
     let mut api_key_env = OPENSANDBOX_DEFAULT_API_KEY_ENV.to_owned();
-    let mut api_key = None;
     let mut release_orphans = false;
     let mut include_snapshots = false;
     let mut operator_releases: Vec<String> = Vec::new();
@@ -1756,10 +1756,6 @@ fn command_sandboxes(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
             }
             "--api-key-env" => {
                 api_key_env = require_value(args, index, "--api-key-env")?.to_owned();
-                index += 2;
-            }
-            "--api-key" => {
-                api_key = Some(require_value(args, index, "--api-key")?.to_owned());
                 index += 2;
             }
             "--release-orphans" => {
@@ -1783,16 +1779,16 @@ fn command_sandboxes(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
     }
     let Some(server) = server else {
         return Err(WorkcellError::InvalidDemand(
-            "usage: workcell sandboxes reconcile --server <url> [--api-key-env <ENV>] [--api-key <key>] [--release-orphans] [--release <id>...] [--include-snapshots]".into(),
+            "usage: workcell sandboxes reconcile --server <url> [--api-key-env <ENV>] [--release-orphans] [--release <id>...] [--include-snapshots]".into(),
         ));
     };
-    // Resolution order: literal key wins; then the named environment variable;
-    // otherwise no key is sent (servers without auth accept that).
-    let api_key = api_key.or_else(|| {
-        std::env::var(&api_key_env)
-            .ok()
-            .filter(|value| !value.is_empty())
-    });
+    // The credential enters through the named environment variable when set
+    // and non-empty; otherwise no key is sent (servers without auth accept
+    // that). A raw key literal is not accepted as argv: credentials belong to
+    // their origin store or the environment, never to the command line.
+    let api_key = std::env::var(&api_key_env)
+        .ok()
+        .filter(|value| !value.is_empty());
 
     let reconciler =
         SandboxServerReconciler::new(server.clone(), api_key, StdHttpOpenSandboxTransport);
@@ -2449,6 +2445,34 @@ fn command_connect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellE
                 notes.push(format!(
                     "remote software changed since the last connection: `{previous_software}` -> `{}`; reported only, nothing was updated",
                     remote_software.as_deref().unwrap_or("unknown"),
+                ));
+            }
+        }
+    }
+    // A declared machine records which operations the operator expects this
+    // cell to serve. The grant, not the declaration, is the authority — but
+    // drift between the two is exactly what connect exists to surface, so it
+    // is named in both directions instead of leaving the field decorative.
+    if let Some(machine) = &machine {
+        if !machine.operations.is_empty() {
+            let granted: std::collections::BTreeSet<&str> = granted_operations
+                .iter()
+                .map(String::as_str)
+                .collect();
+            let declared: std::collections::BTreeSet<&str> =
+                machine.operations.iter().map(String::as_str).collect();
+            let unexpected: Vec<&str> = granted.difference(&declared).copied().collect();
+            let withheld: Vec<&str> = declared.difference(&granted).copied().collect();
+            if !unexpected.is_empty() {
+                notes.push(format!(
+                    "the cell grants operations the `{label}` declaration does not expect: {}; the grant is the authority",
+                    unexpected.join(", ")
+                ));
+            }
+            if !withheld.is_empty() {
+                notes.push(format!(
+                    "the `{label}` declaration expects operations the grant does not permit: {}",
+                    withheld.join(", ")
                 ));
             }
         }
@@ -5349,7 +5373,7 @@ fn machine_remove(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellEr
 // into the origin store without ever printing it, and projections record
 // authorised relations (refs, classes, purpose, scope) — never material.
 
-const SECRET_USAGE: &str = "usage: workcell secret scan | vault --from env:NAME|PATH [--select KEY] --ref REF [--provider secret-service|keychain] | project --name LABEL (--to-workcell REF --connection LABEL | --to-sandbox --allocation-ref REF [--sandbox-provider REF]) --credential-ref REF --source-provider REF --class CLASS --purpose P --scope S --by REF | projections | deliver (--name LABEL | --ref PREF) --allocation SANDBOX-ID --route HOST=METHOD [--binding NAME] [--auth bearer|api-key:HEADER] | revoke-projection (--name LABEL | --ref PREF) [--sandbox SANDBOX-ID]";
+const SECRET_USAGE: &str = "usage: workcell secret scan | vault --from env:NAME|PATH [--select KEY] --ref REF [--provider secret-service|keychain] | project --name LABEL --to-sandbox --allocation-ref REF [--sandbox-provider REF] --credential-ref REF --source-provider REF --class CLASS --purpose P --scope S --by REF (workcell targets are not yet materialisable and are refused) | projections | deliver (--name LABEL | --ref PREF) --allocation SANDBOX-ID --route HOST=METHOD [--binding NAME] [--auth bearer|api-key:HEADER] | revoke-projection (--name LABEL | --ref PREF) [--sandbox SANDBOX-ID]";
 
 fn command_secret(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
     let Some(subcommand) = args.first() else {
@@ -5515,12 +5539,14 @@ fn secret_deliver(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellEr
     enum OriginProvider {
         SecretService(SecretServiceSecretProvider),
         Keychain(KeychainSecretProvider),
+        OnePassword(OnePasswordSecretProvider<OnePasswordCli>),
     }
     impl SecretProvider for OriginProvider {
         fn provider_ref(&self) -> &epilogos_workcell_core::ProviderRef {
             match self {
                 Self::SecretService(provider) => provider.provider_ref(),
                 Self::Keychain(provider) => provider.provider_ref(),
+                Self::OnePassword(provider) => provider.provider_ref(),
             }
         }
 
@@ -5531,6 +5557,7 @@ fn secret_deliver(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellEr
             match self {
                 Self::SecretService(provider) => provider.resolve(credential_ref),
                 Self::Keychain(provider) => provider.resolve(credential_ref),
+                Self::OnePassword(provider) => provider.resolve(credential_ref),
             }
         }
     }
@@ -5540,9 +5567,11 @@ fn secret_deliver(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellEr
         OriginProvider::Keychain(KeychainSecretProvider::new(
             KeychainAclPolicy::ThisDeviceUnlocked,
         )?)
+    } else if record.source_provider_ref.contains("onepassword") {
+        OriginProvider::OnePassword(OnePasswordSecretProvider::new(OnePasswordCli)?)
     } else {
         return Err(WorkcellError::InvalidDemand(format!(
-            "unknown origin secret source `{}`; deliver resolves from secret-service or keychain",
+            "unknown origin secret source `{}`; deliver resolves from secret-service, keychain or onepassword",
             record.source_provider_ref
         )));
     };
@@ -5930,6 +5959,25 @@ fn secret_project(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellEr
                 )))
             }
         }
+    }
+    // A workcell-target projection would grant a materialisation no code path
+    // can perform: `secret deliver` refuses workcell targets, the sandbox
+    // projection seam refuses them, and the control plane has no workcell
+    // materialisation operation. Recording one would mint a durable grant the
+    // world cannot ever honour, so the creation path refuses here. The ledger
+    // types are untouched; sandbox-target projections remain the
+    // materialisable path.
+    if to_workcell.is_some() {
+        return Err(WorkcellError::Unsupported(
+            "the projection target is not yet materialisable: no code path can carry a \
+             projection to a workcell target (delivery, the control plane and the sandbox \
+             projection seam all refuse it), so recording one would create a durable grant \
+             that can never be materialised. Sandbox-target projections (`--to-sandbox`) \
+             remain the materialisable path. Already-recorded projections can be inspected \
+             with `workcell secret projections` and released with \
+             `workcell secret revoke-projection`"
+                .into(),
+        ));
     }
     let name = name.ok_or_else(|| {
         WorkcellError::InvalidDemand("project needs --name LABEL for the projection ref".into())
