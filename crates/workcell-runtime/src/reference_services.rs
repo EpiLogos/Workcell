@@ -11,6 +11,123 @@ pub const HERMES_MANAGEMENT_SOURCE: &str =
 pub const OPENCLAW_SOURCE_REVISION: &str = "9d4ba33c4a6e5e8386829e1c0010b280983599c5";
 pub const OPENCLAW_MANAGEMENT_SOURCE: &str = "openclaw/openclaw:docs/cli/gateway.md";
 
+pub const REDIS_NOW_MANAGEMENT_SOURCE: &str =
+    "redis/redis:redis.conf + redis.io/docs/latest/operate/oss_and_stack/management/persistence/";
+pub const REDIS_NOW_MINIMUM_SERIES: &str = "8.10";
+
+/// Target-owned Redis material for AIKit's hot NOW context.
+///
+/// Workcell owns only the daemon body and its target-native lifecycle. The
+/// logical NOW, participant, source, Factory and disclosure identities remain
+/// owned by Central/AIKit/Factory. This helper intentionally accepts only a
+/// loopback endpoint: a remotely reachable Redis needs operator-owned ACL/TLS
+/// and is declared through the generic external-service path instead of
+/// silently widening this reference profile.
+///
+/// The referenced Redis config is required to carry persistence/resource
+/// policy (\`appendonly yes\`, finite \`maxmemory\`, \`maxmemory-policy noeviction\`)
+/// and a Workcell-owned data directory. Those are validated by the companion
+/// \`redis_now_config_policy\` helper before the service is admitted.
+pub fn redis_now_service(
+    logical_ref: impl Into<String>,
+    host: impl Into<String>,
+    port: u16,
+    config_path: impl Into<String>,
+    acquisition: ExternalServiceAcquisition,
+) -> Result<ExternalManagedService> {
+    let host = host.into();
+    let config_path = config_path.into();
+    if !matches!(host.as_str(), "127.0.0.1" | "::1" | "localhost") {
+        return Err(WorkcellError::InvalidDemand(
+            "the built-in Redis NOW profile is loopback-only; remote Redis requires an explicit generic service declaration with operator-owned ACL/TLS".into(),
+        ));
+    }
+    if port == 0 {
+        return Err(WorkcellError::InvalidDemand(
+            "Redis NOW port must not be zero".into(),
+        ));
+    }
+    if config_path.trim().is_empty() || config_path.contains('\n') || config_path.contains('\r') {
+        return Err(WorkcellError::InvalidDemand(
+            "Redis NOW config path must be a non-empty single-line path".into(),
+        ));
+    }
+    let port_text = port.to_string();
+    let status = command_owned(
+        "redis-cli",
+        [
+            "--raw",
+            "-h",
+            host.as_str(),
+            "-p",
+            port_text.as_str(),
+            "PING",
+        ],
+    )?;
+    let start = command_owned("redis-server", [config_path.as_str(), "--daemonize", "yes"])?;
+    let stop = command_owned(
+        "redis-cli",
+        [
+            "--raw",
+            "-h",
+            host.as_str(),
+            "-p",
+            port_text.as_str(),
+            "SHUTDOWN",
+        ],
+    )?;
+
+    Ok(ExternalManagedService::new(
+        logical_ref,
+        format!("redis://{host}:{port}"),
+        status.clone(),
+    )?
+    .with_metadata("target", "redis")?
+    .with_metadata("target_minimum_series", REDIS_NOW_MINIMUM_SERIES)?
+    .with_metadata("target_management_source", REDIS_NOW_MANAGEMENT_SOURCE)?
+    .with_metadata("configuration_owner", "workcell")?
+    .with_metadata("semantic_state_owner", "central+aikit+factory")?
+    .with_metadata("persistence_policy", "aof+operator-rdb")?
+    .with_metadata("eviction_policy", "noeviction")?
+    .with_metadata("binding", "loopback")?
+    .with_readiness(status)
+    .with_readiness_timing(5_000, 50)
+    .with_start(start)
+    .with_stop(stop)
+    .with_acquisition(acquisition))
+}
+
+/// Render the bounded Redis configuration used by the built-in NOW profile.
+/// The caller chooses the data directory and memory bound; Workcell never
+/// flushes an existing database and does not own semantic payloads.
+pub fn redis_now_config_policy(
+    data_dir: impl Into<String>,
+    bind: impl Into<String>,
+    port: u16,
+    maxmemory_bytes: u64,
+) -> Result<String> {
+    let data_dir = data_dir.into();
+    let bind = bind.into();
+    if data_dir.trim().is_empty() || data_dir.contains('\n') || data_dir.contains('\r') {
+        return Err(WorkcellError::InvalidDemand(
+            "Redis NOW data directory must be a non-empty single-line path".into(),
+        ));
+    }
+    if !matches!(bind.as_str(), "127.0.0.1" | "::1") {
+        return Err(WorkcellError::InvalidDemand(
+            "built-in Redis NOW config must bind loopback only".into(),
+        ));
+    }
+    if port == 0 || maxmemory_bytes < 64 * 1024 * 1024 {
+        return Err(WorkcellError::InvalidDemand(
+            "Redis NOW requires a non-zero port and at least 64 MiB maxmemory".into(),
+        ));
+    }
+    Ok(format!(
+        "bind {bind}\nprotected-mode yes\nport {port}\ndir {data_dir}\nappendonly yes\nappendfsync everysec\nsave 900 1\nsave 300 10\nmaxmemory {maxmemory_bytes}\nmaxmemory-policy noeviction\nstop-writes-on-bgsave-error yes\n"
+    ))
+}
+
 /// Source pin for the accepted persistent `aikit-gateway serve` carrier implementation.
 ///
 /// This remains a target source revision rather than a Workcell-owned protocol
@@ -139,6 +256,18 @@ pub fn openclaw_gateway_service(
     .with_acquisition(acquisition))
 }
 
+fn command_owned<I, S>(program: &str, args: I) -> Result<ExternalServiceCommand>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let mut command = ExternalServiceCommand::new(program)?;
+    for arg in args {
+        command = command.with_arg(arg.into());
+    }
+    Ok(command)
+}
+
 fn command(program: &str, args: &[&str]) -> Result<ExternalServiceCommand> {
     let mut command = ExternalServiceCommand::new(program)?;
     for arg in args {
@@ -236,6 +365,64 @@ mod tests {
             "AIKIT-GATEWAY-TOKEN",
         )
         .is_err());
+    }
+
+    #[test]
+    fn redis_now_is_target_owned_loopback_material_with_explicit_persistence_policy() {
+        let service = redis_now_service(
+            "service:redis-now/personal-workcell",
+            "127.0.0.1",
+            6381,
+            "/var/lib/oi/redis-now/redis.conf",
+            ExternalServiceAcquisition::EnsureRunning,
+        )
+        .unwrap();
+        assert_eq!(service.endpoint, "redis://127.0.0.1:6381");
+        assert_eq!(service.status.program, "redis-cli");
+        assert_eq!(service.start.as_ref().unwrap().program, "redis-server");
+        assert_eq!(
+            service.acquisition,
+            ExternalServiceAcquisition::EnsureRunning
+        );
+        assert_eq!(
+            service.metadata.get("eviction_policy").map(String::as_str),
+            Some("noeviction")
+        );
+        assert_eq!(
+            service
+                .metadata
+                .get("semantic_state_owner")
+                .map(String::as_str),
+            Some("central+aikit+factory")
+        );
+
+        let rendered =
+            redis_now_config_policy("/var/lib/oi/redis-now/data", "127.0.0.1", 6381, 268_435_456)
+                .unwrap();
+        for required in [
+            "appendonly yes",
+            "appendfsync everysec",
+            "maxmemory 268435456",
+            "maxmemory-policy noeviction",
+            "protected-mode yes",
+        ] {
+            assert!(rendered.contains(required), "missing {required}");
+        }
+        assert!(!rendered.contains("FLUSH"));
+    }
+
+    #[test]
+    fn built_in_redis_now_profile_refuses_remote_or_unbounded_material() {
+        assert!(redis_now_service(
+            "service:redis-now/x",
+            "10.0.0.4",
+            6379,
+            "/tmp/redis.conf",
+            ExternalServiceAcquisition::ObserveExisting
+        )
+        .is_err());
+        assert!(redis_now_config_policy("/tmp/redis", "0.0.0.0", 6379, 268_435_456).is_err());
+        assert!(redis_now_config_policy("/tmp/redis", "127.0.0.1", 6379, 1).is_err());
     }
 
     #[test]
