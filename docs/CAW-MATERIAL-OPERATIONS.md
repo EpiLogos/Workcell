@@ -136,19 +136,42 @@ A writable ancestor of a protected directory or `/` is refused. A protected
 parent such as Work may contain an explicitly permitted NOW/project subtree.
 Revision, expiry and path/object identity are rechecked immediately before exec.
 
-The supported adapter is **unprivileged Linux Landlock ABI >= 3**, covering regular
+Supported adapters are **unprivileged Linux Landlock ABI >= 3** and **macOS
+Seatbelt through the system `/usr/bin/sandbox-exec`**, covering regular
 filesystem `file-content`, `file-creation`, `file-removal`, `rename-link`,
 `truncate` and `descendant-processes` from the launched process. Rules are applied
 before exec, with null input, piped output and other inherited fds close-on-exec.
-A failed kernel application fails spawn; there is no advisory fallback. The CLI
+A failed kernel application prevents the requested program from running (spawn
+error on Linux, unsuccessful native launcher on Mac); there is no advisory fallback. The CLI
 bounds execution to at most 60 seconds and returned output to 64 KiB per stream;
 truncation/incomplete pipes/timeouts are explicit and are not successful work.
+
+macOS uses canonical path rules, not inode-bound grants. The native preparation
+and launch revalidate the retained directory/file identities; an outside actor
+replacing a granted directory during execution remains outside coverage. Grant
+roots cannot be removed or renamed by the worker, including nested roots.
+Paths are escaped as SBPL strings; non-UTF-8/control-character paths fail closed.
+The Mac launch marks inherited descriptors above stderr close-on-exec using
+bounded kernel descriptor enumeration; over 4096 descriptors refuses launch.
+Protocol exec accepts only pipe/socket stdin/stdout and discards provider stderr.
+Regular-file stdio is refused because a pre-opened descriptor bypasses path rules.
+All three standard descriptors are checked again after Command stdio remapping,
+immediately before exec, so a later caller override cannot introduce a file handle.
+Only pipes, sockets and the actual null device are accepted by the runtime.
+The same checks apply before both finite CLI work and protocol-child execution.
+
+Rust consumers construct with `PreparedWriteBoundary::command(program, revision)`
+before setting arguments, environment or cwd. This preserves `env_clear` through
+the native wrapper. Late `configure_command` remains available for Linux and
+explicitly refuses on Mac; it cannot reconstruct a Command's environment policy.
+Capability reads execute a finite native sandbox probe and disclose the actual
+provider, profile version, coverage and path-binding limitation.
 
 **Not covered:** metadata chmod/chown/xattr/time, read confidentiality, network or
 delegated service writes, pre-existing hardlink aliases, outside processes,
 privileged workloads, device ioctls, external mount/rename of granted objects,
 and live revocation after launch. Requests requiring any unsupported coverage are
-refused. Root, unavailable/blocked Landlock, other platforms, and existing target-
+refused. Root, unavailable/blocked native sandbox, other platforms, and existing target-
 owned processes do not acquire this protection by declaration. A protected target
 service must be launched through a genuinely supported boundary by its supervisor.
 

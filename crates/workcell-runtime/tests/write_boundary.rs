@@ -2,7 +2,6 @@ use epilogos_workcell_runtime::*;
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
 fn root() -> PathBuf {
@@ -73,7 +72,7 @@ fn native_kernel_write_canaries_or_explicit_unsupported_refusal() {
         return;
     }
     let boundary = PreparedWriteBoundary::prepare(r, "revision:1").unwrap();
-    let mut command = Command::new("python3");
+    let mut command = boundary.command("python3", "revision:1").unwrap();
     command.args(["-c",r#"
 import os,sys,subprocess,json
 from pathlib import Path
@@ -98,9 +97,6 @@ p=subprocess.run(['/bin/sh','-c','printf escape > "$1"','child',str(r/'Work/chil
 assert p.returncode != 0; denied.append('descendant')
 assert h.read_text()=='protected'; print(json.dumps({'executed_denials':denied,'allowed_writes':2}))
 "#, root.to_str().unwrap()]);
-    boundary
-        .configure_command(&mut command, "revision:1")
-        .unwrap();
     let output = command.output().unwrap();
     assert!(
         output.status.success(),
@@ -116,10 +112,7 @@ assert h.read_text()=='protected'; print(json.dumps({'executed_denials':denied,'
     eprintln!("WRITE_BOUNDARY_EXECUTED: {report}");
     fs::rename(root.join("Work/NOW"), root.join("Work/old-NOW")).unwrap();
     fs::create_dir(root.join("Work/NOW")).unwrap();
-    let mut command = Command::new("true");
-    assert!(boundary
-        .configure_command(&mut command, "revision:1")
-        .is_err());
+    assert!(boundary.command("true", "revision:1").is_err());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -154,11 +147,8 @@ fn protected_source_files_retain_identity_without_broadening_writable_grants() {
         .unwrap()
         .iter()
         .any(|p| p["path"].as_str() == source.to_str() && p["identity"].as_str().is_some()));
-    let mut command = Command::new("python3");
+    let mut command = boundary.command("python3", "revision:1").unwrap();
     command.args(["-c", "import sys; from pathlib import Path; p=Path(sys.argv[1]);\ntry: p.write_text('escape')\nexcept PermissionError: print('protected-source-denied')\nelse: raise AssertionError('protected source overwritten')", source.to_str().unwrap()]);
-    boundary
-        .configure_command(&mut command, "revision:1")
-        .unwrap();
     let output = command.output().unwrap();
     assert!(
         output.status.success(),
@@ -190,5 +180,115 @@ fn protected_file_under_writable_directory_is_not_silently_dropped() {
         "{error}"
     );
     assert_eq!(fs::read_to_string(source).unwrap(), "retained");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_native_escaping_root_identity_fds_and_environment() {
+    use std::os::fd::AsRawFd;
+    let root = root();
+    fs::create_dir_all(root.join("Work/NOW")).unwrap();
+    fs::create_dir(root.join("Work/project")).unwrap();
+    let unusual = root.join("Work/project/quoted\"\\(allow default)λ");
+    fs::create_dir(&unusual).unwrap();
+    let human = root.join("Work/human");
+    fs::write(&human, "protected").unwrap();
+    let file = fs::OpenOptions::new().append(true).open(&human).unwrap();
+    let fd = file.as_raw_fd();
+    assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, 0) }, 0);
+    let mut requirement = requirements(&root);
+    requirement.writable_paths.push(unusual.clone());
+    let boundary = PreparedWriteBoundary::prepare(requirement, "revision:1").unwrap();
+    let mut command = boundary.command("python3", "revision:1").unwrap();
+    command
+        .args([
+            "-B",
+            "-c",
+            r#"
+import os,sys,json
+from pathlib import Path
+root=Path(sys.argv[1]); unusual=Path(sys.argv[2]); fd=int(sys.argv[3])
+(unusual/'permitted').write_text('quoted-path')
+def deny(fn):
+    try: fn()
+    except OSError as e:
+        assert e.errno in (1,13), str(e)
+    else: raise AssertionError('denial did not occur')
+deny(lambda:(root/'escaped').write_text('profile injection'))
+deny(lambda:unusual.rename(unusual.with_name('moved')))
+deny(lambda:unusual.rmdir())
+try: os.write(fd,b'inherited descriptor escape')
+except OSError as e: assert e.errno==9, str(e)
+else: raise AssertionError('inherited descriptor survived exec')
+print(json.dumps({'escaped_path_denied':True,'grant_root_denied':True,'inherited_fd_closed':True}))
+"#,
+        ])
+        .arg(&root)
+        .arg(&unusual)
+        .arg(fd.to_string());
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read_to_string(&human).unwrap(), "protected");
+    assert_eq!(
+        fs::read_to_string(unusual.join("permitted")).unwrap(),
+        "quoted-path"
+    );
+    let mut environment = boundary.command("/usr/bin/env", "revision:1").unwrap();
+    environment
+        .env_clear()
+        .env("BOUNDARY_ONLY", "exact-value")
+        .current_dir(&unusual);
+    let output = environment.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "BOUNDARY_ONLY=exact-value\n"
+    );
+    // Held-out setter path: overriding stdout after protected construction must
+    // not reopen the descriptor bypass, even though ordinary CLI callers pipe it.
+    let denied_output = fs::OpenOptions::new().append(true).open(&human).unwrap();
+    let mut redirected = boundary.command("/bin/sh", "revision:1").unwrap();
+    redirected
+        .args(["-c", "printf forbidden-stdio"])
+        .stdout(denied_output);
+    assert!(
+        redirected.output().is_err(),
+        "regular stdout reached the worker"
+    );
+    assert_eq!(fs::read_to_string(&human).unwrap(), "protected");
+    // A replaced native directory fails before creating a protected Command.
+    fs::rename(&unusual, root.join("retained-original")).unwrap();
+    fs::create_dir(&unusual).unwrap();
+    assert!(boundary.command("/usr/bin/true", "revision:1").is_err());
+    eprintln!(
+        "MACOS_BOUNDARY_EXECUTED: escaping, root mutation, inherited fd, late stdio override, env_clear, identity drift"
+    );
+    drop(file);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_unrepresentable_profile_path_fails_closed() {
+    let root = root();
+    fs::create_dir_all(root.join("Work/NOW")).unwrap();
+    fs::create_dir(root.join("Work/project")).unwrap();
+    let control = root.join("Work/project/line\nbreak");
+    fs::create_dir(&control).unwrap();
+    let mut requirement = requirements(&root);
+    requirement.writable_paths.push(control);
+    assert!(PreparedWriteBoundary::prepare(requirement, "revision:1")
+        .unwrap_err()
+        .to_string()
+        .contains("control characters"));
     fs::remove_dir_all(root).unwrap();
 }

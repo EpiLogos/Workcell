@@ -355,19 +355,20 @@ impl ExecutionProvider for HostProcessExecutionProvider {
             }
         }
 
-        let mut command = Command::new(program);
-        command.args(indexed_args.iter().map(|(_, value)| value.as_str()));
-        if let Some(cwd) = operation.parameters.get("cwd") {
-            command.current_dir(cwd);
-        }
-        if let Some(boundary) = &boundary {
+        let mut command = if let Some(boundary) = &boundary {
             let current_revision =
                 operation.parameters.get("policy_revision").ok_or_else(|| {
                     WorkcellError::OperationFailed(
                         "current policy revision is required for bounded execution".into(),
                     )
                 })?;
-            boundary.configure_command(&mut command, current_revision)?;
+            boundary.command(program, current_revision)?
+        } else {
+            Command::new(program)
+        };
+        command.args(indexed_args.iter().map(|(_, value)| value.as_str()));
+        if let Some(cwd) = operation.parameters.get("cwd") {
+            command.current_dir(cwd);
         }
         let result = command.output().map_err(|error| {
             WorkcellError::OperationFailed(format!("execute host process `{program}`: {error}"))

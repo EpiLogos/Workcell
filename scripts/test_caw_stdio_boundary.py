@@ -30,6 +30,7 @@ class ProtocolBoundary(unittest.TestCase):
             if not cap["supported"]:
                 self.assertNotEqual(inspection.returncode, 0)
                 self.assertNotEqual(os.environ.get("WORKCELL_REQUIRE_LANDLOCK"), "1")
+                self.assertNotEqual(os.environ.get("WORKCELL_REQUIRE_WRITE_BOUNDARY"), "1")
                 return
             self.assertEqual(inspection.returncode, 0, inspection.stdout)
             digest = json.loads(inspection.stdout)["requirements_digest"]
@@ -54,6 +55,31 @@ print(json.dumps({'reply':request,'denied':denied,'pid':os.getpid()}),flush=True
             self.assertEqual(reply["reply"]["payload"], "ACTUAL_PROTOCOL")
             self.assertEqual((writable / "result").read_text(), "ACTUAL_PROTOCOL")
             self.assertEqual(human.read_text(), "HUMAN")
+            # A writable descriptor deliberately inherited from the caller must
+            # not become a second write route around the path boundary.
+            with human.open("ab") as inherited:
+                fd_script = """
+import os,sys,json
+try: os.write(int(sys.argv[1]),b'ESCAPE')
+except OSError as e: assert e.errno==9, str(e)
+else: raise AssertionError('inherited writable descriptor escaped')
+print(json.dumps({'fd_closed':True}))
+"""
+                fd_argv = [binary, "exec", str(path), "revision:1", digest, "--",
+                           "/usr/bin/python3", "-S", "-c", fd_script, str(inherited.fileno())]
+                fd_result = subprocess.run(fd_argv, input="", capture_output=True,
+                                           text=True, timeout=10, pass_fds=(inherited.fileno(),))
+            self.assertEqual(fd_result.returncode, 0, fd_result.stderr)
+            self.assertTrue(json.loads(fd_result.stdout)["fd_closed"])
+            self.assertEqual(human.read_text(), "HUMAN")
+            # Writable regular stdout is unsafe even when stdin is a pipe.
+            with (root / "unsafe-stdout").open("w") as unsafe:
+                refused = subprocess.run(argv, input='{"payload":"MUST_NOT_RUN"}\n',
+                                         stdout=unsafe, stderr=subprocess.PIPE,
+                                         text=True, timeout=10)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertEqual((root / "unsafe-stdout").read_text(), "")
+            self.assertEqual((writable / "result").read_text(), "ACTUAL_PROTOCOL")
             for change in ("digest", "expiry", "inherited-file"):
                 negative = argv.copy()
                 if change == "digest":

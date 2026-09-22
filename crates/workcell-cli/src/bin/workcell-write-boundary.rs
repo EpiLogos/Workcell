@@ -3,7 +3,7 @@ use epilogos_workcell_runtime::{
     WriteBoundaryRequirements,
 };
 use serde_json::{json, Value};
-use std::{env, fs, process::Command, time::Duration};
+use std::{env, fs, time::Duration};
 
 #[path = "../stdio_boundary.rs"]
 mod stdio_boundary;
@@ -61,9 +61,8 @@ fn run() -> Result<(Value, i32), Box<dyn std::error::Error>> {
         return Ok((inspection, 0));
     }
     let timeout = Duration::from_millis(args[3].parse::<u64>()?);
-    let mut command = Command::new(&args[5]);
+    let mut command = boundary.command(&args[5], &args[2])?;
     command.args(&args[6..]);
-    boundary.configure_command(&mut command, &args[2])?;
     let output = run_bounded_process(command, timeout, 65536)?;
     let ok = output.status.success() && !output.timed_out;
     Ok((
