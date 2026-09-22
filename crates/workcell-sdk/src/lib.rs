@@ -58,6 +58,7 @@ pub mod provider {
 pub mod testkit {
     use std::collections::{BTreeMap, BTreeSet};
 
+    use crate::WORKCELL_SDK_VERSION;
     use epilogos_workcell_core::{
         validate_provider_port, Availability, ExecutionMaterialRequest, ExecutionProvider,
         HealthState, OfferRef, OperationalOffer, ProviderAllocation, ProviderObservation,
@@ -142,6 +143,98 @@ pub mod testkit {
             removed: before_refs.difference(&after_refs).cloned().collect(),
             retained: before_refs.intersection(&after_refs).cloned().collect(),
         }
+    }
+
+    /// Parse a declared SDK/contract version, `major[.minor[.patch]]`, into
+    /// numeric segments. Missing trailing segments are zero-padded — `1.0`
+    /// and `1.0.0` are the same version — so an envelope written the short
+    /// way is never refused against a runtime that writes the long way, and
+    /// `1.0.10` orders NEWER than `1.0.9` numerically, not lexicographically.
+    /// Any other shape (empty, non-numeric, more than three segments) parses
+    /// to `None`.
+    pub fn parse_sdk_version(version: &str) -> Option<(u64, u64, u64)> {
+        let parts: Vec<&str> = version.trim().split('.').collect();
+        if parts.len() > 3 {
+            return None;
+        }
+        let mut segments = [0u64; 3];
+        for (slot, part) in segments.iter_mut().zip(&parts) {
+            if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            *slot = part.parse().ok()?;
+        }
+        Some((segments[0], segments[1], segments[2]))
+    }
+
+    /// The SDK contract compatibility law: same major — a contract-breaking
+    /// change bumps the major and refuses every provider built against a
+    /// different one — and the declared version must not exceed the runtime's
+    /// own minor/patch, because a provider built against a newer SDK may rely
+    /// on surfaces this runtime does not carry. An unparsable version is
+    /// never compatible.
+    pub fn sdk_version_compatible(runtime: &str, declared: &str) -> bool {
+        match (parse_sdk_version(runtime), parse_sdk_version(declared)) {
+            (Some(runtime), Some(declared)) => {
+                declared.0 == runtime.0 && (declared.1, declared.2) <= (runtime.1, runtime.2)
+            }
+            _ => false,
+        }
+    }
+
+    /// The named result of the SDK contract version gate.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct SdkContractAdmission {
+        pub runtime_version: String,
+        pub declared_version: String,
+    }
+
+    impl SdkContractAdmission {
+        pub fn summary(&self) -> String {
+            format!(
+                "SDK contract admission: provider declares `{}`, runtime provides `{}` — compatible",
+                self.declared_version, self.runtime_version
+            )
+        }
+    }
+
+    /// Admit a provider's declared SDK/contract version against this facade's
+    /// own version. This is the named gate the conformance suite exercises:
+    /// an SDK contract this runtime cannot honour is refused by name — both
+    /// versions quoted — never silently admitted and never silently degraded.
+    pub fn verify_sdk_contract_version(declared: &str) -> Result<SdkContractAdmission> {
+        verify_sdk_contract_version_against(WORKCELL_SDK_VERSION, declared)
+    }
+
+    /// The same gate against an explicit runtime version, so the incompatible
+    /// case stays provable as the facade's own version moves over time.
+    pub fn verify_sdk_contract_version_against(
+        runtime: &str,
+        declared: &str,
+    ) -> Result<SdkContractAdmission> {
+        if parse_sdk_version(runtime).is_none() {
+            return Err(WorkcellError::OperationFailed(format!(
+                "runtime SDK contract version `{runtime}` is not a parsable \
+                 major.minor.patch version; refusing every admission rather than guessing"
+            )));
+        }
+        if parse_sdk_version(declared).is_none() {
+            return Err(WorkcellError::Unsupported(format!(
+                "declared SDK contract version `{declared}` is not a parsable \
+                 major.minor.patch version; a provider must declare the SDK contract \
+                 it was built against"
+            )));
+        }
+        if !sdk_version_compatible(runtime, declared) {
+            return Err(WorkcellError::Unsupported(format!(
+                "declared SDK contract version `{declared}` is incompatible with this \
+                 runtime's `{runtime}`; rebuild the provider against a compatible SDK contract"
+            )));
+        }
+        Ok(SdkContractAdmission {
+            runtime_version: runtime.to_owned(),
+            declared_version: declared.to_owned(),
+        })
     }
 
     #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
