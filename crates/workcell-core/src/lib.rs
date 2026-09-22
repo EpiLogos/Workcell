@@ -5,6 +5,7 @@
 
 mod api;
 mod contract;
+mod correlation;
 mod demand;
 mod error;
 mod planner;
@@ -16,6 +17,7 @@ mod world;
 
 pub use api::WorkcellControlPlane;
 pub use contract::*;
+pub use correlation::*;
 pub use demand::*;
 pub use error::{Result, WorkcellError};
 pub use planner::*;

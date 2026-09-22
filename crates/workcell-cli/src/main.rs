@@ -14,16 +14,17 @@ use epilogos_workcell_control::{
     CONTROL_OPERATIONS, CONTROL_PROTOCOL_VERSION, GRANTS_FILE,
 };
 use epilogos_workcell_core::{
-    broker_handle, AffordanceRequirement, Availability, BindingRef, BrokerPolicy, BrokerRoute,
-    CollectionBundle, Degradation, DemandRef, DesiredMaterialState, Discovery, ExecutionDemand,
-    ExposureBundle, ExposureRequirement, ExternalRef, HealthState, IsolationTrustRequirement,
-    LogicalConnectionRequirement, MaterialisationPlan, ObservationBundle, OutputRequirement,
-    PersistenceScope, PlanOmission, PlanStatus, ProjectRuntimeRequirement, ProviderAllocation,
-    ProviderPortKind, ReconciliationResult, ReleaseDisposition, ReleaseResult,
-    RequirementNecessity, ResourceRequirement, RetentionExpectation, SecretMaterialisationClass,
+    broker_handle, correlate_projection, AffordanceRequirement, Availability, BindingRef,
+    BrokerPolicy, BrokerRoute, CollectionBundle, Degradation, DemandRef, DesiredMaterialState,
+    Discovery, ExecutionDemand, ExposureBundle, ExposureRequirement, ExternalRef, HealthState,
+    IsolationTrustRequirement, LogicalConnectionRequirement, MaterialisationPlan,
+    MaterialisedExecutionWorld, ObservationBundle, OutputRequirement, PersistenceScope, PlanOmission,
+    PlanStatus, ProjectRuntimeRequirement, ProjectionCorrelation, ProviderAllocation,
+    ProviderPortKind, ReconciliationResult, ReleaseDisposition, ReleaseResult, RequirementNecessity,
+    ResourceRequirement, RetentionExpectation, SecretMaterialisationClass,
     SecretMaterialisationRequest, SecretProjectionRequest, SecretProjectionTarget,
-    SecretRevocationState, Tiered, WorkcellControlPlane,
-    WorkcellError, WorkcellRef, WorkspaceAccess, WorkspaceRequirement,
+    SecretRevocationState, Tiered, WorkcellControlPlane, WorkcellError, WorkcellRef, WorkspaceAccess,
+    WorkspaceRequirement, AIKIT_WORKTREE_PROJECTION_SOURCE,
 };
 use epilogos_workcell_keychain::{
     store_bootstrap_material as store_keychain_material, KeychainAclPolicy, KeychainSecretProvider,
@@ -39,10 +40,10 @@ use epilogos_workcell_opensandbox::{
 };
 use epilogos_workcell_runtime::{CollapsedLocalConfig, CollapsedLocalWorkcell};
 use epilogos_workcell_wire::{
-    connection_value, decode_connection, decode_world, encode_connection, encode_world,
-    world_value, ConnectionGrant, ConnectionRecord,
+    connection_value, correlated_observation_value, decode_connection, decode_world,
+    encode_connection, encode_world, world_value, ConnectionGrant, ConnectionRecord,
 };
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 const DEFAULT_WORKCELL_REF: &str = "workcell:local";
 const DEFAULT_DEMAND_REF: &str = "demand:cli";
@@ -110,6 +111,7 @@ fn run(args: Vec<String>) -> Result<(), WorkcellError> {
         "collect" => command_collect(&global),
         "release" => command_release(&global),
         "reconcile" => command_reconcile(&global, command_args),
+        "correlate-projection" => command_correlate_projection(&global, command_args),
         "instances" => command_instances(&global, command_args),
         "places" => command_places(&global),
         "place" => command_place(&global, command_args),
@@ -710,6 +712,242 @@ fn command_reconcile(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
         }
     }
     Ok(())
+}
+
+// ---- Projection correlation -------------------------------------------
+//
+// Surface an AIKit git-projection verdict (`aikit worktree project --json`,
+// schema `aikit.worktree-projection/v1`) as a correlated observation on a
+// prepared Workcell material world. Workcell owns material lifecycle, not git:
+// it carries AIKit's verdict verbatim, attributed to AIKit, correlated to an
+// opaque checkout subject on the world. It runs no git, re-derives nothing, and
+// does not touch material lifecycle — this is an annotation over a world
+// reading, never a `reconcile` that computes git.
+fn command_correlate_projection(
+    global: &GlobalArgs,
+    args: &[String],
+) -> Result<(), WorkcellError> {
+    let mut projection_path = None;
+    let mut subject_key = None;
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        match flag {
+            "--projection" => {
+                projection_path = Some(PathBuf::from(require_value(args, index, "--projection")?))
+            }
+            "--subject" => subject_key = Some(require_value(args, index, "--subject")?.to_owned()),
+            unknown => {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "unknown correlate-projection option `{unknown}`"
+                )))
+            }
+        }
+        index += 2;
+    }
+
+    let projection_path = projection_path.ok_or_else(|| {
+        WorkcellError::InvalidDemand(
+            "correlate-projection requires `--projection <aikit-worktree-projection.json>`".into(),
+        )
+    })?;
+    let subject_key = subject_key.ok_or_else(|| {
+        WorkcellError::InvalidDemand(
+            "correlate-projection requires `--subject <world-subject-key>` (e.g. checkout:workcell)"
+                .into(),
+        )
+    })?;
+
+    // The material world the verdict annotates — read from its receipt, as
+    // observe/reconcile resume a prepared world. No control plane is built:
+    // correlation is a pure annotation, not a material operation.
+    let world = load_world_receipt(global)?;
+
+    // Read AIKit's already-rendered verdict into the opaque carrier. This runs
+    // no git and inspects no ancestry/cleanliness/branch — it reads the action
+    // label AIKit stamped on each entry.
+    let correlation = read_aikit_projection_correlation(&projection_path, subject_key)?;
+
+    let observation = correlate_projection(&world, correlation)?;
+
+    if global.json {
+        let mut document = correlated_observation_value(&observation);
+        if let Some(object) = document.as_object_mut() {
+            object.insert("ok".to_string(), Value::Bool(true));
+        }
+        emit_json(document);
+    } else {
+        println!(
+            "{} — projection verdict for `{}` (via {})",
+            observation.world_ref, observation.subject_key, observation.attributed_to
+        );
+        println!("  target: {}", observation.correlation.target);
+        println!("  projected: {}", observation.correlation.projected);
+        println!(
+            "  mode: {}",
+            if observation.correlation.applied {
+                "apply"
+            } else {
+                "observe"
+            }
+        );
+        if !observation.correlation.surfaced.is_empty() {
+            println!(
+                "  surfaced (needs attention): {}",
+                observation.correlation.surfaced.join(", ")
+            );
+        }
+        if !observation.correlation.summary.is_empty() {
+            for line in observation.correlation.summary.lines() {
+                println!("  {line}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Read a prepared material world from `--receipt`, without building a control
+/// plane. Correlation is a reading over the world's subjects, not a lifecycle op.
+fn load_world_receipt(global: &GlobalArgs) -> Result<MaterialisedExecutionWorld, WorkcellError> {
+    let receipt = global.receipt.clone().ok_or_else(|| {
+        WorkcellError::InvalidDemand(
+            "this command requires `--receipt <material-world.json>`".into(),
+        )
+    })?;
+    let encoded = fs::read_to_string(&receipt).map_err(|error| {
+        WorkcellError::NotFound(format!(
+            "read material-world receipt `{}`: {error}",
+            receipt.display()
+        ))
+    })?;
+    decode_world(&encoded)
+}
+
+/// Translate an AIKit `SuiteProjection` reading into the opaque
+/// `ProjectionCorrelation` carrier. This is caller-side plumbing: it reads the
+/// per-entry action labels AIKit already stamped and the envelope's
+/// `target`/`applied`/`version`, and carries them. It performs no git — no
+/// fetch, no ancestry, no cleanliness, no branch resolution — and it never
+/// re-decides an entry's verdict; it only tallies AIKit's own labels into the
+/// suite reading the carrier holds.
+fn read_aikit_projection_correlation(
+    path: &Path,
+    subject_key: String,
+) -> Result<ProjectionCorrelation, WorkcellError> {
+    let raw = fs::read(path).map_err(|error| {
+        WorkcellError::InvalidDemand(format!("read projection JSON `{}`: {error}", path.display()))
+    })?;
+    if raw.len() > 4_194_304 {
+        return Err(WorkcellError::InvalidDemand(
+            "projection JSON exceeds 4 MiB".into(),
+        ));
+    }
+    let value: Value = serde_json::from_slice(&raw)
+        .map_err(|error| WorkcellError::InvalidDemand(format!("parse projection JSON: {error}")))?;
+
+    // `aikit worktree project --json` wraps the SuiteProjection in a reply
+    // envelope (under `data`); a caller may also pass the SuiteProjection bare.
+    // Either way we key off its own version tag — Workcell never invents the
+    // shape.
+    let suite = locate_projection_object(&value).ok_or_else(|| {
+        WorkcellError::InvalidDemand(format!(
+            "input carries no `{AIKIT_WORKTREE_PROJECTION_SOURCE}` projection object"
+        ))
+    })?;
+
+    let source = suite
+        .get("version")
+        .and_then(Value::as_str)
+        .unwrap_or(AIKIT_WORKTREE_PROJECTION_SOURCE)
+        .to_owned();
+    let target = suite
+        .get("target")
+        .and_then(Value::as_str)
+        .ok_or_else(|| WorkcellError::InvalidDemand("projection is missing `target`".into()))?
+        .to_owned();
+    let applied = suite
+        .get("applied")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let entries = suite
+        .get("entries")
+        .and_then(Value::as_array)
+        .ok_or_else(|| WorkcellError::InvalidDemand("projection is missing `entries`".into()))?;
+
+    let mut surfaced = Vec::new();
+    let mut projected = !entries.is_empty();
+    for entry in entries {
+        let key = entry
+            .get("key")
+            .and_then(Value::as_str)
+            .ok_or_else(|| WorkcellError::InvalidDemand("projection entry is missing `key`".into()))?;
+        let action = entry
+            .get("action")
+            .and_then(Value::as_object)
+            .and_then(|action| action.get("action"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                WorkcellError::InvalidDemand(format!(
+                    "projection entry `{key}` is missing its action verdict"
+                ))
+            })?;
+        match action {
+            // AIKit's verdict labels: a checkout ending at the target.
+            "already-projected" | "fast-forwarded" => {}
+            // Drift or failure AIKit left for a human — carried as a surfaced key.
+            "surfaced" | "failed" => {
+                surfaced.push(key.to_owned());
+                projected = false;
+            }
+            // Clean-behind in observe mode: not surfaced, but not yet projected.
+            "would-fast-forward" => projected = false,
+            other => {
+                return Err(WorkcellError::Unsupported(format!(
+                    "projection entry `{key}` carries an action `{other}` unknown to this Workcell"
+                )))
+            }
+        }
+    }
+
+    let summary = match suite.get("summary") {
+        Some(Value::Array(lines)) => lines
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Some(Value::String(text)) => text.clone(),
+        _ => String::new(),
+    };
+
+    Ok(ProjectionCorrelation {
+        subject_key,
+        source,
+        target,
+        applied,
+        projected,
+        surfaced,
+        summary,
+    })
+}
+
+/// Find the AIKit `SuiteProjection` object in the supplied JSON: the top-level
+/// object when it carries the projection version tag, else one nested under a
+/// reply `data` envelope.
+fn locate_projection_object(value: &Value) -> Option<&Map<String, Value>> {
+    fn is_suite(object: &Map<String, Value>) -> bool {
+        object.get("version").and_then(Value::as_str) == Some(AIKIT_WORKTREE_PROJECTION_SOURCE)
+            && object.contains_key("entries")
+    }
+    let object = value.as_object()?;
+    if is_suite(object) {
+        return Some(object);
+    }
+    if let Some(data) = object.get("data").and_then(Value::as_object) {
+        if is_suite(data) {
+            return Some(data);
+        }
+    }
+    None
 }
 
 fn parse_demand(args: &[String]) -> Result<ExecutionDemand, WorkcellError> {
@@ -6236,7 +6474,7 @@ fn print_help() {
     println!(
         "Workcell — provider-neutral material execution control\n\n\
 Usage:\n  workcell [global options] <command> [command options]\n\n\
-Commands:\n  status       Summarise this local Workcell\n  discover     Discover material offers\n  plan         Plan an ExecutionDemand\n  prepare      Prepare a material world and persist a receipt\n  observe      Observe a prepared world from its receipt\n  expose       Resolve prepared exposure surfaces\n  collect      Collect prepared output channels\n  release      Release or preserve a prepared world\n  reconcile    Reconcile desired material state\n  instances    Live harness instances and bounded resource usage
+Commands:\n  status       Summarise this local Workcell\n  discover     Discover material offers\n  plan         Plan an ExecutionDemand\n  prepare      Prepare a material world and persist a receipt\n  observe      Observe a prepared world from its receipt\n  expose       Resolve prepared exposure surfaces\n  collect      Collect prepared output channels\n  release      Release or preserve a prepared world\n  reconcile    Reconcile desired material state\n  correlate-projection\n               Carry an AIKit git-projection verdict as a correlated observation (Workcell runs no git)\n  instances    Live harness instances and bounded resource usage
   places       Census of persistent process places (tmux, herdr) — read-only
   place        Place request/release over those places (request --provider auto|herdr|tmux --name SLUG; release --place-ref REF --pid N --start-marker PS_LSTART)
   sandboxes    OpenSandbox server-side material (reconcile)\n  connections  Cross-cell connection records (list/show/disconnect)\n  providers    List provider inventory\n  system       Emit this Workcell's System settings disclosure (oi.product-settings-disclosure/v2)\n  config-contribution\n               Emit Workcell's configuration contribution (oi.configuration-contribution/v1)\n  config       Owner-native configuration transport: validate | plan | apply | reset\n  doctor       Verify the zero-setup local baseline\n\n\
@@ -6257,6 +6495,7 @@ Secret origin and projection:\n  workcell secret scan [--json]
       Read the origin's projection ledger; revocation reaches the projected\n      target at its next use.\n\n\
 Global options:\n  --json                     Structured machine/agent output\n  --state-root PATH          Local Workcell state (default: $WORKCELL_HOME or ~/.workcell)\n  --workcell-ref REF         Workcell identity for new local operations\n  --receipt PATH             Material-world receipt for prepare/resume\n  --workspace-source PATH    Physical local source binding; never semantic identity\n  --services PATH            Operator-declared logical services (default: <state-root>/services.json)\n\n\
 Demand options for plan/prepare:\n  --demand-ref REF\n  --require VALUE | --prefer VALUE | --optional VALUE\n  --workspace writable|read-only [--workspace-ref REF] [--revision REV]\n  --project-runtime MODE\n  --connect VALUE | --prefer-connect VALUE | --optional-connect VALUE\n  --expose VALUE | --prefer-expose VALUE | --optional-expose VALUE\n  --output VALUE | --prefer-output VALUE | --optional-output VALUE\n  --resource key[=amount[:unit]]\n  --subject role=opaque-ref\n  --persistence SCOPE\n  --isolation VALUE\n  --retention release|preserve|suspend-if-supported|snapshot-if-supported\n  --extension key=value\n\n\
-Reconcile:\n  workcell --receipt WORLD.json reconcile --desired logical-ref=state"
+Reconcile:\n  workcell --receipt WORLD.json reconcile --desired logical-ref=state\n\n\
+Projection correlation:\n  workcell --receipt WORLD.json correlate-projection --projection AIKIT.json --subject checkout:KEY\n      Carry an AIKit worktree-projection verdict (aikit worktree project --json)\n      as a correlated observation on the world's checkout subject. Workcell runs\n      no git and re-derives nothing — the verdict is AIKit's, carried verbatim."
     );
 }
