@@ -981,7 +981,15 @@ fn decide_place_release_proof(
             }),
         });
     };
-    if live_marker != demand.start_marker {
+    // The demand marker is a caller-replayed string — copied out of a grant
+    // document through whatever transport carried it — while the live marker
+    // is token-joined by the pid-table reader. Whitespace around the replay
+    // is transport damage, never a generation change: an `lstart` timestamp
+    // has no meaningful padding, and two different generations always differ
+    // in their timestamp content. Compare trimmed, so replaying the granted
+    // generation releases cleanly instead of being misdiagnosed as a
+    // recycled pid (found live in the O:I #65 L5 material leg, 2026-09-22).
+    if live_marker != demand.start_marker.trim() {
         return PlaceReleaseDecision::Refuse(PlaceRefusal {
             kind: REFUSAL_STALE_BINDING,
             provider: Some(provider),
@@ -1791,6 +1799,59 @@ mod tests {
         assert!(refusal.message.contains("recycled"));
         assert_eq!(refusal.evidence["granted_start_marker"], MARKER_A);
         assert_eq!(refusal.evidence["live_start_marker"], MARKER_B);
+    }
+
+    #[test]
+    fn release_accepts_a_replayed_marker_carrying_transport_whitespace() {
+        // O:I #65 L5 material leg (2026-09-22): a release whose replayed
+        // --start-marker carried trailing padding refused with stale-binding
+        // and misdiagnosed the SAME process generation as "the pid was
+        // recycled". The granted generation is named by the marker's
+        // timestamp content; padding from copying it through a transport is
+        // not a generation change, so every padded replay of the granted
+        // marker must release cleanly — never as a recycled pid.
+        for padded in [
+            format!("{MARKER_B}    "), // trailing (the observed wedge)
+            format!("  {MARKER_B}"),   // leading
+            format!("\t{MARKER_B}\n"), // both edges
+        ] {
+            let decision = decide_place_release(
+                &tmux_demand(4242, &padded),
+                &pid_table(),
+                &ProviderSnapshot::Tmux {
+                    session_exists: true,
+                    pane_pids: vec![4242],
+                },
+                false,
+            );
+            let PlaceReleaseDecision::Release {
+                provider,
+                session_name,
+                workspace_id,
+            } = decision
+            else {
+                panic!("padded replay `{padded:?}` must release cleanly, got {decision:?}");
+            };
+            assert_eq!(provider, TMUX_PROVIDER);
+            assert_eq!(session_name.as_deref(), Some("agent-test"));
+            assert_eq!(workspace_id, None);
+        }
+        // A marker whose CONTENT differs is still a stale binding — padding
+        // tolerance must never widen into content tolerance.
+        let decision = decide_place_release(
+            &tmux_demand(4242, &format!("{MARKER_A}  ")),
+            &pid_table(),
+            &ProviderSnapshot::Tmux {
+                session_exists: true,
+                pane_pids: vec![4242],
+            },
+            false,
+        );
+        let PlaceReleaseDecision::Refuse(refusal) = decision else {
+            panic!("expected a refusal for a different generation, got {decision:?}");
+        };
+        assert_eq!(refusal.kind, REFUSAL_STALE_BINDING);
+        assert!(refusal.message.contains("recycled"));
     }
 
     #[test]
