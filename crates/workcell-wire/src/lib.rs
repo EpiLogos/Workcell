@@ -10,14 +10,24 @@ pub use connection::{
 use std::collections::BTreeMap;
 
 use epilogos_workcell_core::{
-    Binding, BindingGraph, BindingPresence, BindingRef, BindingRelation, Degradation, DemandRef,
-    ExternalRef, HealthState, MaterialisedExecutionWorld, OfferRef, PersistenceScope, PlanOmission,
-    PlannedConstraint, PlannedExposure, ProviderPortKind, ProviderRef, RequirementNecessity,
-    Result, RetentionExpectation, WorkcellError, WorkcellRef, WorldRef,
+    Binding, BindingGraph, BindingPresence, BindingRef, BindingRelation, CorrelatedObservation,
+    Degradation, DemandRef, ExternalRef, HealthState, MaterialisedExecutionWorld, OfferRef,
+    PersistenceScope, PlanOmission, PlannedConstraint, PlannedExposure, ProjectionCorrelation,
+    ProviderPortKind, ProviderRef, RequirementNecessity, Result, RetentionExpectation,
+    WorkcellError, WorkcellRef, WorldRef,
 };
 use serde_json::{json, Map, Value};
 
 pub const MATERIAL_WORLD_WIRE_VERSION: &str = "workcell.material-world/v1";
+
+/// Wire version for a folded projection verdict — an AIKit git-projection
+/// verdict carried as an observation on a Workcell material world.
+///
+/// A dedicated, additive document (not a mutation of the material-world wire): a
+/// reader that never asks for a correlation is unaffected, and the material-world
+/// round trip is untouched. The payload is AIKit's verdict carried verbatim;
+/// Workcell computes none of it.
+pub const CORRELATED_OBSERVATION_WIRE_VERSION: &str = "workcell.correlated-observation/v1";
 
 pub fn encode_world(world: &MaterialisedExecutionWorld) -> Result<String> {
     serde_json::to_string_pretty(&world_value(world)?)
@@ -137,6 +147,70 @@ fn decode_world_value(value: &Value) -> Result<MaterialisedExecutionWorld> {
         retention: parse_retention(string_field(world, "retention")?)?,
         state: parse_health(string_field(world, "state")?)?,
         provenance: string_map_field(world, "provenance")?,
+    })
+}
+
+/// Encode a folded projection verdict as a `workcell.correlated-observation/v1`
+/// document. The verdict is AIKit's, carried verbatim and attributed to it.
+pub fn encode_correlated_observation(observation: &CorrelatedObservation) -> Result<String> {
+    serde_json::to_string_pretty(&correlated_observation_value(observation)).map_err(|error| {
+        WorkcellError::OperationFailed(format!("encode correlated observation: {error}"))
+    })
+}
+
+/// Decode a `workcell.correlated-observation/v1` document. The carried verdict is
+/// preserved exactly; nothing about git is re-derived on the way through.
+pub fn decode_correlated_observation(input: &str) -> Result<CorrelatedObservation> {
+    let value: Value = serde_json::from_str(input).map_err(|error| {
+        WorkcellError::InvalidDemand(format!("decode correlated observation: {error}"))
+    })?;
+    decode_correlated_observation_value(&value)
+}
+
+pub fn correlated_observation_value(observation: &CorrelatedObservation) -> Value {
+    let correlation = &observation.correlation;
+    json!({
+        "version": CORRELATED_OBSERVATION_WIRE_VERSION,
+        "world_ref": observation.world_ref.as_str(),
+        "subject_key": observation.subject_key,
+        "subject": observation.subject.as_str(),
+        "attributed_to": observation.attributed_to,
+        "correlation": {
+            "source": correlation.source,
+            "target": correlation.target,
+            "applied": correlation.applied,
+            "projected": correlation.projected,
+            "surfaced": correlation.surfaced,
+            "summary": correlation.summary,
+        },
+    })
+}
+
+fn decode_correlated_observation_value(value: &Value) -> Result<CorrelatedObservation> {
+    let root = object(value, "correlated observation")?;
+    let version = string_field(root, "version")?;
+    if version != CORRELATED_OBSERVATION_WIRE_VERSION {
+        return Err(WorkcellError::Unsupported(format!(
+            "correlated-observation wire version `{version}` is not supported"
+        )));
+    }
+    let subject_key = string_field(root, "subject_key")?.to_owned();
+    let correlation_obj = object_field(root, "correlation")?;
+    let correlation = ProjectionCorrelation {
+        subject_key: subject_key.clone(),
+        source: string_field(correlation_obj, "source")?.to_owned(),
+        target: string_field(correlation_obj, "target")?.to_owned(),
+        applied: bool_field(correlation_obj, "applied")?,
+        projected: bool_field(correlation_obj, "projected")?,
+        surfaced: string_array_field(correlation_obj, "surfaced")?,
+        summary: string_field(correlation_obj, "summary")?.to_owned(),
+    };
+    Ok(CorrelatedObservation {
+        world_ref: WorldRef::new(string_field(root, "world_ref")?).map_err(WorkcellError::from)?,
+        subject_key,
+        subject: ExternalRef::new(string_field(root, "subject")?).map_err(WorkcellError::from)?,
+        attributed_to: string_field(root, "attributed_to")?.to_owned(),
+        correlation,
     })
 }
 
@@ -423,6 +497,20 @@ fn string<'a>(value: &'a Value, label: &str) -> Result<&'a str> {
         .ok_or_else(|| invalid(format!("{label} must be a JSON string")))
 }
 
+fn bool_field(map: &Map<String, Value>, key: &str) -> Result<bool> {
+    map.get(key)
+        .ok_or_else(|| missing(key))?
+        .as_bool()
+        .ok_or_else(|| invalid(format!("field `{key}` must be a boolean")))
+}
+
+fn string_array_field(map: &Map<String, Value>, key: &str) -> Result<Vec<String>> {
+    array_field(map, key)?
+        .iter()
+        .map(|value| Ok(string(value, key)?.to_owned()))
+        .collect()
+}
+
 fn string_map_field(map: &Map<String, Value>, key: &str) -> Result<BTreeMap<String, String>> {
     map_field(map, key)?
         .iter()
@@ -528,6 +616,77 @@ mod tests {
         }"#;
         assert!(matches!(
             decode_world(input),
+            Err(WorkcellError::Unsupported(_))
+        ));
+    }
+
+    fn surfaced_observation() -> CorrelatedObservation {
+        CorrelatedObservation {
+            world_ref: WorldRef::new("world:dev-environment").unwrap(),
+            subject_key: "checkout:workcell".into(),
+            subject: ExternalRef::new("dev-environment:/Users/dev/worktrees/env-1/workcell")
+                .unwrap(),
+            attributed_to: "aikit.worktree-projection/v1".into(),
+            correlation: ProjectionCorrelation {
+                subject_key: "checkout:workcell".into(),
+                source: "aikit.worktree-projection/v1".into(),
+                target: "origin/main".into(),
+                applied: false,
+                projected: false,
+                surfaced: vec!["o-i".into(), "factory".into()],
+                summary: "0/3 checkouts projected onto origin/main (observe)".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn correlated_observation_round_trips_carrying_the_opaque_verdict() {
+        let observation = surfaced_observation();
+        let encoded = encode_correlated_observation(&observation).unwrap();
+        // Attribution and the opaque verdict survive the wire verbatim.
+        assert!(encoded.contains("\"version\": \"workcell.correlated-observation/v1\""));
+        assert!(encoded.contains("\"attributed_to\": \"aikit.worktree-projection/v1\""));
+        assert!(encoded.contains("\"projected\": false"));
+        assert_eq!(
+            decode_correlated_observation(&encoded).unwrap(),
+            observation
+        );
+    }
+
+    #[test]
+    fn a_projected_correlated_observation_round_trips() {
+        let mut observation = surfaced_observation();
+        observation.correlation.applied = true;
+        observation.correlation.projected = true;
+        observation.correlation.surfaced = vec![];
+        observation.correlation.summary = "1/1 checkouts projected onto origin/main (apply)".into();
+        let encoded = encode_correlated_observation(&observation).unwrap();
+        assert!(encoded.contains("\"projected\": true"));
+        assert_eq!(
+            decode_correlated_observation(&encoded).unwrap(),
+            observation
+        );
+    }
+
+    #[test]
+    fn incompatible_correlated_observation_version_fails_explicitly() {
+        let input = r#"{
+          "version": "workcell.correlated-observation/v99",
+          "world_ref": "world:x",
+          "subject_key": "checkout:x",
+          "subject": "opaque:x",
+          "attributed_to": "aikit.worktree-projection/v1",
+          "correlation": {
+            "source": "aikit.worktree-projection/v1",
+            "target": "origin/main",
+            "applied": false,
+            "projected": true,
+            "surfaced": [],
+            "summary": ""
+          }
+        }"#;
+        assert!(matches!(
+            decode_correlated_observation(input),
             Err(WorkcellError::Unsupported(_))
         ));
     }
