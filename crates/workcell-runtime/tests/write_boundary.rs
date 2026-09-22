@@ -142,11 +142,14 @@ fn protected_source_files_retain_identity_without_broadening_writable_grants() {
     }
     let boundary = PreparedWriteBoundary::prepare(r, "revision:1").unwrap();
     let inspected = boundary.inspect("revision:1").unwrap();
+    let canonical_source = fs::canonicalize(&source).unwrap();
     assert!(inspected["protected_objects"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|p| p["path"].as_str() == source.to_str() && p["identity"].as_str().is_some()));
+        .any(
+            |p| p["path"].as_str() == canonical_source.to_str() && p["identity"].as_str().is_some()
+        ));
     let mut command = boundary.command("python3", "revision:1").unwrap();
     command.args(["-c", "import sys; from pathlib import Path; p=Path(sys.argv[1]);\ntry: p.write_text('escape')\nexcept PermissionError: print('protected-source-denied')\nelse: raise AssertionError('protected source overwritten')", source.to_str().unwrap()]);
     let output = command.output().unwrap();
@@ -180,6 +183,55 @@ fn protected_file_under_writable_directory_is_not_silently_dropped() {
         "{error}"
     );
     assert_eq!(fs::read_to_string(source).unwrap(), "retained");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn missing_protected_path_under_writable_directory_is_not_silently_dropped() {
+    let root = fs::canonicalize(root()).unwrap();
+    fs::create_dir_all(root.join("Work/NOW")).unwrap();
+    fs::create_dir(root.join("Work/project")).unwrap();
+    let source = root.join("Work/NOW/future-source.json");
+    let mut r = requirements(&root);
+    r.protected_paths.push(source.clone());
+    let error = PreparedWriteBoundary::prepare(r, "revision:1").unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("writable directory includes a protected object"),
+        "{error}"
+    );
+    assert!(!source.exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn missing_protected_path_requires_new_resolution_when_any_suffix_appears() {
+    let root = fs::canonicalize(root()).unwrap();
+    fs::create_dir_all(root.join("Work/NOW")).unwrap();
+    fs::create_dir(root.join("Work/project")).unwrap();
+    fs::create_dir(root.join("Control")).unwrap();
+    let source = root.join("Control/ProjectCentral/source.json");
+    let mut r = requirements(&root);
+    r.protected_paths.push(source.clone());
+    let caps = write_boundary_capabilities();
+    if caps["supported"] != true {
+        assert!(PreparedWriteBoundary::prepare(r, "revision:1").is_err());
+        fs::remove_dir_all(root).unwrap();
+        return;
+    }
+    let boundary = PreparedWriteBoundary::prepare(r, "revision:1").unwrap();
+    let inspected = boundary.inspect("revision:1").unwrap();
+    let object = inspected["protected_objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|object| object["path"].as_str() == source.to_str())
+        .unwrap();
+    assert_eq!(object["presence"], "missing");
+    assert!(object["identity"].is_null());
+    fs::create_dir(root.join("Control/ProjectCentral")).unwrap();
+    assert!(boundary.inspect("revision:1").is_err());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -273,6 +325,38 @@ print(json.dumps({'escaped_path_denied':True,'grant_root_denied':True,'inherited
         "MACOS_BOUNDARY_EXECUTED: escaping, root mutation, inherited fd, late stdio override, env_clear, identity drift"
     );
     drop(file);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_missing_protection_denies_creation_and_detects_external_appearance() {
+    let root = fs::canonicalize(root()).unwrap();
+    fs::create_dir_all(root.join("Work/NOW")).unwrap();
+    fs::create_dir(root.join("Work/project")).unwrap();
+    fs::create_dir(root.join("Control")).unwrap();
+    let protected = root.join("Control/.central");
+    let mut requirement = requirements(&root);
+    requirement.protected_paths.push(protected.clone());
+    let boundary = PreparedWriteBoundary::prepare(requirement, "revision:1").unwrap();
+    let mut command = boundary.command("python3", "revision:1").unwrap();
+    command
+        .args([
+            "-B",
+            "-c",
+            "import sys\nfrom pathlib import Path\np=Path(sys.argv[1])\ntry: p.mkdir()\nexcept OSError as e: assert e.errno in (1,13), str(e)\nelse: raise AssertionError('missing protected path was created')",
+        ])
+        .arg(&protected);
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!protected.exists());
+    fs::create_dir(&protected).unwrap();
+    assert!(boundary.command("/usr/bin/true", "revision:1").is_err());
+    eprintln!("MACOS_MISSING_PROTECTION_EXECUTED: creation denied and appearance drift refused");
     fs::remove_dir_all(root).unwrap();
 }
 

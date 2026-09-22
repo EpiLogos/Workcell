@@ -272,8 +272,8 @@ impl PreparedWriteBoundary {
             json!({"schema": "workcell.prepared-write-boundary/v1", "state": "prepared-not-executed",
             "requirements_digest": self.requirements.digest(), "requirements": self.requirements.as_json(),
             "capabilities": write_boundary_capabilities(),
-            "objects": self.paths.iter().map(|p| json!({"path": p.canonical, "identity": p.identity})).collect::<Vec<_>>(),
-            "protected_objects": self.protected.iter().map(|p| json!({"path": p.canonical, "identity": p.identity})).collect::<Vec<_>>() }),
+            "objects": self.paths.iter().map(MaterialPath::inspection).collect::<Vec<_>>(),
+            "protected_objects": self.protected.iter().map(MaterialPath::inspection).collect::<Vec<_>>() }),
         )
     }
     pub fn revalidate(&self, current_policy_revision: &str) -> Result<()> {

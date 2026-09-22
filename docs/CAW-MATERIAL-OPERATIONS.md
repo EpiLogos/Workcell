@@ -130,11 +130,25 @@ workcell-write-boundary run REQUIREMENTS.json CURRENT_POLICY_REVISION TIMEOUT_MS
 Requirements schema `workcell.write-boundary/v1` has **all** these fields:
 `policy_ref`, `policy_revision`, `authority_ref`, `writable_paths`,
 `protected_paths`, `required_coverage`, `expires_at_unix_ms`, plus `schema`.
-Paths must be absolute existing directories; at most 64 of each are accepted.
+Writable paths must be absolute existing directories; at most 64 writable and
+64 protected paths are accepted. A protection can name an existing regular file
+or directory, or an absent path pinned to its nearest existing directory.
 Permit NOW plus authorised source/worktree/build directories, not NOW alone.
-A writable ancestor of a protected directory or `/` is refused. A protected
+A writable ancestor of a protected path or `/` is refused. A protected
 parent such as Work may contain an explicitly permitted NOW/project subtree.
 Revision, expiry and path/object identity are rechecked immediately before exec.
+
+An absent protection has no object identity. Inspection reports `presence:missing`,
+`identity:null`, the existing ancestor's supplied/canonical path and native
+identity, and the unresolved suffix. Its prospective canonical path participates
+in the same writable-ancestor refusal; representing absence grants no permission
+to create it. A symlink in its ancestor path is refused. Target or intermediate
+path appearance, ancestor replacement and type drift require fresh resolution
+before launch. This preserves Central's protection of source paths that have not
+been created in an assigned checkout without creating placeholder ground or
+discarding policy restrictions. Existing-object inspection retains its previous
+shape. Native path and write-boundary tests exercise this contract; an inspection
+alone is not evidence that a model or task executed under it.
 
 Supported adapters are **unprivileged Linux Landlock ABI >= 3** and **macOS
 Seatbelt through the system `/usr/bin/sandbox-exec`**, covering regular
