@@ -1,6 +1,6 @@
 # Redis NOW material service
 
-**Owner:** Workcell. **Consumer:** AIKit Jev/Redis NOW integration (EpiLogos/ai-kit#388; O:I #65/#220).  
+**Owner:** Workcell. **Consumer:** AIKit Jev/Redis NOW integration (EpiLogos/ai-kit#388; O:I #65/#220).
 **Reference implementation basis:** Redis OSS 8.10 series; Workcell manages material lifecycle only.
 
 Redis is the hot operational body for prepared participant context and the live NOW neighbourhood. It is not the durable owner of Central source identity, BKMR/Wiki knowledge, Factory Return, or Day/NOW semantics.
