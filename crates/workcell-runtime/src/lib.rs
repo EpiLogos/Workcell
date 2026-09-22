@@ -47,8 +47,9 @@ pub use instance_scan::{
     ScanReport, ScanTransitions, PID_ALIASES, STALE_AFTER_MISSED_SCANS,
 };
 pub use local::{
-    CollapsedLocalConfig, CollapsedLocalWorkcell, ServiceDeclarationSource,
-    MANAGED_SERVICE_PROVIDER_REF, OPENSANDBOX_PROVIDER_REF, TARGET_SERVICE_PROVIDER_REF,
+    CollapsedLocalConfig, CollapsedLocalWorkcell, ExternalExecutionProviderFactory,
+    ServiceDeclarationSource, MANAGED_SERVICE_PROVIDER_REF, OPENSANDBOX_PROVIDER_REF,
+    TARGET_SERVICE_PROVIDER_REF,
 };
 pub use place::{
     decide_place_release, herdr_place_ref, parse_place_ref, release_place_live, request_place_live,
