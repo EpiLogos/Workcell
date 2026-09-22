@@ -55,15 +55,26 @@ pub fn redis_now_service(
     let port_text = port.to_string();
     let status = command_owned(
         "redis-cli",
-        ["--raw", "-h", host.as_str(), "-p", port_text.as_str(), "PING"],
+        [
+            "--raw",
+            "-h",
+            host.as_str(),
+            "-p",
+            port_text.as_str(),
+            "PING",
+        ],
     )?;
-    let start = command_owned(
-        "redis-server",
-        [config_path.as_str(), "--daemonize", "yes"],
-    )?;
+    let start = command_owned("redis-server", [config_path.as_str(), "--daemonize", "yes"])?;
     let stop = command_owned(
         "redis-cli",
-        ["--raw", "-h", host.as_str(), "-p", port_text.as_str(), "SHUTDOWN"],
+        [
+            "--raw",
+            "-h",
+            host.as_str(),
+            "-p",
+            port_text.as_str(),
+            "SHUTDOWN",
+        ],
     )?;
 
     Ok(ExternalManagedService::new(
@@ -245,7 +256,6 @@ pub fn openclaw_gateway_service(
     .with_acquisition(acquisition))
 }
 
-
 fn command_owned<I, S>(program: &str, args: I) -> Result<ExternalServiceCommand>
 where
     I: IntoIterator<Item = S>,
@@ -357,7 +367,6 @@ mod tests {
         .is_err());
     }
 
-
     #[test]
     fn redis_now_is_target_owned_loopback_material_with_explicit_persistence_policy() {
         let service = redis_now_service(
@@ -371,23 +380,25 @@ mod tests {
         assert_eq!(service.endpoint, "redis://127.0.0.1:6381");
         assert_eq!(service.status.program, "redis-cli");
         assert_eq!(service.start.as_ref().unwrap().program, "redis-server");
-        assert_eq!(service.acquisition, ExternalServiceAcquisition::EnsureRunning);
+        assert_eq!(
+            service.acquisition,
+            ExternalServiceAcquisition::EnsureRunning
+        );
         assert_eq!(
             service.metadata.get("eviction_policy").map(String::as_str),
             Some("noeviction")
         );
         assert_eq!(
-            service.metadata.get("semantic_state_owner").map(String::as_str),
+            service
+                .metadata
+                .get("semantic_state_owner")
+                .map(String::as_str),
             Some("central+aikit+factory")
         );
 
-        let rendered = redis_now_config_policy(
-            "/var/lib/oi/redis-now/data",
-            "127.0.0.1",
-            6381,
-            268_435_456,
-        )
-        .unwrap();
+        let rendered =
+            redis_now_config_policy("/var/lib/oi/redis-now/data", "127.0.0.1", 6381, 268_435_456)
+                .unwrap();
         for required in [
             "appendonly yes",
             "appendfsync everysec",
