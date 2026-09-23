@@ -221,7 +221,15 @@ esac
         .with_start(command(&script, &state, "start"))
         .with_stop(command(&script, &state, "stop"))
         .with_acquisition(ExternalServiceAcquisition::EnsureRunning)
-        .with_readiness_timing(5_000, 50)],
+        // A generous window: the poll loop exits at the first healthy
+        // probe, so green runs still take ~one launch delay — the extra
+        // headroom only buys tolerance on loaded machines, where process
+        // spawns stretch far past the nominal delay (this test failed once
+        // under a parallel cargo build when a 5s window expired before the
+        // 600ms launch surfaced; O:I #65, 2026-09-22). The window-exhaustion
+        // path is proven separately by
+        // `a_start_that_never_becomes_healthy_is_stopped_not_leaked`.
+        .with_readiness_timing(30_000, 100)],
     )
     .unwrap();
 
