@@ -57,9 +57,7 @@ impl GitRecord {
 
     fn from_journal_value(value: &Value) -> Result<(String, GitRecord)> {
         let object = value.as_object().ok_or_else(|| {
-            WorkcellError::OperationFailed(
-                "git worktree journal entry must be an object".into(),
-            )
+            WorkcellError::OperationFailed("git worktree journal entry must be an object".into())
         })?;
         let required = |key: &str| -> Result<String> {
             object
@@ -183,9 +181,12 @@ fn write_journal(path: &Path, records: &BTreeMap<String, GitRecord>) -> Result<(
         "worktrees": entries,
     });
     let staged = path.with_extension("json.tmp");
-    fs::write(&staged, serde_json::to_vec_pretty(&document).map_err(|error| {
-        WorkcellError::OperationFailed(format!("encode git worktree journal: {error}"))
-    })?)
+    fs::write(
+        &staged,
+        serde_json::to_vec_pretty(&document).map_err(|error| {
+            WorkcellError::OperationFailed(format!("encode git worktree journal: {error}"))
+        })?,
+    )
     .map_err(|error| {
         WorkcellError::OperationFailed(format!(
             "write git worktree journal `{}`: {error}",

@@ -193,9 +193,7 @@ impl WorkspaceProvider for GitWorktreeWorkspaceProvider {
             source_dirty,
         };
         let allocation = self.allocation(&material_ref, &record);
-        self.records
-            .borrow_mut()
-            .insert(material_ref, record);
+        self.records.borrow_mut().insert(material_ref, record);
         self.persist()?;
         Ok(allocation)
     }

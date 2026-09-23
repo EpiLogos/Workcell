@@ -263,11 +263,9 @@ fn journal_survives_provider_restart_and_prunes_gone_paths() {
     let root = temp_path("git-journal-restart");
     let journal_path = root.join("git-worktrees.json");
 
-    let mut first = GitWorktreeWorkspaceProvider::new(
-        ProviderRef::new("provider:git-journal").unwrap(),
-        &root,
-    )
-    .unwrap();
+    let mut first =
+        GitWorktreeWorkspaceProvider::new(ProviderRef::new("provider:git-journal").unwrap(), &root)
+            .unwrap();
     let mut request = request(&repository, &commit);
     request.branch_name = Some("aikit/journal-run".into());
     let allocation = first.prepare_workspace(&request).unwrap();
@@ -277,16 +275,17 @@ fn journal_survives_provider_restart_and_prunes_gone_paths() {
     let recorded: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&journal_path).unwrap()).unwrap();
     assert_eq!(recorded["schema"], "workcell.git-worktrees/v1");
-    assert_eq!(recorded["worktrees"][0]["material_ref"], allocation.material_ref);
+    assert_eq!(
+        recorded["worktrees"][0]["material_ref"],
+        allocation.material_ref
+    );
     assert_eq!(recorded["worktrees"][0]["branch"], "aikit/journal-run");
 
     // A restarted provider re-reads the journal: the pre-restart allocation
     // is known and observable, and release works across the restart.
-    let mut restarted = GitWorktreeWorkspaceProvider::new(
-        ProviderRef::new("provider:git-journal").unwrap(),
-        &root,
-    )
-    .unwrap();
+    let mut restarted =
+        GitWorktreeWorkspaceProvider::new(ProviderRef::new("provider:git-journal").unwrap(), &root)
+            .unwrap();
     let observation = restarted.observe_workspace(&allocation).unwrap();
     assert_eq!(observation.health, HealthState::Healthy);
     restarted
@@ -307,7 +306,10 @@ fn journal_survives_provider_restart_and_prunes_gone_paths() {
     fs::remove_dir_all(&path).unwrap();
     let observation = restarted.observe_workspace(&allocation).unwrap();
     assert_eq!(observation.health, HealthState::Unavailable);
-    assert_eq!(observation.detail.get("pruned").map(String::as_str), Some("true"));
+    assert_eq!(
+        observation.detail.get("pruned").map(String::as_str),
+        Some("true")
+    );
     let pruned: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&journal_path).unwrap()).unwrap();
     assert_eq!(
@@ -324,7 +326,11 @@ fn journal_survives_provider_restart_and_prunes_gone_paths() {
 fn a_malformed_journal_is_an_honest_construction_failure_not_silence() {
     let root = temp_path("git-journal-corrupt");
     fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("git-worktrees.json"), "{\"schema\": \"wrong/v9\"}").unwrap();
+    fs::write(
+        root.join("git-worktrees.json"),
+        "{\"schema\": \"wrong/v9\"}",
+    )
+    .unwrap();
     let error = match GitWorktreeWorkspaceProvider::new(
         ProviderRef::new("provider:git-corrupt").unwrap(),
         &root,

@@ -615,16 +615,13 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn an_upstream_502_is_refused_by_name_as_the_known_control_fence() {
         // Live receipt 2026-09-07 finding 1: PATCH /policy returns 502 via
         // the server proxy with egress image v1.1.7. The refusal must be
         // named and typed `Unsupported`, never a generic failure — and the
         // patch must not have been silently "successful".
-        let transport = FixtureTransport::with_responses(vec![response(
-            502,
-            json!({"error": "bad gateway"}),
-        )]);
+        let transport =
+            FixtureTransport::with_responses(vec![response(502, json!({"error": "bad gateway"}))]);
         let provider = OpenSandboxEgressPolicyProvider::new(
             config(),
             transport,
@@ -647,6 +644,7 @@ mod tests {
         assert!(error.to_string().contains("opensandbox/egress:v1.1.7"));
     }
 
+    #[test]
     fn policy_patch_uses_egress_sidecar_auth_but_does_not_materialise_a_path() {
         let transport = FixtureTransport::with_responses(vec![
             response(

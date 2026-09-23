@@ -510,9 +510,9 @@ fn remote_system(
                     );
                     object.insert("provenance".into(), json!(format!("remote:{label}")));
                 }
-                document["sections"]
-                    .as_array_mut()
-                    .map(|sections| sections.push(section));
+                if let Some(sections) = document["sections"].as_array_mut() {
+                    sections.push(section);
+                }
             }
             degradations.push(json!({
                 "subject_ref": format!("remote:{label}"),
@@ -526,10 +526,8 @@ fn remote_system(
         }
         None => {
             let (state, reason) = ("unavailable".to_owned(), "the remote Workcell did not supply a settings disclosure (unreachable, refused, or its serve was not started by `workcell serve`)");
-            document["sections"]
-                .as_array_mut()
-                .map(|sections| {
-                    sections.push(json!({
+            if let Some(sections) = document["sections"].as_array_mut() {
+                sections.push(json!({
                         "id": format!("remote:{label}"),
                         "title": format!("Remote Workcell {label}"),
                         "provenance": format!("remote:{label}"),
@@ -542,7 +540,7 @@ fn remote_system(
                             "active": { "state": state, "reason": reason },
                         }],
                     }));
-                });
+            }
             degradations.push(json!({
                 "subject_ref": format!("remote:{label}"),
                 "state": "unavailable",

@@ -185,8 +185,8 @@ fn remote_system_merges_remote_sections_under_remote_provenance_and_stays_honest
 
     // A serving cell that exposes the host-owned settings disclosure.
     let disclosure_root = endpoint_root.clone();
-    let disclosed = ControlService::new(local(&endpoint_root)).with_system_disclosure(Arc::new(
-        move || {
+    let disclosed =
+        ControlService::new(local(&endpoint_root)).with_system_disclosure(Arc::new(move || {
             Ok(json!({
                 "schema": "oi.product-settings-disclosure/v2",
                 "product_id": "workcell",
@@ -207,8 +207,7 @@ fn remote_system_merges_remote_sections_under_remote_provenance_and_stays_honest
                 "obligations": [],
                 "owner": {"owner_ref": "workcell:remote-test"},
             }))
-        },
-    ));
+        }));
     let mut server = TcpControlServer::bind("127.0.0.1:0", disclosed).unwrap();
     let endpoint = server.local_addr().unwrap().to_string();
 
@@ -247,10 +246,7 @@ fn remote_system_merges_remote_sections_under_remote_provenance_and_stays_honest
         assert_eq!(remote[0]["provenance"], format!("remote:{client_endpoint}"));
         assert!(
             sections.iter().any(|section| section["id"] == "storage"
-                && !section["id"]
-                    .as_str()
-                    .unwrap_or("")
-                    .starts_with("remote:")),
+                && !section["id"].as_str().unwrap_or("").starts_with("remote:")),
             "the local reading must survive the merge"
         );
 

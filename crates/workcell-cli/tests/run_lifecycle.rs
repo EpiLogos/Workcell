@@ -64,7 +64,10 @@ fn fixture_repository() -> PathBuf {
     let repository = temp_path("repo");
     fs::create_dir_all(&repository).unwrap();
     git(&repository, &["init", "--template="]);
-    git(&repository, &["config", "user.email", "runs@example.invalid"]);
+    git(
+        &repository,
+        &["config", "user.email", "runs@example.invalid"],
+    );
     git(&repository, &["config", "user.name", "Run Fixture"]);
     git(&repository, &["config", "commit.gpgsign", "false"]);
     fs::write(repository.join("hello.txt"), "committed\n").unwrap();
@@ -163,7 +166,10 @@ fn a_worktree_run_lives_end_to_end_on_the_branch_law_with_dirty_refusal() {
     assert!(output.status.success(), "collect failed");
     let collected = stdout_json(&output);
     assert_eq!(collected["execution_status"], "returned");
-    assert_eq!(collected["deliverable"]["branch"]["name"], format!("aikit/{slug}"));
+    assert_eq!(
+        collected["deliverable"]["branch"]["name"],
+        format!("aikit/{slug}")
+    );
     assert_eq!(collected["deliverable"]["branch"]["commit"], branch_tip);
     assert_eq!(collected["deliverable"]["branch"]["pushed"], false);
 
@@ -262,10 +268,7 @@ fn scope_names_the_worktree_and_degrades_honestly_without_a_write_adapter() {
     let output = run(&args);
     assert!(output.status.success(), "scope failed");
     let scoped = stdout_json(&output);
-    assert_eq!(
-        scoped["scope"]["schema"],
-        "workcell.prepared-run-scope/v1"
-    );
+    assert_eq!(scoped["scope"]["schema"], "workcell.prepared-run-scope/v1");
     assert_eq!(scoped["scope"]["run_slug"], slug);
     assert!(
         scoped["scope"]["worktree_path"]

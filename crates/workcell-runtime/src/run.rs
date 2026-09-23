@@ -15,7 +15,10 @@
 //! place, so records survive process restarts like every other durable
 //! surface in this crate.
 
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use epilogos_workcell_core::{Result, WorkcellError};
 use serde_json::{json, Value};
@@ -59,7 +62,10 @@ fn transition_allowed(from: &str, to: &str) -> bool {
     }
     match from {
         "queued" => matches!(to, "running" | "cancelled" | "fail"),
-        "running" => matches!(to, "blocked" | "returned" | "success" | "fail" | "cancelled"),
+        "running" => matches!(
+            to,
+            "blocked" | "returned" | "success" | "fail" | "cancelled"
+        ),
         "blocked" => matches!(
             to,
             "running" | "returned" | "success" | "fail" | "cancelled"
@@ -88,9 +94,9 @@ fn is_safe_slug(slug: &str) -> bool {
 /// checked; the *truth* of a status is the caller's responsibility — the
 /// ledger never invents or rewrites a reading.
 pub fn validate_run_record(record: &Value) -> Result<()> {
-    let object = record.as_object().ok_or_else(|| {
-        WorkcellError::InvalidDemand("run record must be a JSON object".into())
-    })?;
+    let object = record
+        .as_object()
+        .ok_or_else(|| WorkcellError::InvalidDemand("run record must be a JSON object".into()))?;
     if record["schema"] != RUN_SCHEMA {
         return Err(WorkcellError::InvalidDemand(format!(
             "run record schema must be {RUN_SCHEMA}"
@@ -130,9 +136,9 @@ pub fn validate_run_record(record: &Value) -> Result<()> {
             EXECUTION_STATUSES.join("|")
         )));
     }
-    let rung = record["rung"].as_str().ok_or_else(|| {
-        WorkcellError::InvalidDemand("run record rung must be a string".into())
-    })?;
+    let rung = record["rung"]
+        .as_str()
+        .ok_or_else(|| WorkcellError::InvalidDemand("run record rung must be a string".into()))?;
     if !RUN_RUNGS.contains(&rung) {
         return Err(WorkcellError::InvalidDemand(format!(
             "rung `{rung}` is outside the run vocabulary ({})",
@@ -209,8 +215,7 @@ pub fn validate_agency_block(agency: &Value) -> Result<()> {
                 Value::String(value) if !value.trim().is_empty() => {}
                 _ => {
                     return Err(WorkcellError::InvalidDemand(
-                        "agency block field `minted_by` must be a non-empty string or null"
-                            .into(),
+                        "agency block field `minted_by` must be a non-empty string or null".into(),
                     ))
                 }
             }
@@ -266,10 +271,7 @@ pub fn set_run_status(record: &mut Value, to: &str, reason: Option<&str>) -> Res
             EXECUTION_STATUSES.join("|")
         )));
     }
-    let from = record["execution_status"]
-        .as_str()
-        .unwrap_or("")
-        .to_owned();
+    let from = record["execution_status"].as_str().unwrap_or("").to_owned();
     if !transition_allowed(&from, to) {
         return Err(WorkcellError::OperationFailed(format!(
             "run `{}` cannot transition execution_status from `{from}` to `{to}`",
@@ -283,10 +285,8 @@ pub fn set_run_status(record: &mut Value, to: &str, reason: Option<&str>) -> Res
             record["opened_at_unix_ms"] = json!(now);
         }
         "returned" => record["collected_at_unix_ms"] = json!(now),
-        "success" | "fail" | "cancelled" => {
-            if record["closed_at_unix_ms"].is_null() {
-                record["closed_at_unix_ms"] = json!(now);
-            }
+        "success" | "fail" | "cancelled" if record["closed_at_unix_ms"].is_null() => {
+            record["closed_at_unix_ms"] = json!(now);
         }
         _ => {}
     }
@@ -359,7 +359,10 @@ impl RunLedger {
             }
         }
         validate_run_record(&record)?;
-        let slug = record["run_slug"].as_str().expect("validated slug").to_owned();
+        let slug = record["run_slug"]
+            .as_str()
+            .expect("validated slug")
+            .to_owned();
         let path = self.record_path(&slug);
         if path.exists() {
             return Err(WorkcellError::OperationFailed(format!(
@@ -461,9 +464,12 @@ impl RunLedger {
             ))
         })?;
         let staged = path.with_extension("json.tmp");
-        fs::write(&staged, serde_json::to_vec_pretty(record).map_err(|error| {
-            WorkcellError::OperationFailed(format!("encode run record: {error}"))
-        })?)
+        fs::write(
+            &staged,
+            serde_json::to_vec_pretty(record).map_err(|error| {
+                WorkcellError::OperationFailed(format!("encode run record: {error}"))
+            })?,
+        )
         .map_err(|error| {
             WorkcellError::OperationFailed(format!(
                 "write staged run record `{}`: {error}",
@@ -503,9 +509,12 @@ impl RunLedger {
         fs::create_dir_all(self.runs_dir()).map_err(|error| {
             WorkcellError::OperationFailed(format!("create runs directory: {error}"))
         })?;
-        fs::write(&staged, serde_json::to_vec_pretty(&index).map_err(|error| {
-            WorkcellError::OperationFailed(format!("encode run index: {error}"))
-        })?)
+        fs::write(
+            &staged,
+            serde_json::to_vec_pretty(&index).map_err(|error| {
+                WorkcellError::OperationFailed(format!("encode run index: {error}"))
+            })?,
+        )
         .map_err(|error| {
             WorkcellError::OperationFailed(format!(
                 "write staged run index `{}`: {error}",
@@ -636,8 +645,12 @@ mod tests {
         // Blocked always names its reason and can be entered while live.
         let mut blocked = sample_record("blocked");
         set_run_status(&mut blocked, "running", None).unwrap();
-        set_run_status(&mut blocked, "blocked", Some("release refused: worktree dirty"))
-            .unwrap();
+        set_run_status(
+            &mut blocked,
+            "blocked",
+            Some("release refused: worktree dirty"),
+        )
+        .unwrap();
         assert_eq!(
             blocked["status_reason"],
             json!("release refused: worktree dirty")
@@ -737,7 +750,10 @@ mod tests {
         assert_eq!(scope["schema"], json!(PREPARED_RUN_SCOPE_SCHEMA));
         assert_eq!(scope["run_slug"], json!("scoped"));
         assert_eq!(scope["worktree_path"], json!("/tmp/worktree-path"));
-        assert_eq!(scope["workspace_material_ref"], json!("workspace:git-worktree:abc"));
+        assert_eq!(
+            scope["workspace_material_ref"],
+            json!("workspace:git-worktree:abc")
+        );
         assert_eq!(scope["prepared_write_boundary"], boundary);
         assert!(scope["place_grant"].is_null());
         assert_eq!(scope["demand_digest"], json!("sha256:abc"));
