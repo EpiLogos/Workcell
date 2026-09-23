@@ -13,6 +13,7 @@ mod projection;
 mod reconcile;
 mod volume;
 
+pub use client::EGRESS_CONTROL_FENCE;
 pub use composition::*;
 pub use credential::*;
 pub use data_plane::*;

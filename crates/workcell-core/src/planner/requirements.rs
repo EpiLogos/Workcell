@@ -118,9 +118,21 @@ pub(crate) fn atoms(demand: &ExecutionDemand) -> Vec<RequirementAtom> {
     );
 
     if let Some(workspace) = &demand.workspace {
-        let key = match workspace.access {
-            WorkspaceAccess::ReadOnly => "workspace:read-only",
-            WorkspaceAccess::Writable => "workspace:writable",
+        // Branch law: a writable demand carrying `branch_law: aikit` routes its
+        // workspace to a git-worktree-capable provider via the dedicated
+        // affordance key. The key is what keeps plain demands on their existing
+        // workspace providers — the generic `workspace:writable` atom never
+        // matches a git-worktree offer, and the git-worktree atom never matches
+        // anything else.
+        let git_branch_law = workspace.access == WorkspaceAccess::Writable
+            && demand.extensions.get("branch_law").map(String::as_str) == Some("aikit");
+        let key = if git_branch_law {
+            "workspace:git-worktree"
+        } else {
+            match workspace.access {
+                WorkspaceAccess::ReadOnly => "workspace:read-only",
+                WorkspaceAccess::Writable => "workspace:writable",
+            }
         };
         out.push(atom(
             "workspace",

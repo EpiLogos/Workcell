@@ -20,12 +20,14 @@ mod place_scan;
 mod profile;
 mod reference_services;
 mod resource_usage;
+mod run;
 mod runtime;
 mod secret;
 mod service;
 mod service_declaration;
 mod support;
 
+pub use epilogos_workcell_workspace::{git_branch_facts, GitBranchFacts};
 pub use external_service::{
     ExternalManagedService, ExternalManagedServiceProvider, ExternalServiceAcquisition,
     ExternalServiceCommand,
@@ -48,8 +50,8 @@ pub use instance_scan::{
 };
 pub use local::{
     CollapsedLocalConfig, CollapsedLocalWorkcell, ExternalExecutionProviderFactory,
-    ServiceDeclarationSource, MANAGED_SERVICE_PROVIDER_REF, OPENSANDBOX_PROVIDER_REF,
-    TARGET_SERVICE_PROVIDER_REF,
+    ExternalWorkspaceProviderFactory, ServiceDeclarationSource, GIT_WORKSPACE_PROVIDER_REF,
+    MANAGED_SERVICE_PROVIDER_REF, OPENSANDBOX_PROVIDER_REF, TARGET_SERVICE_PROVIDER_REF,
 };
 pub use place::{
     decide_place_release, herdr_place_ref, parse_place_ref, release_place_live, request_place_live,
@@ -79,6 +81,11 @@ pub use reference_services::{
 pub use resource_usage::{
     observe_resource_usage, validate_resource_usage, ResourceUsageReport, DEFAULT_INTERVAL,
     MAX_INTERVAL, RESOURCE_USAGE_SCHEMA,
+};
+pub use run::{
+    compose_prepared_run_scope, set_run_status, validate_agency_block, validate_operative_block,
+    validate_run_record, RunLedger, EXECUTION_STATUSES, PREPARED_RUN_SCOPE_SCHEMA, RUNS_DIRECTORY,
+    RUNS_INDEX_FILE, RUN_RUNGS, RUN_SCHEMA,
 };
 pub use runtime::{ReferenceProjectRuntimeProvider, RuntimeMode};
 pub use secret::{

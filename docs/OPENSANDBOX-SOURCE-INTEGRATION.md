@@ -247,3 +247,67 @@ The #97 physical cut must exercise the actual integrated software and record con
 12. record actual OpenSandbox server/runtime/component versions alongside the source/spec pin because upstream component release versions are presently heterogeneous.
 
 Only that physical evidence should close the local-operation portion of W26/O:I #97.
+
+## Bring-up runbook: a declared, ensured-running execution deployment
+
+This section closes the "no runbook" half of the 2026-09-16 Omarchy finding:
+the documented bring-up for sandbox execution is the operator-declared
+services mechanism — a `services.json` `execution` section plus the ensure-running
+acquisition with its readiness window and stop-on-refusal. Nothing here starts
+a service on its own; a declaration is intent, and the provider still has to
+materialise it.
+
+1. **Declare the deployment** in `<state-root>/services.json`:
+
+   ```json
+   {
+     "schema": "workcell.service-declaration/v1",
+     "execution": [
+       {
+         "kind": "opensandbox",
+         "lifecycle_base_url": "http://127.0.0.1:8080",
+         "use_server_proxy": true,
+         "api_key_env": "OPEN_SANDBOX_API_KEY"
+       }
+     ]
+   }
+   ```
+
+   `use_server_proxy` routes the execd/egress data plane through the lifecycle
+   server's proxy (the shape the live receipt exercised). The API key, when
+   the server enables auth, is only ever *named* here — the value stays in the
+   environment of the process that composes the Workcell.
+
+2. **Bring the lifecycle server up on the target host** (operator-owned; e.g.
+   `uvx opensandbox-server --config <config>` with Docker running for the
+   sandbox images). Workcell owns no part of the server's lifecycle; the
+   pinned upstream revisions are `OPENSANDBOX_SOURCE_REVISION` /
+   `OPENSANDBOX_LIFECYCLE_SPEC_BLOB` in the provider crate.
+
+3. **Verify composition and honest availability**: `workcell discover` shows
+   one execution offer from `provider:opensandbox`. Its availability is
+   `available` only when the lifecycle server actually answers; a declared
+   deployment with a dead server reports `unavailable` with the probe
+   diagnostic — declaring is never asserting.
+
+4. **Materialise**: a demand whose execution requirement the planner binds to
+   the sandbox offer materialises a real sandbox (`POST /sandboxes`), waits
+   out `Creating → Running` during observation, and records the execd port in
+   its allocation provenance. Command execution (`execute_operation("command")`)
+   streams the execd SSE/NDJSON stream — stdout/stderr are recorded (see the
+   parser fixture tests; a successful command with empty output is a test
+   failure, per the 2026-09-07 receipt finding 2).
+
+5. **Sandbox server reconciliation** is the operator-level reaper:
+   `workcell sandboxes reconcile --server <url>` lists server-side sandboxes
+   and snapshots, classifies lease-expired orphans, and releases only under
+   `--release-orphans` or operator-asserted `--release <id>`; snapshots only
+   under `--include-snapshots`.
+
+6. **Known fence**: the egress-policy and credential-vault *control* paths
+   (`PATCH`/`GET /policy`, `POST`/`DELETE /credential-vault` on the sidecar)
+   answer HTTP 502 through the server proxy with the pinned egress image
+   (`opensandbox/egress:v1.1.7`). The provider refuses those paths by name
+   (`Unsupported`, see `EGRESS_CONTROL_FENCE`), doctor and `workcell system`
+   list the fence as a degradation while a deployment is declared, and the
+   proven denied-route no-write broker remains the credential path of record.

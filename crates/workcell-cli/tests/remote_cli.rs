@@ -172,3 +172,134 @@ fn native_remote_cli_keeps_authentication_failure_distinct_and_accepts_env_token
     client_thread.join().unwrap();
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn remote_system_merges_remote_sections_under_remote_provenance_and_stays_honest_when_absent() {
+    use std::sync::Arc;
+
+    use serde_json::json;
+
+    let root = temp_path("system-merge");
+    let endpoint_root = root.join("endpoint-state");
+    fs::create_dir_all(&endpoint_root).unwrap();
+
+    // A serving cell that exposes the host-owned settings disclosure.
+    let disclosure_root = endpoint_root.clone();
+    let disclosed =
+        ControlService::new(local(&endpoint_root)).with_system_disclosure(Arc::new(move || {
+            Ok(json!({
+                "schema": "oi.product-settings-disclosure/v2",
+                "product_id": "workcell",
+                "sections": [{
+                    "id": "storage",
+                    "title": "Storage / artifacts",
+                    "settings": [{
+                        "id": "storage.state_root",
+                        "title": "Workcell state root",
+                        "kind": "scalar",
+                        "declared": {"path": disclosure_root.display().to_string()},
+                        "effective": {"path": disclosure_root.display().to_string()},
+                        "active": {"path": disclosure_root.display().to_string()},
+                    }],
+                }],
+                "availability": {"state": "available", "reason": null},
+                "degradations": [],
+                "obligations": [],
+                "owner": {"owner_ref": "workcell:remote-test"},
+            }))
+        }));
+    let mut server = TcpControlServer::bind("127.0.0.1:0", disclosed).unwrap();
+    let endpoint = server.local_addr().unwrap().to_string();
+
+    let state_root = root.join("local-state");
+    fs::create_dir_all(&state_root).unwrap();
+    let state_arg = state_root.display().to_string();
+    let client_endpoint = endpoint.clone();
+    let client_thread = thread::spawn(move || {
+        let args = vec![
+            "--endpoint".into(),
+            client_endpoint.clone(),
+            "--state-root".into(),
+            state_arg.clone(),
+            "--json".into(),
+            "system".into(),
+        ];
+        let merged = stdout_json(&run_json(&args, None));
+        assert_eq!(merged["schema"], "oi.product-settings-disclosure/v2");
+
+        // Local sections remain, remote sections are merged under the
+        // `remote:<endpoint>:` provenance header.
+        let sections = merged["sections"].as_array().unwrap();
+        let remote: Vec<&Value> = sections
+            .iter()
+            .filter(|section| {
+                section["id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with(&format!("remote:{client_endpoint}:"))
+            })
+            .collect();
+        assert!(
+            !remote.is_empty(),
+            "remote sections must be merged with remote: provenance"
+        );
+        assert_eq!(remote[0]["provenance"], format!("remote:{client_endpoint}"));
+        assert!(
+            sections.iter().any(|section| section["id"] == "storage"
+                && !section["id"].as_str().unwrap_or("").starts_with("remote:")),
+            "the local reading must survive the merge"
+        );
+
+        // The merge names the remote as available with its digest evidence.
+        let degradation = merged["degradations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["subject_ref"] == format!("remote:{client_endpoint}"))
+            .unwrap_or_else(|| panic!("remote degradation entry missing"));
+        assert_eq!(degradation["state"], "available");
+    });
+    server.serve_n(1).unwrap();
+    client_thread.join().unwrap();
+
+    // A serving cell WITHOUT a disclosure refuses `system`; the CLI stays
+    // honest: an unavailable remote section, never a fabricated reading.
+    let bare = ControlService::new(local(&root.join("bare-state")));
+    let mut bare_server = TcpControlServer::bind("127.0.0.1:0", bare).unwrap();
+    let bare_endpoint = bare_server.local_addr().unwrap().to_string();
+    let bare_state = root.join("bare-client");
+    fs::create_dir_all(&bare_state).unwrap();
+    let bare_thread = thread::spawn(move || {
+        let args = vec![
+            "--endpoint".into(),
+            bare_endpoint.clone(),
+            "--state-root".into(),
+            bare_state.display().to_string(),
+            "--json".into(),
+            "system".into(),
+        ];
+        let merged = stdout_json(&run_json(&args, None));
+        let remote: Vec<&Value> = merged["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|section| {
+                section["id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with(&format!("remote:{bare_endpoint}"))
+            })
+            .collect();
+        assert_eq!(remote.len(), 1, "exactly one honest remote section");
+        let setting = &remote[0]["settings"][0];
+        assert_eq!(setting["effective"]["state"], "unavailable");
+        assert!(setting["effective"]["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("did not supply a settings disclosure"));
+    });
+    bare_server.serve_n(1).unwrap();
+    bare_thread.join().unwrap();
+
+    let _ = fs::remove_dir_all(root);
+}

@@ -100,6 +100,7 @@ fn workspace_provider_uses_shared_offer_and_allocation_conformance() {
         access: epilogos_workcell_core::WorkspaceAccess::Writable,
         persistence: None,
         retention: RetentionExpectation::Release,
+        branch_name: None,
     };
     let allocation = provider.prepare_workspace(&request).unwrap();
     validate_allocation(&provider, &allocation).unwrap();

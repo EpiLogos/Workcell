@@ -59,6 +59,8 @@ mod local_cli {
     ) -> Result<(), epilogos_workcell_core::WorkcellError> {
         write_receipt(path, world)
     }
+
+
 }
 
 struct RemoteGlobal {
@@ -121,10 +123,12 @@ fn main() -> ExitCode {
     // The connection lifecycle commands manage THIS cell's connection state
     // (its grants registry, its outbound connections). `connect` even takes
     // its own `--endpoint`. They are definitionally local, so they are never
-    // routed through the `--endpoint` remote selector.
+    // routed through the `--endpoint` remote selector. So is `run`: the run
+    // ledger is this cell's material record, and the remote rung reaches
+    // another machine through `--machine`, not through this selector.
     if matches!(
         first_command(&original_args),
-        Some("serve" | "authorise" | "revoke" | "connect" | "connections" | "machine")
+        Some("serve" | "authorise" | "revoke" | "connect" | "connections" | "machine" | "run")
     ) {
         return local_cli::invoke();
     }
@@ -265,7 +269,7 @@ fn run_remote(
         "collect" => remote_world_operation(&global, &mut client, RemoteWorldOperation::Collect),
         "release" => remote_world_operation(&global, &mut client, RemoteWorldOperation::Release),
         "reconcile" => remote_reconcile(&global, command_args, &mut client),
-        "system" => remote_system(&global, &endpoint),
+        "system" => remote_system(&global, &endpoint, &mut client),
         "config" | "config-contribution" => Err(WorkcellError::InvalidDemand(format!(
             "`{command}` operates on this machine's Workcell state; remote Workcell configuration through workcell.control/v1 is not implemented"
         ))
@@ -454,44 +458,126 @@ fn remote_reconcile(
 /// does not yet disclose a settings descriptor through `workcell.control/v1`, so
 /// this reports `unavailable` with the named obligation rather than fabricating
 /// a remote reading.
-fn remote_system(global: &RemoteGlobal, endpoint: &str) -> Result<(), CliError> {
-    use std::time::{SystemTime, UNIX_EPOCH};
+/// `workcell --endpoint <machine> system` — the remote machine emits its own
+/// `oi.product-settings-disclosure/v2` through the `system` control operation,
+/// and this CLI merges those sections under a `remote: <label>` provenance
+/// header beside the local reading. An unreachable or undisclosed remote is
+/// reported as `unavailable` with its reason — never a fabricated reading.
+fn remote_system(
+    global: &RemoteGlobal,
+    endpoint: &str,
+    client: &mut RemoteClient,
+) -> Result<(), CliError> {
+    let label = endpoint.to_owned();
+    let remote = match client.system() {
+        Ok(descriptor) => Some(descriptor),
+        Err(error) => {
+            // A serving cell without a disclosure, an incompatible cell, and
+            // an unreachable endpoint are all honest unavailability; the
+            // difference is the named reason.
+            eprintln!("workcell: remote disclosure unavailable: {error}");
+            None
+        }
+    };
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0);
-    let owner_ref = format!("workcell:remote:{endpoint}");
-    let reason = "the Workcell Control Service does not yet disclose a settings descriptor through workcell.control/v1; run `workcell system --json` on the Workcell host";
-    let descriptor = json!({
-        "schema": "oi.product-settings-disclosure/v2",
-        "product_id": "workcell",
-        "contract_revision": "wave-5/system.1",
-        "disclosed_at_unix_ms": now,
-        "owner": {
-            "owner_id": "workcell",
-            "owner_ref": owner_ref,
-            "owner_version": env!("CARGO_PKG_VERSION"),
-            "reading_command": ["workcell", "--endpoint", endpoint, "system", "--json"],
-            "reading_digest": null,
-            "observed_at_unix_ms": now,
-        },
-        "about": "Remote Workcell material reading. The Workcell Control Service does not yet disclose a settings descriptor through workcell.control/v1, so this reading is unavailable rather than fabricated.",
-        "sections": [],
-        "actions": [],
-        "availability": { "state": "unavailable", "reason": reason },
-        "degradations": [ { "subject_ref": owner_ref, "state": "unavailable", "reason": reason, "native_error": null } ],
-        "obligations": [ "remote Workcell settings disclosure through workcell.control/v1 is not yet implemented" ],
-    });
+    // The local reading is assembled from this machine's state root exactly
+    // as `workcell system` would print it.
+    let mut document = local_cli::system_descriptor_from(
+        global.json,
+        &global.state_root,
+        global.workspace_source.clone(),
+        global.services.clone(),
+    )?;
+
+    let mut degradations = document["degradations"].as_array().cloned().unwrap_or_default();
+    match &remote {
+        Some(remote_descriptor) => {
+            let remote_sections = remote_descriptor["sections"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            for mut section in remote_sections {
+                let original_id = section["id"].as_str().unwrap_or("section").to_owned();
+                let original_title = section["title"].as_str().unwrap_or("").to_owned();
+                if let Some(object) = section.as_object_mut() {
+                    object.insert(
+                        "id".into(),
+                        json!(format!("remote:{label}:{original_id}")),
+                    );
+                    object.insert(
+                        "title".into(),
+                        json!(format!("{original_title} — remote {label}")),
+                    );
+                    object.insert("provenance".into(), json!(format!("remote:{label}")));
+                }
+                if let Some(sections) = document["sections"].as_array_mut() {
+                    sections.push(section);
+                }
+            }
+            degradations.push(json!({
+                "subject_ref": format!("remote:{label}"),
+                "state": "available",
+                "reason": Value::Null,
+                "native_error": null,
+                "provenance": format!("remote:{label}"),
+                "owner_ref": remote_descriptor["owner"]["owner_ref"],
+                "reading_digest": remote_descriptor["owner"]["reading_digest"],
+            }));
+        }
+        None => {
+            let (state, reason) = ("unavailable".to_owned(), "the remote Workcell did not supply a settings disclosure (unreachable, refused, or its serve was not started by `workcell serve`)");
+            if let Some(sections) = document["sections"].as_array_mut() {
+                sections.push(json!({
+                        "id": format!("remote:{label}"),
+                        "title": format!("Remote Workcell {label}"),
+                        "provenance": format!("remote:{label}"),
+                        "settings": [{
+                            "id": format!("remote.{label}.disclosure"),
+                            "title": "Remote settings disclosure",
+                            "kind": "presence",
+                            "declared": { "state": "available", "note": "a declared machine is expected to disclose" },
+                            "effective": { "state": state, "reason": reason },
+                            "active": { "state": state, "reason": reason },
+                        }],
+                    }));
+            }
+            degradations.push(json!({
+                "subject_ref": format!("remote:{label}"),
+                "state": "unavailable",
+                "reason": reason,
+                "native_error": null,
+            }));
+        }
+    }
+    document["degradations"] = Value::Array(degradations);
 
     if global.json {
-        emit_json(descriptor);
+        emit_json(document);
     } else {
-        println!("Workcell System disclosure: unavailable (remote settings disclosure through workcell.control/v1 is not yet implemented)");
+        match &remote {
+            Some(remote_descriptor) => {
+                let sections = remote_descriptor["sections"]
+                    .as_array()
+                    .map(Vec::len)
+                    .unwrap_or(0);
+                println!(
+                    "merged remote disclosure from {label}: {} sections (availability: {})",
+                    sections,
+                    remote_descriptor["availability"]["state"]
+                        .as_str()
+                        .unwrap_or("unknown"),
+                );
+            }
+            None => println!("remote disclosure from {label}: unavailable (see degradations)"),
+        }
+        println!(
+            "local sections: {}, merged total: {}",
+            document["sections"].as_array().map_or(0, Vec::len),
+            document["sections"].as_array().map_or(0, Vec::len),
+        );
     }
     Ok(())
 }
-
 fn receipt_world_ref(global: &RemoteGlobal) -> Result<WorldRef, CliError> {
     let receipt = global.receipt.as_ref().ok_or_else(|| {
         WorkcellError::InvalidDemand(

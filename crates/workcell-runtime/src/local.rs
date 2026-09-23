@@ -16,7 +16,7 @@ use epilogos_workcell_core::{
 use epilogos_workcell_opensandbox::{
     OpenSandboxConfig, OpenSandboxExecutionProvider, StdHttpOpenSandboxTransport,
 };
-use epilogos_workcell_workspace::DirectoryWorkspaceProvider;
+use epilogos_workcell_workspace::{DirectoryWorkspaceProvider, GitWorktreeWorkspaceProvider};
 
 use crate::{
     read_directory_storage,
@@ -35,6 +35,9 @@ pub const TARGET_SERVICE_PROVIDER_REF: &str = "provider:collapsed-local-target-s
 /// Provider identity for a declared OpenSandbox lifecycle deployment this
 /// Workcell materialises sandbox execution through.
 pub const OPENSANDBOX_PROVIDER_REF: &str = "provider:opensandbox";
+/// Provider identity for the built-in durable git-worktree workspace port.
+/// Its journal lives at `<state-root>/workspaces/git-worktrees.json`.
+pub const GIT_WORKSPACE_PROVIDER_REF: &str = "provider:collapsed-local-git-worktree";
 
 /// A factory the composing host supplies for one external execution provider:
 /// conformance (the SDK's testkit) proves the provider; this registration is
@@ -42,6 +45,13 @@ pub const OPENSANDBOX_PROVIDER_REF: &str = "provider:opensandbox";
 /// time, and a failing construction refuses the composition honestly.
 pub type ExternalExecutionProviderFactory =
     Arc<dyn Fn() -> Result<Box<dyn ExecutionProvider>> + Send + Sync>;
+
+/// A factory the composing host supplies for one external workspace provider:
+/// conformance (the SDK's testkit) proves the provider; this registration is
+/// what makes planning able to select it. Mirrors
+/// [`ExternalExecutionProviderFactory`].
+pub type ExternalWorkspaceProviderFactory =
+    Arc<dyn Fn() -> Result<Box<dyn WorkspaceProvider>> + Send + Sync>;
 
 /// Where a collapsed-local Workcell reads its operator-declared services.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -90,6 +100,9 @@ pub struct CollapsedLocalConfig {
     /// — the admission seam the provider SDK names. Registered alongside the
     /// built-in ports; duplicate identities are refused like any other.
     pub external_execution: Vec<ExternalExecutionProviderFactory>,
+    /// Workspace providers the composing host brings from its own technology,
+    /// registered beside the directory and git-worktree ports the same way.
+    pub external_workspace: Vec<ExternalWorkspaceProviderFactory>,
 }
 
 impl std::fmt::Debug for CollapsedLocalConfig {
@@ -107,6 +120,7 @@ impl std::fmt::Debug for CollapsedLocalConfig {
             .field("directories", &self.directories)
             .field("opensandbox", &self.opensandbox)
             .field("external_execution", &self.external_execution.len())
+            .field("external_workspace", &self.external_workspace.len())
             .finish()
     }
 }
@@ -124,6 +138,7 @@ impl CollapsedLocalConfig {
             directories: Vec::new(),
             opensandbox: None,
             external_execution: Vec::new(),
+            external_workspace: Vec::new(),
         }
     }
 
@@ -135,6 +150,16 @@ impl CollapsedLocalConfig {
         factory: ExternalExecutionProviderFactory,
     ) -> Self {
         self.external_execution.push(factory);
+        self
+    }
+
+    /// Register an external workspace provider factory, beside the built-in
+    /// directory and git-worktree workspace ports.
+    pub fn with_external_workspace_provider(
+        mut self,
+        factory: ExternalWorkspaceProviderFactory,
+    ) -> Self {
+        self.external_workspace.push(factory);
         self
     }
 
@@ -400,12 +425,45 @@ pub struct CollapsedLocalWorkcell {
     workspace_source: Option<PathBuf>,
     control: PreparedWorldControlPlane,
     workspace: SharedProvider<DirectoryWorkspaceProvider>,
+    git_workspace: SharedProvider<GitWorktreeWorkspaceProvider>,
     execution: HostProcessExecutionProvider,
     opensandbox: Option<OpenSandboxExecutionProvider<StdHttpOpenSandboxTransport>>,
     artifacts: SharedProvider<DirectoryArtifactStorageProvider>,
     managed_services: SharedProvider<ManagedHostServiceProvider>,
     target_services: SharedProvider<ExternalManagedServiceProvider>,
     directories: SharedProvider<DirectoryStorageProvider>,
+}
+
+/// The branch law shared by run worktrees, `aikit task --worktree` trees and
+/// encounter-task scopes: a writable demand carrying the `branch_law: aikit`
+/// extension materialises on `aikit/<name>` instead of a detached checkout.
+/// The name comes from the demand's `run_slug` extension when present, else
+/// from the demand ref's own suffix, so the branch is derivable from the
+/// demand alone.
+fn branch_law_branch_name(demand: &ExecutionDemand) -> Option<String> {
+    if demand.extensions.get("branch_law").map(String::as_str) != Some("aikit") {
+        return None;
+    }
+    if demand
+        .workspace
+        .as_ref()
+        .is_some_and(|workspace| workspace.access == WorkspaceAccess::ReadOnly)
+    {
+        return None;
+    }
+    let name = demand
+        .extensions
+        .get("run_slug")
+        .cloned()
+        .unwrap_or_else(|| {
+            demand
+                .demand_ref
+                .as_str()
+                .strip_prefix("demand:")
+                .unwrap_or(demand.demand_ref.as_str())
+                .to_owned()
+        });
+    Some(format!("aikit/{name}"))
 }
 
 impl CollapsedLocalWorkcell {
@@ -439,6 +497,14 @@ impl CollapsedLocalWorkcell {
             ProviderRef::new("provider:collapsed-local-workspace").unwrap(),
             config.state_root.join("workspaces"),
         ));
+        // The durable git-worktree port shares the `workspaces` directory so
+        // its journal lands at `<state-root>/workspaces/git-worktrees.json`.
+        // Construction re-reads that journal, so worktrees allocated by an
+        // earlier process are known to this one.
+        let git_workspace = SharedProvider::new(GitWorktreeWorkspaceProvider::new(
+            ProviderRef::new(GIT_WORKSPACE_PROVIDER_REF).unwrap(),
+            config.state_root.join("workspaces"),
+        )?);
         let execution = HostProcessExecutionProvider::new(
             ProviderRef::new("provider:collapsed-local-host-process").unwrap(),
         );
@@ -486,6 +552,7 @@ impl CollapsedLocalWorkcell {
 
         let mut control = PreparedWorldControlPlane::new(config.workcell_ref.clone());
         control.register_workspace_provider(workspace.clone())?;
+        control.register_workspace_provider(git_workspace.clone())?;
         control.register_execution_provider(execution.clone())?;
         if let Some(provider) = &opensandbox {
             control.register_execution_provider(provider.clone())?;
@@ -497,6 +564,10 @@ impl CollapsedLocalWorkcell {
             let provider = factory()?;
             control.register_execution_provider(provider)?;
         }
+        for factory in &config.external_workspace {
+            let provider = factory()?;
+            control.register_workspace_provider(provider)?;
+        }
         control.register_artifact_provider(artifacts.clone())?;
         control.register_service_provider(managed_services.clone())?;
         control.register_service_provider(target_services.clone())?;
@@ -506,6 +577,7 @@ impl CollapsedLocalWorkcell {
             workspace_source: config.workspace_source,
             control,
             workspace,
+            git_workspace,
             execution,
             opensandbox,
             artifacts,
@@ -554,6 +626,7 @@ impl CollapsedLocalWorkcell {
             let access = match fallback_requirement {
                 "workspace:read-only" => WorkspaceAccess::ReadOnly,
                 "workspace:writable" => WorkspaceAccess::Writable,
+                "workspace:git-worktree" => WorkspaceAccess::Writable,
                 other => {
                     return Err(WorkcellError::InvalidDemand(format!(
                         "cannot infer workspace access from `{other}`"
@@ -586,6 +659,7 @@ impl CollapsedLocalWorkcell {
             access,
             persistence: demand.persistence.clone(),
             retention: demand.retention.clone(),
+            branch_name: branch_law_branch_name(demand),
         })
     }
 
@@ -655,6 +729,19 @@ impl CollapsedLocalWorkcell {
                 if workspace_allocation.is_none() {
                     let request = self.workspace_request(demand, &binding.requirement)?;
                     workspace_allocation = Some(self.workspace.prepare_workspace(&request)?);
+                }
+                workspace_allocation
+                    .clone()
+                    .expect("workspace allocation set")
+            } else if binding.provider_ref == *self.git_workspace.provider_ref() {
+                if workspace_allocation.is_none() {
+                    let request = self.workspace_request(demand, &binding.requirement)?;
+                    workspace_allocation = Some(
+                        self.git_workspace
+                            .inner
+                            .borrow_mut()
+                            .prepare_workspace(&request)?,
+                    );
                 }
                 workspace_allocation
                     .clone()
@@ -812,7 +899,18 @@ impl WorkcellControlPlane for CollapsedLocalWorkcell {
         for binding in &snapshot.binding_graph.bindings {
             let allocation = allocation_of(binding);
             let observed = match binding.port {
-                ProviderPortKind::Workspace => Some(self.workspace.observe_workspace(&allocation)?),
+                ProviderPortKind::Workspace => {
+                    if binding.provider_ref == *self.git_workspace.provider_ref() {
+                        Some(
+                            self.git_workspace
+                                .inner
+                                .borrow()
+                                .observe_workspace(&allocation)?,
+                        )
+                    } else {
+                        Some(self.workspace.observe_workspace(&allocation)?)
+                    }
+                }
                 ProviderPortKind::Storage => Some(self.directories.observe_storage(&allocation)?),
                 ProviderPortKind::Execution => {
                     if opensandbox_ref.as_ref() == Some(&binding.provider_ref) {
