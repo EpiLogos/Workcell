@@ -144,15 +144,38 @@ impl WorkspaceProvider for GitWorktreeWorkspaceProvider {
             (None, _) => None,
         };
         let mut worktree_args = vec![String::from("worktree"), String::from("add")];
-        match &branch {
-            Some(branch) => {
-                worktree_args.push("-b".into());
+        let branch_exists = branch.as_ref().is_some_and(|branch| {
+            command::stdout(
+                &repository,
+                &[
+                    "show-ref",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/heads/{branch}"),
+                ],
+                "check whether the branch law branch already exists",
+            )
+            .is_ok()
+        });
+        match (&branch, branch_exists) {
+            (Some(branch), true) => {
+                // A re-materialised run resumes its existing branch and its
+                // commits instead of refusing or forking a copy.
+                worktree_args.push(command::path_arg(&target)?.to_owned());
                 worktree_args.push(branch.clone());
             }
-            None => worktree_args.push("--detach".into()),
+            (Some(branch), false) => {
+                worktree_args.push("-b".into());
+                worktree_args.push(branch.clone());
+                worktree_args.push(command::path_arg(&target)?.to_owned());
+                worktree_args.push(commit.clone());
+            }
+            (None, _) => {
+                worktree_args.push("--detach".into());
+                worktree_args.push(command::path_arg(&target)?.to_owned());
+                worktree_args.push(commit.clone());
+            }
         }
-        worktree_args.push(command::path_arg(&target)?.to_owned());
-        worktree_args.push(commit.clone());
         let worktree_args: Vec<&str> = worktree_args.iter().map(String::as_str).collect();
         command::run(&repository, &worktree_args, "create git worktree")?;
         if request.access == WorkspaceAccess::ReadOnly {
@@ -221,13 +244,17 @@ impl WorkspaceProvider for GitWorktreeWorkspaceProvider {
     ) -> Result<ProviderReleaseResult> {
         // Capture the record before any observation: observe prunes entries
         // whose path is gone, and the release contract for a missing worktree
-        // (prune the repository's stale metadata) must keep working.
-        let record = self.record(allocation)?;
-        let observation = self.observe_workspace(allocation)?;
-        let dirty = observation
-            .detail
-            .get("dirty")
-            .is_some_and(|value| value == "true");
+        // (prune the repository's stale metadata) must keep working — a
+        // tombstoned record still names the repository. Dirtiness is derived
+        // directly from git here so a tombstoned record never blocks release.
+        let record = self.record_for_release(allocation)?;
+        let dirty = record.path.exists()
+            && !command::stdout(
+                &record.path,
+                &["status", "--porcelain"],
+                "inspect git worktree status",
+            )?
+            .is_empty();
         match retention {
             RetentionExpectation::Preserve => Ok(ProviderReleaseResult {
                 provider_ref: self.provider_ref.clone(),
@@ -264,6 +291,9 @@ impl WorkspaceProvider for GitWorktreeWorkspaceProvider {
                     false
                 };
                 self.records.borrow_mut().remove(&allocation.material_ref);
+                self.tombstones
+                    .borrow_mut()
+                    .remove(&allocation.material_ref);
                 self.persist()?;
                 Ok(ProviderReleaseResult {
                     provider_ref: self.provider_ref.clone(),

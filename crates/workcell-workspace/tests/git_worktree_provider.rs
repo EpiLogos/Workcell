@@ -94,7 +94,8 @@ fn git_provider_materialises_exact_revision_and_tracks_dirty_state() {
     let mut provider = GitWorktreeWorkspaceProvider::new(
         ProviderRef::new("provider:git-worktree-test").unwrap(),
         &root,
-    );
+    )
+    .unwrap();
 
     assert_eq!(
         provider.offers().unwrap()[0].availability,
@@ -161,7 +162,8 @@ fn git_provider_reports_stale_revision_and_deleted_worktree() {
     let mut provider = GitWorktreeWorkspaceProvider::new(
         ProviderRef::new("provider:git-worktree-stale").unwrap(),
         &root,
-    );
+    )
+    .unwrap();
 
     assert!(provider
         .prepare_workspace(&request(&repository, "revision-that-does-not-exist"))
@@ -191,7 +193,8 @@ fn git_provider_enforces_readonly_workspace_and_can_release_it() {
     let mut provider = GitWorktreeWorkspaceProvider::new(
         ProviderRef::new("provider:git-worktree-readonly").unwrap(),
         &root,
-    );
+    )
+    .unwrap();
     let request = request_with_access(&repository, &commit, WorkspaceAccess::ReadOnly);
     let allocation = common::assert_workspace_provider_basics(&mut provider, &request);
     let path = PathBuf::from(allocation.properties.get("path").unwrap());
@@ -215,4 +218,120 @@ fn git_provider_enforces_readonly_workspace_and_can_release_it() {
 
     let _ = fs::remove_dir_all(&root);
     let _ = fs::remove_dir_all(&repository);
+}
+
+#[test]
+fn branch_law_materialises_a_named_branch_instead_of_detaching() {
+    let (repository, commit) = repository();
+    let root = temp_path("git-branch-law");
+    let mut provider = GitWorktreeWorkspaceProvider::new(
+        ProviderRef::new("provider:git-branch-law").unwrap(),
+        &root,
+    )
+    .unwrap();
+    let mut request = request(&repository, &commit);
+    request.branch_name = Some("aikit/branch-law-run".into());
+
+    let allocation = provider.prepare_workspace(&request).unwrap();
+    assert_eq!(
+        allocation.provenance.get("branch").map(String::as_str),
+        Some("aikit/branch-law-run"),
+        "the allocation must disclose the branch it materialised on"
+    );
+    let path = PathBuf::from(allocation.properties.get("path").unwrap());
+    assert_eq!(
+        git(&path, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "aikit/branch-law-run"
+    );
+
+    // The branch law is writable-only: a read-only demand naming a branch is
+    // refused rather than silently detached.
+    let mut readonly = request.clone();
+    readonly.access = WorkspaceAccess::ReadOnly;
+    assert!(provider.prepare_workspace(&readonly).is_err());
+
+    provider
+        .release_workspace(&allocation, &RetentionExpectation::Release)
+        .unwrap();
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&repository);
+}
+
+#[test]
+fn journal_survives_provider_restart_and_prunes_gone_paths() {
+    let (repository, commit) = repository();
+    let root = temp_path("git-journal-restart");
+    let journal_path = root.join("git-worktrees.json");
+
+    let mut first = GitWorktreeWorkspaceProvider::new(
+        ProviderRef::new("provider:git-journal").unwrap(),
+        &root,
+    )
+    .unwrap();
+    let mut request = request(&repository, &commit);
+    request.branch_name = Some("aikit/journal-run".into());
+    let allocation = first.prepare_workspace(&request).unwrap();
+    drop(first);
+
+    // The journal is durable state, not process memory.
+    let recorded: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&journal_path).unwrap()).unwrap();
+    assert_eq!(recorded["schema"], "workcell.git-worktrees/v1");
+    assert_eq!(recorded["worktrees"][0]["material_ref"], allocation.material_ref);
+    assert_eq!(recorded["worktrees"][0]["branch"], "aikit/journal-run");
+
+    // A restarted provider re-reads the journal: the pre-restart allocation
+    // is known and observable, and release works across the restart.
+    let mut restarted = GitWorktreeWorkspaceProvider::new(
+        ProviderRef::new("provider:git-journal").unwrap(),
+        &root,
+    )
+    .unwrap();
+    let observation = restarted.observe_workspace(&allocation).unwrap();
+    assert_eq!(observation.health, HealthState::Healthy);
+    restarted
+        .release_workspace(&allocation, &RetentionExpectation::Release)
+        .unwrap();
+    let after: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&journal_path).unwrap()).unwrap();
+    assert_eq!(
+        after["worktrees"].as_array().unwrap().len(),
+        0,
+        "release must clear the journal entry"
+    );
+
+    // Prune-on-observe: a worktree removed behind the provider's back is
+    // pruned from the journal the next time it is observed.
+    let allocation = restarted.prepare_workspace(&request).unwrap();
+    let path = PathBuf::from(allocation.properties.get("path").unwrap());
+    fs::remove_dir_all(&path).unwrap();
+    let observation = restarted.observe_workspace(&allocation).unwrap();
+    assert_eq!(observation.health, HealthState::Unavailable);
+    assert_eq!(observation.detail.get("pruned").map(String::as_str), Some("true"));
+    let pruned: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&journal_path).unwrap()).unwrap();
+    assert_eq!(
+        pruned["worktrees"].as_array().unwrap().len(),
+        0,
+        "a gone worktree must be pruned from the journal, not claimed"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&repository);
+}
+
+#[test]
+fn a_malformed_journal_is_an_honest_construction_failure_not_silence() {
+    let root = temp_path("git-journal-corrupt");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("git-worktrees.json"), "{\"schema\": \"wrong/v9\"}").unwrap();
+    let error = match GitWorktreeWorkspaceProvider::new(
+        ProviderRef::new("provider:git-corrupt").unwrap(),
+        &root,
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("a malformed journal must refuse construction"),
+    };
+    assert!(error.to_string().contains("workcell.git-worktrees/v1"));
+    let _ = fs::remove_dir_all(&root);
 }

@@ -205,6 +205,10 @@ pub struct GitWorktreeWorkspaceProvider {
     pub(super) root: PathBuf,
     journal_path: PathBuf,
     pub(super) records: RefCell<BTreeMap<String, GitRecord>>,
+    /// Entries pruned from the journal because their path is gone, kept so a
+    /// later release still knows the repository well enough to run
+    /// `git worktree prune` (the pre-journal release-after-loss contract).
+    pub(super) tombstones: RefCell<BTreeMap<String, GitRecord>>,
 }
 
 impl GitWorktreeWorkspaceProvider {
@@ -235,6 +239,7 @@ impl GitWorktreeWorkspaceProvider {
             root,
             journal_path,
             records: RefCell::new(records),
+            tombstones: RefCell::new(BTreeMap::new()),
         })
     }
 
@@ -256,18 +261,42 @@ impl GitWorktreeWorkspaceProvider {
     }
 
     /// Drop a journal entry whose material path is gone (prune-on-observe).
-    /// Returns true when the entry was removed.
+    /// The record moves to an in-memory tombstone so a later release still
+    /// knows the repository; only the durable claim is lifted. Returns true
+    /// when the entry was pruned.
     pub(super) fn prune_if_gone(&self, material_ref: &str, record: &GitRecord) -> bool {
         if record.path.exists() {
             return false;
         }
-        if self.records.borrow_mut().remove(material_ref).is_some() {
+        let mut records = self.records.borrow_mut();
+        if records.remove(material_ref).is_some() {
+            self.tombstones
+                .borrow_mut()
+                .insert(material_ref.to_owned(), record.clone());
+            drop(records);
             if let Err(error) = self.persist() {
                 eprintln!("git worktree journal: prune rewrite failed: {error}");
             }
             return true;
         }
         false
+    }
+
+    /// The record for a release: live, or a tombstone left by prune-on-observe.
+    pub(super) fn record_for_release(&self, allocation: &ProviderAllocation) -> Result<GitRecord> {
+        if let Some(record) = self.records.borrow().get(&allocation.material_ref).cloned() {
+            return Ok(record);
+        }
+        self.tombstones
+            .borrow()
+            .get(&allocation.material_ref)
+            .cloned()
+            .ok_or_else(|| {
+                WorkcellError::NotFound(format!(
+                    "git worktree `{}` is not known by this provider",
+                    allocation.material_ref
+                ))
+            })
     }
 
     pub(super) fn allocation(&self, material_ref: &str, record: &GitRecord) -> ProviderAllocation {
