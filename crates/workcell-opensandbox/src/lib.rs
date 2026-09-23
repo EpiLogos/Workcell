@@ -249,9 +249,18 @@ impl OpenSandboxTransport for StdHttpOpenSandboxTransport {
                     parsed.host, parsed.port
                 ))
             })?;
+        // The Host header must carry the explicit port whenever the URL did:
+        // OpenSandbox's server derives the advertised proxy endpoint from the
+        // request's Host, so a portless Host makes it advertise the endpoint
+        // on the default port and the data plane dials the wrong one.
+        let host_header = if parsed.port == 80 {
+            parsed.host.clone()
+        } else {
+            format!("{}:{}", parsed.host, parsed.port)
+        };
         let mut head = format!(
             "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
-            request.method, parsed.path_and_query, parsed.host
+            request.method, parsed.path_and_query, host_header
         );
         for (name, value) in &request.headers {
             head.push_str(name);
