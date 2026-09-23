@@ -424,6 +424,10 @@ fn command_doctor(global: &GlobalArgs) -> Result<(), WorkcellError> {
     // make doctor fail. They are reported because a declared service that does
     // not answer is the thing an operator most needs to see.
     let services = declared_service_report(&discovery);
+    let opensandbox_declared = discovery.offers.iter().any(|offer| {
+        offer.port == ProviderPortKind::Execution.as_str()
+            && offer.provider_ref.as_str().contains("opensandbox")
+    });
 
     if global.json {
         emit_json(json!({
@@ -434,6 +438,11 @@ fn command_doctor(global: &GlobalArgs) -> Result<(), WorkcellError> {
             "filesystem_artifacts": filesystem_artifacts,
             "optional_external_providers_required": false,
             "declared_services": services,
+            "opensandbox_control_fence": if opensandbox_declared {
+                json!(epilogos_workcell_opensandbox::EGRESS_CONTROL_FENCE)
+            } else {
+                Value::Null
+            },
             "instances": {
                 "status": scan.status,
                 "reason": scan.reason,
@@ -461,6 +470,12 @@ fn command_doctor(global: &GlobalArgs) -> Result<(), WorkcellError> {
                     service["endpoint"].as_str().unwrap_or("no endpoint"),
                 );
             }
+        }
+        if opensandbox_declared {
+            println!(
+                "  opensandbox control fence: {}",
+                epilogos_workcell_opensandbox::EGRESS_CONTROL_FENCE
+            );
         }
         match scan.status {
             "ok" => println!(
@@ -5354,6 +5369,18 @@ fn system_descriptor(global: &GlobalArgs) -> Result<Value, WorkcellError> {
     }
     if model_serving_active.is_empty() {
         degradations.push(json!({ "subject_ref": "model-serving.active", "state": "unavailable", "reason": "no model-serving service is declared on this Workcell", "native_error": null }));
+    }
+    let opensandbox_declared = discovery.offers.iter().any(|offer| {
+        offer.port == ProviderPortKind::Execution.as_str()
+            && offer.provider_ref.as_str().contains("opensandbox")
+    });
+    if opensandbox_declared {
+        degradations.push(json!({
+            "subject_ref": "providers.opensandbox.egress_control",
+            "state": "unavailable",
+            "reason": epilogos_workcell_opensandbox::EGRESS_CONTROL_FENCE,
+            "native_error": null,
+        }));
     }
 
     let obligations = vec![

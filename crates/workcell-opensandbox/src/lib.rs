@@ -468,6 +468,9 @@ where
         if let Some(error) = stream.error {
             output.insert("error".into(), error);
         }
+        if let Some(exit_code) = stream.exit_code {
+            output.insert("exit_code".into(), exit_code.to_string());
+        }
         if stream.complete {
             output.insert("complete".into(), "true".into());
         }
@@ -1038,29 +1041,75 @@ struct ExecdStream {
     stderr: String,
     results: Vec<String>,
     error: Option<String>,
+    exit_code: Option<i64>,
     complete: bool,
 }
 
+/// Parse an execd command stream into its recorded output.
+///
+/// Real execd writes **raw JSON blobs separated by blank lines** (NDJSON
+/// framing) rather than standard `data:`-prefixed SSE lines — the live
+/// receipt (2026-09-07, finding 2: "real runs complete with empty output
+/// fields") and the upstream Go SDK both document this. The parser therefore
+/// accepts, in one pass:
+///
+/// 1. NDJSON blobs — a non-empty line that is not `event:`/`data:`-prefixed
+///    is a JSON event (or, if it is not JSON at all, raw stdout);
+/// 2. `data:`-prefixed SSE — the fixture shape the adapter originally
+///    parsed, kept working;
+/// 3. `event:`-typed SSE — the event name from the `event:` line is used
+///    when the JSON payload carries no `type` of its own.
+///
+/// Event payloads follow the pinned execd spec blob `ccfbce2d`:
+/// `{"type": "init"|"stdout"|"stderr"|"result"|"error"|"execution_complete"|
+/// "ping", ...}` with `text` carrying stream text, `results` carrying a
+/// MIME-keyed map (legacy servers send bare `text`), errors nested under
+/// `error` (legacy: flat `ename`/`evalue`), and `exit_code` on completion.
 fn parse_execd_stream(bytes: &[u8]) -> Result<ExecdStream> {
     let text = std::str::from_utf8(bytes).map_err(|error| {
         WorkcellError::OperationFailed(format!("OpenSandbox execd SSE is not UTF-8: {error}"))
     })?;
     let mut stream = ExecdStream::default();
-    for line in text.lines() {
-        let Some(data) = line.strip_prefix("data:") else {
-            continue;
-        };
-        let data = data.trim();
-        if data.is_empty() || data == "[DONE]" {
-            continue;
+    // The SSE `event:` name and any `data:` lines accumulate until the
+    // framing blank line (or end of stream) dispatches them as one event.
+    let mut event_name: Option<String> = None;
+    let mut data_lines: Vec<String> = Vec::new();
+    let dispatch = |stream: &mut ExecdStream,
+                        event_name: &mut Option<String>,
+                        data_lines: &mut Vec<String>| {
+        let payload = data_lines.join("\n");
+        data_lines.clear();
+        let trimmed = payload.trim();
+        if trimmed.is_empty() || trimmed == "[DONE]" {
+            *event_name = None;
+            return;
         }
-        let event: Value = serde_json::from_str(data).map_err(|error| {
-            WorkcellError::OperationFailed(format!("decode OpenSandbox execd SSE event: {error}"))
-        })?;
-        let Some(object) = event.as_object() else {
-            continue;
+        let event: Value = match serde_json::from_str::<Value>(trimmed) {
+            Ok(value) => value,
+            Err(_) => {
+                // Not JSON — the SDK treats such payloads as raw stdout.
+                // `lines()` consumed the line's own newline, so restore it.
+                stream.stdout.push_str(&payload);
+                if !stream.stdout.ends_with('\n') {
+                    stream.stdout.push('\n');
+                }
+                *event_name = None;
+                return;
+            }
         };
-        match object.get("type").and_then(Value::as_str).unwrap_or("") {
+        let object = match event.as_object() {
+            Some(object) => object,
+            None => return,
+        };
+        // The JSON `type` names the kind; an SSE `event:` line may name the
+        // kind the JSON omits.
+        let kind = object
+            .get("type")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| event_name.clone())
+            .unwrap_or_default();
+        match kind.as_str() {
             "init" => {
                 if let Some(id) = object.get("text").and_then(Value::as_str) {
                     if !id.is_empty() {
@@ -1087,27 +1136,79 @@ fn parse_execd_stream(bytes: &[u8]) -> Result<ExecdStream> {
                     {
                         stream.results.push(value.into());
                     }
+                } else if let Some(value) = object.get("text").and_then(Value::as_str) {
+                    // Legacy flat format: a bare "text" on a result event.
+                    stream.results.push(value.into());
                 }
             }
-            "execution_complete" => stream.complete = true,
+            "execution_complete" => {
+                stream.complete = true;
+                if let Some(code) = object.get("exit_code").and_then(Value::as_i64) {
+                    stream.exit_code = Some(code);
+                }
+            }
             "error" => {
-                if let Some(error) = object.get("error").and_then(Value::as_object) {
-                    let name = error
-                        .get("ename")
-                        .or_else(|| error.get("name"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("error");
-                    let value = error
-                        .get("evalue")
-                        .or_else(|| error.get("value"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
-                    stream.error = Some(format!("{name}: {value}"));
+                let nested = object.get("error").and_then(Value::as_object);
+                let (name, value) = match nested {
+                    Some(error) => (
+                        error
+                            .get("ename")
+                            .or_else(|| error.get("name"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("error"),
+                        error
+                            .get("evalue")
+                            .or_else(|| error.get("value"))
+                            .and_then(Value::as_str)
+                            .unwrap_or(""),
+                    ),
+                    // Legacy flat format: top-level ename/evalue.
+                    None => (
+                        object.get("ename").and_then(Value::as_str).unwrap_or("error"),
+                        object.get("evalue").and_then(Value::as_str).unwrap_or(""),
+                    ),
+                };
+                stream.error = Some(format!("{name}: {value}"));
+                if let Some(code) = object.get("exit_code").and_then(Value::as_i64) {
+                    stream.exit_code = Some(code);
                 }
             }
-            _ => {}
+            _ => {
+                // Unknown or untyped event carrying text — treat as stdout,
+                // like the upstream SDK, so a renamed event never silently
+                // drops command output.
+                if let Some(value) = object.get("text").and_then(Value::as_str) {
+                    stream.stdout.push_str(value);
+                }
+            }
         }
+        *event_name = None;
+    };
+
+    for line in text.lines() {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if let Some(name) = line.strip_prefix("event:") {
+            // A pending NDJSON blob dispatches before a new event: begins.
+            dispatch(&mut stream, &mut event_name, &mut data_lines);
+            let name = name.trim();
+            if !name.is_empty() {
+                event_name = Some(name.to_owned());
+            }
+            continue;
+        }
+        if let Some(data) = line.strip_prefix("data:") {
+            data_lines.push(data.strip_prefix(' ').unwrap_or(data).to_owned());
+            continue;
+        }
+        if line.trim().is_empty() {
+            dispatch(&mut stream, &mut event_name, &mut data_lines);
+            continue;
+        }
+        // NDJSON framing: a raw JSON blob on its own line.
+        data_lines.push(line.to_owned());
+        dispatch(&mut stream, &mut event_name, &mut data_lines);
     }
+    dispatch(&mut stream, &mut event_name, &mut data_lines);
     Ok(stream)
 }
 
@@ -1530,6 +1631,122 @@ mod tests {
                 .map(String::as_str),
             Some("secret-route-token")
         );
+    }
+
+    #[test]
+    fn real_execd_ndjson_streaming_is_recorded_not_dropped() {
+        // Fixture from the 2026-09-07 live receipt (finding 2): real execd
+        // writes raw JSON blobs separated by blank lines — no `data:`
+        // prefix. The old parser recorded nothing, so a successful run
+        // completed with empty output fields. Empty output on this fixture
+        // is now a test failure.
+        let ndjson = concat!(
+            "{\"type\":\"init\",\"text\":\"cmd_a1b2c3\",\"timestamp\":1757275325000}\n",
+            "\n",
+            "{\"type\":\"stdout\",\"text\":\"total 48\\n\",\"timestamp\":1757275325010}\n",
+            "\n",
+            "{\"type\":\"stdout\",\"text\":\"-rw-r--r-- 1 root root 4096 Sep 7 20:58 hello.txt\\n\",\"timestamp\":1757275325011}\n",
+            "\n",
+            "{\"type\":\"stderr\",\"text\":\"ls: hidden: permission denied\\n\",\"timestamp\":1757275325012}\n",
+            "\n",
+            "{\"type\":\"execution_complete\",\"exit_code\":2,\"execution_time\":31,\"timestamp\":1757275325012}\n",
+            "\n"
+        );
+        let stream = parse_execd_stream(ndjson.as_bytes()).unwrap();
+        assert_eq!(stream.execution_id.as_deref(), Some("cmd_a1b2c3"));
+        assert!(
+            stream.stdout.contains("total 48\n") && stream.stdout.contains("hello.txt\n"),
+            "stdout must be captured from the NDJSON stream, got {:?}",
+            stream.stdout
+        );
+        assert_eq!(stream.stderr, "ls: hidden: permission denied\n");
+        assert!(stream.complete);
+        assert_eq!(stream.exit_code, Some(2));
+
+        // Through the provider's command operation, the same fixture yields
+        // non-empty output — the live-receipt defect cannot recur silently.
+        let transport = FixtureTransport::with_responses(vec![
+            response(
+                200,
+                json!({
+                    "endpoint":"127.0.0.1:44772",
+                    "headers":{}
+                }),
+            ),
+            OpenSandboxHttpResponse {
+                status: 200,
+                headers: BTreeMap::new(),
+                body: ndjson.as_bytes().to_vec(),
+            },
+        ]);
+        let mut provider = OpenSandboxExecutionProvider::new(config(), transport).unwrap();
+        let allocation = ProviderAllocation {
+            provider_ref: provider.provider_ref().clone(),
+            port: ProviderPortKind::Execution,
+            material_ref: "sbx_ndjson".into(),
+            health: HealthState::Healthy,
+            properties: BTreeMap::new(),
+            provenance: BTreeMap::new(),
+        };
+        let result = provider
+            .execute_operation(
+                &allocation,
+                &ProviderOperation {
+                    key: "command".into(),
+                    parameters: BTreeMap::from([("command".into(), "ls -la".into())]),
+                },
+            )
+            .unwrap();
+        assert!(!result.output.get("stdout").map(String::as_str).unwrap_or("").is_empty(),
+            "a successful command must not complete with empty stdout");
+        assert_eq!(
+            result.output.get("exit_code").map(String::as_str),
+            Some("2")
+        );
+    }
+
+    #[test]
+    fn event_typed_sse_with_untyped_json_payloads_is_recorded() {
+        // Some execd/SSE framings carry the event name on the `event:` line
+        // and leave the JSON payload without `type`. The parser must still
+        // attribute the payload to the right stream.
+        let sse = concat!(
+            "event: init\n",
+            "data: {\"text\":\"exec_9\"}\n",
+            "\n",
+            "event: stdout\n",
+            "data: {\"text\":\"streamed\\n\"}\n",
+            "\n",
+            "event: execution_complete\n",
+            "data: {\"execution_time\":5}\n",
+            "\n"
+        );
+        let stream = parse_execd_stream(sse.as_bytes()).unwrap();
+        assert_eq!(stream.execution_id.as_deref(), Some("exec_9"));
+        assert_eq!(stream.stdout, "streamed\n");
+        assert!(stream.complete);
+    }
+
+    #[test]
+    fn legacy_flat_error_and_result_shapes_are_recorded() {
+        let mixed = concat!(
+            "{\"type\":\"result\",\"text\":\"4\"}\n",
+            "\n",
+            "{\"type\":\"error\",\"ename\":\"NameError\",\"evalue\":\"42\",\"exit_code\":42}\n",
+            "\n"
+        );
+        let stream = parse_execd_stream(mixed.as_bytes()).unwrap();
+        assert_eq!(stream.results, vec!["4"]);
+        assert_eq!(stream.error.as_deref(), Some("NameError: 42"));
+        assert_eq!(stream.exit_code, Some(42));
+    }
+
+    #[test]
+    fn non_json_payload_is_treated_as_raw_stdout_like_the_upstream_sdk() {
+        let raw = "plain text line\n\n{\"type\":\"execution_complete\"}\n\n";
+        let stream = parse_execd_stream(raw.as_bytes()).unwrap();
+        assert_eq!(stream.stdout, "plain text line\n");
+        assert!(stream.complete);
     }
 
     #[test]

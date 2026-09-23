@@ -130,9 +130,24 @@ pub(crate) fn require_success_safe(
     match response.status {
         404 => Err(WorkcellError::NotFound(message)),
         409 | 429 => Err(WorkcellError::Unavailable(message)),
+        // HTTP 502 on the egress sidecar's control paths (`PATCH`/`GET
+        // /policy`, `POST`/`DELETE /credential-vault`) is the known upstream
+        // gap from the 2026-09-07 live receipt: the deployed egress sidecar
+        // does not implement the pinned control API behind the server proxy.
+        // The refusal is named — never a generic failure — and nothing is
+        // written. The denied-route no-write broker remains the credential
+        // path of record until the upstream probe clears this fence.
+        502 => Err(WorkcellError::Unsupported(format!(
+            "{message}: {EGRESS_CONTROL_FENCE}"
+        ))),
         _ => Err(WorkcellError::OperationFailed(message)),
     }
 }
+
+/// The standing, named fence on the OpenSandbox egress/credential control
+/// path. Surfaced by doctor/system degradations whenever an OpenSandbox
+/// deployment is declared, so the gap is disclosed, not discovered.
+pub const EGRESS_CONTROL_FENCE: &str = "egress policy control path: upstream 502, image opensandbox/egress:v1.1.7 (egress spec blob 08e4885176998e854df62b999914c5eb01855308) — the deployed sidecar does not implement the pinned egress/credential control API behind the server proxy; refused by name, no write performed";
 
 pub(crate) fn join_url(base: &str, path: &str) -> String {
     format!(
