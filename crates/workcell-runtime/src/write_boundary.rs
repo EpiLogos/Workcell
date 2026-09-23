@@ -165,6 +165,41 @@ fn invalid(message: &str) -> WorkcellError {
     WorkcellError::InvalidDemand(message.into())
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn null_device() -> Result<libc::dev_t> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    let metadata = std::fs::metadata("/dev/null")
+        .map_err(|e| WorkcellError::Unavailable(format!("inspect null device: {e}")))?;
+    if !metadata.file_type().is_char_device() {
+        return Err(invalid("/dev/null is not a character device"));
+    }
+    #[cfg(target_os = "linux")]
+    return Ok(metadata.rdev());
+    #[cfg(target_os = "macos")]
+    Ok(metadata.rdev() as libc::dev_t)
+}
+
+/// Called after stdio remapping, immediately before exec. A caller can change
+/// Command's stdio after construction; only this final check closes that bypass.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn safe_stdio(null_device: libc::dev_t) -> std::io::Result<()> {
+    for fd in [0, 1, 2] {
+        let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe { libc::fstat(fd, metadata.as_mut_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let metadata = unsafe { metadata.assume_init() };
+        let kind = metadata.st_mode & libc::S_IFMT;
+        if kind != libc::S_IFIFO
+            && kind != libc::S_IFSOCK
+            && !(kind == libc::S_IFCHR && metadata.st_rdev == null_device)
+        {
+            return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+        }
+    }
+    Ok(())
+}
+
 /// Capability inspection performs no writes and grants no execution authority.
 pub fn write_boundary_capabilities() -> Value {
     let result = platform::probe();
@@ -172,11 +207,18 @@ pub fn write_boundary_capabilities() -> Value {
         Ok(abi) => (true, Some(abi), None),
         Err(e) => (false, None, Some(e.to_string())),
     };
-    json!({"schema": "workcell.write-boundary-capabilities/v1", "provider": "linux-landlock",
-        "supported": supported, "abi": abi, "reason": reason,
+    let provider = if cfg!(target_os = "macos") {
+        "macos-seatbelt"
+    } else {
+        "linux-landlock"
+    };
+    json!({"schema": "workcell.write-boundary-capabilities/v1", "provider": provider,
+        "supported": supported, "abi": if cfg!(target_os = "macos") { None } else { abi }, "reason": reason,
+        "profile_version": if cfg!(target_os = "macos") { Some(1) } else { None },
         "coverage": if supported { WRITE_BOUNDARY_COVERAGE } else { &[] }, "uncovered": WRITE_BOUNDARY_UNCOVERED,
         "scope": "unprivileged launched process and descendants; regular filesystem writes only",
         "stdio": "null input and pipe output; other inherited descriptors close-on-exec",
+        "path_binding": if cfg!(target_os = "macos") { "canonical path rules; object identity revalidated before launch; external replacement during execution is not confined" } else { "kernel object rules; material identity revalidated before launch" },
         "policy_authority": "supplied; Workcell does not recognise or interpret governance"})
 }
 
@@ -230,8 +272,8 @@ impl PreparedWriteBoundary {
             json!({"schema": "workcell.prepared-write-boundary/v1", "state": "prepared-not-executed",
             "requirements_digest": self.requirements.digest(), "requirements": self.requirements.as_json(),
             "capabilities": write_boundary_capabilities(),
-            "objects": self.paths.iter().map(|p| json!({"path": p.canonical, "identity": p.identity})).collect::<Vec<_>>(),
-            "protected_objects": self.protected.iter().map(|p| json!({"path": p.canonical, "identity": p.identity})).collect::<Vec<_>>() }),
+            "objects": self.paths.iter().map(MaterialPath::inspection).collect::<Vec<_>>(),
+            "protected_objects": self.protected.iter().map(MaterialPath::inspection).collect::<Vec<_>>() }),
         )
     }
     pub fn revalidate(&self, current_policy_revision: &str) -> Result<()> {
@@ -244,6 +286,54 @@ impl PreparedWriteBoundary {
     }
     pub fn requirements(&self) -> &WriteBoundaryRequirements {
         &self.requirements
+    }
+    /// Protocol transport may inherit pipes/sockets, never a pre-opened file
+    /// that could bypass path confinement. Inspect descriptors, not /dev paths.
+    pub fn validate_protocol_stdio(&self) -> Result<()> {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            for fd in [0, 1] {
+                let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+                if unsafe { libc::fstat(fd, metadata.as_mut_ptr()) } != 0 {
+                    return Err(WorkcellError::OperationFailed(format!(
+                        "inspect protocol fd: {}",
+                        std::io::Error::last_os_error()
+                    )));
+                }
+                let kind = unsafe { metadata.assume_init() }.st_mode & libc::S_IFMT;
+                if kind != libc::S_IFIFO && kind != libc::S_IFSOCK {
+                    return Err(WorkcellError::Unsupported(
+                        "protocol exec requires pipe/socket stdin and stdout, not inherited files"
+                            .into(),
+                    ));
+                }
+            }
+            Ok(())
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        Err(WorkcellError::Unsupported(
+            "protocol write boundary unavailable on this platform".into(),
+        ))
+    }
+    /// Construct the protected command before adding arguments, environment or
+    /// cwd. On macOS this preserves even `env_clear` through the native wrapper;
+    /// Rust cannot recover that setting from an already configured Command.
+    pub fn command(
+        &self,
+        program: impl AsRef<std::ffi::OsStr>,
+        current_policy_revision: &str,
+    ) -> Result<Command> {
+        self.revalidate(current_policy_revision)?;
+        #[cfg(target_os = "macos")]
+        {
+            self.platform.command(program.as_ref())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mut command = Command::new(program);
+            self.platform.configure(&mut command)?;
+            Ok(command)
+        }
     }
     /// Installs enforcement immediately before exec. A failed kernel application
     /// makes spawn fail before the user program runs. The caller must use the
@@ -397,6 +487,7 @@ mod platform {
         }
         pub(super) fn configure(&self, command: &mut Command) -> Result<()> {
             let fd = Arc::clone(&self.fd);
+            let null = null_device()?;
             command
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
@@ -405,6 +496,7 @@ mod platform {
             // run after fork; all rules/files/allocations are prepared in parent.
             unsafe {
                 command.pre_exec(move || {
+                    safe_stdio(null)?;
                     if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
                         return Err(io::Error::last_os_error());
                     }
@@ -423,7 +515,11 @@ mod platform {
         }
     }
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+#[path = "write_boundary_macos.rs"]
+mod platform;
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod platform {
     use super::*;
     pub(super) fn probe() -> Result<i32> {
