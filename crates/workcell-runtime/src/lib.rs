@@ -27,6 +27,7 @@ mod service;
 mod service_declaration;
 mod support;
 
+pub use epilogos_workcell_workspace::{git_branch_facts, GitBranchFacts};
 pub use external_service::{
     ExternalManagedService, ExternalManagedServiceProvider, ExternalServiceAcquisition,
     ExternalServiceCommand,
@@ -82,12 +83,11 @@ pub use resource_usage::{
     MAX_INTERVAL, RESOURCE_USAGE_SCHEMA,
 };
 pub use run::{
-    compose_prepared_run_scope, set_run_status, validate_run_record, validate_agency_block,
-    validate_operative_block, RunLedger, EXECUTION_STATUSES, PREPARED_RUN_SCOPE_SCHEMA,
-    RUN_RUNGS, RUN_SCHEMA, RUNS_DIRECTORY, RUNS_INDEX_FILE,
+    compose_prepared_run_scope, set_run_status, validate_agency_block, validate_operative_block,
+    validate_run_record, RunLedger, EXECUTION_STATUSES, PREPARED_RUN_SCOPE_SCHEMA, RUNS_DIRECTORY,
+    RUNS_INDEX_FILE, RUN_RUNGS, RUN_SCHEMA,
 };
 pub use runtime::{ReferenceProjectRuntimeProvider, RuntimeMode};
-pub use epilogos_workcell_workspace::{git_branch_facts, GitBranchFacts};
 pub use secret::{
     run_with_secret_env, run_with_secret_file, run_with_secret_pipe, MaterialisedChild,
 };

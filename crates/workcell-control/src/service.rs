@@ -10,8 +10,7 @@ use crate::{codec, software_version, CONNECTION_HANDSHAKE_OPERATION, CONTROL_PRO
 /// the cell's own `oi.product-settings-disclosure/v2` reading, assembled by
 /// the host that composed the service (the reading is host-owned — the
 /// service only carries it).
-pub type SystemDisclosure =
-    Arc<dyn Fn() -> Result<Value, WorkcellError> + Send + Sync>;
+pub type SystemDisclosure = Arc<dyn Fn() -> Result<Value, WorkcellError> + Send + Sync>;
 
 /// One access decision for one request. `FullAccess` is the pre-existing
 /// open/static-token behaviour; `Scoped` is a connection grant's scope.

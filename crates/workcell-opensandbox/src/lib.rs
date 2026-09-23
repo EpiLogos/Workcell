@@ -1075,8 +1075,8 @@ fn parse_execd_stream(bytes: &[u8]) -> Result<ExecdStream> {
     let mut event_name: Option<String> = None;
     let mut data_lines: Vec<String> = Vec::new();
     let dispatch = |stream: &mut ExecdStream,
-                        event_name: &mut Option<String>,
-                        data_lines: &mut Vec<String>| {
+                    event_name: &mut Option<String>,
+                    data_lines: &mut Vec<String>| {
         let payload = data_lines.join("\n");
         data_lines.clear();
         let trimmed = payload.trim();
@@ -1164,7 +1164,10 @@ fn parse_execd_stream(bytes: &[u8]) -> Result<ExecdStream> {
                     ),
                     // Legacy flat format: top-level ename/evalue.
                     None => (
-                        object.get("ename").and_then(Value::as_str).unwrap_or("error"),
+                        object
+                            .get("ename")
+                            .and_then(Value::as_str)
+                            .unwrap_or("error"),
                         object.get("evalue").and_then(Value::as_str).unwrap_or(""),
                     ),
                 };
@@ -1697,8 +1700,15 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(!result.output.get("stdout").map(String::as_str).unwrap_or("").is_empty(),
-            "a successful command must not complete with empty stdout");
+        assert!(
+            !result
+                .output
+                .get("stdout")
+                .map(String::as_str)
+                .unwrap_or("")
+                .is_empty(),
+            "a successful command must not complete with empty stdout"
+        );
         assert_eq!(
             result.output.get("exit_code").map(String::as_str),
             Some("2")
