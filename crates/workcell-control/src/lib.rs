@@ -31,7 +31,7 @@ pub const CONTROL_PROTOCOL_VERSION: &str = "workcell.control/v1";
 /// The control operations a grant can permit. `connection.handshake` is not
 /// in this list: it is the compatibility disclosure every client may attempt,
 /// and it discloses no capability and no workcell identity.
-pub const CONTROL_OPERATIONS: [&str; 11] = [
+pub const CONTROL_OPERATIONS: [&str; 12] = [
     "status",
     "discover",
     "plan",
@@ -43,6 +43,7 @@ pub const CONTROL_OPERATIONS: [&str; 11] = [
     "collect",
     "release",
     "reconcile",
+    "system",
 ];
 
 pub const CONNECTION_HANDSHAKE_OPERATION: &str = "connection.handshake";

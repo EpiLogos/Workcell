@@ -213,6 +213,14 @@ where
         self.invoke("reconcile", codec::desired_value(desired))
     }
 
+    /// The serving cell's own settings disclosure
+    /// (`oi.product-settings-disclosure/v2`), emitted by the remote machine
+    /// itself. Additive to `workcell.control/v1`: a cell that does not expose
+    /// a disclosure refuses this operation by name.
+    pub fn system(&mut self) -> Result<Value, ControlClientError> {
+        self.invoke("system", Value::Null)
+    }
+
     pub fn invoke(&mut self, operation: &str, payload: Value) -> Result<Value, ControlClientError> {
         let request_id = format!("request:{}", self.next_request_id);
         self.next_request_id += 1;

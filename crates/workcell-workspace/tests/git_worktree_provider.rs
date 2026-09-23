@@ -82,6 +82,7 @@ fn request_with_access(
         access,
         persistence: None,
         retention: RetentionExpectation::Release,
+        branch_name: None,
     }
 }
 

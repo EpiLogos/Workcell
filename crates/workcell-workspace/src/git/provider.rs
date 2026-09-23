@@ -7,7 +7,7 @@ use epilogos_workcell_core::{
     WorkspaceProvider,
 };
 
-use super::{command, state::GitRecord, state::GitWorktreeWorkspaceProvider};
+use super::{command, state::GitWorktreeWorkspaceProvider};
 use crate::support::{make_directories_writable, set_tree_readonly, stable_key};
 
 impl ProviderPort for GitWorktreeWorkspaceProvider {
@@ -29,9 +29,13 @@ impl ProviderPort for GitWorktreeWorkspaceProvider {
                 .map_err(|error| WorkcellError::OperationFailed(error.into()))?,
             provider_ref: self.provider_ref.clone(),
             port: ProviderPortKind::Workspace.as_str().into(),
+            // The dedicated `workspace:git-worktree` affordance is the only
+            // workspace affordance this provider offers: a plain
+            // `workspace:writable` demand keeps binding to its existing
+            // provider, and only a demand that names the git-worktree key is
+            // routed here.
             affordances: vec![
-                "workspace:read-only".into(),
-                "workspace:writable".into(),
+                "workspace:git-worktree".into(),
                 "persistence:ephemeral".into(),
                 "persistence:task-or-run".into(),
                 "persistence:candidate".into(),
@@ -109,7 +113,7 @@ impl WorkspaceProvider for GitWorktreeWorkspaceProvider {
         ]);
         let material_ref = format!("workspace:git-worktree:{key}");
 
-        if let Some(record) = self.records.get(&material_ref) {
+        if let Some(record) = self.records.borrow().get(&material_ref) {
             if record.path.exists() {
                 return Ok(self.allocation(&material_ref, record));
             }
@@ -126,32 +130,50 @@ impl WorkspaceProvider for GitWorktreeWorkspaceProvider {
             )));
         }
 
-        command::run(
-            &repository,
-            &[
-                "worktree",
-                "add",
-                "--detach",
-                command::path_arg(&target)?,
-                &commit,
-            ],
-            "create git worktree",
-        )?;
+        // Branch law: a writable demand that names a branch materialises on
+        // that branch (`git worktree add -b <branch>`); everything else keeps
+        // the detached checkout. git itself refuses an existing branch name,
+        // so a collision fails loudly instead of reusing someone's branch.
+        let branch = match (&request.branch_name, &request.access) {
+            (Some(branch), WorkspaceAccess::Writable) => Some(branch.clone()),
+            (Some(branch), WorkspaceAccess::ReadOnly) => {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "branch law names branch `{branch}` but the demand is read-only; a named branch is a writable materialisation"
+                )))
+            }
+            (None, _) => None,
+        };
+        let mut worktree_args = vec![String::from("worktree"), String::from("add")];
+        match &branch {
+            Some(branch) => {
+                worktree_args.push("-b".into());
+                worktree_args.push(branch.clone());
+            }
+            None => worktree_args.push("--detach".into()),
+        }
+        worktree_args.push(command::path_arg(&target)?.to_owned());
+        worktree_args.push(commit.clone());
+        let worktree_args: Vec<&str> = worktree_args.iter().map(String::as_str).collect();
+        command::run(&repository, &worktree_args, "create git worktree")?;
         if request.access == WorkspaceAccess::ReadOnly {
             set_tree_readonly(&target)?;
         }
 
-        let record = GitRecord {
+        let record = super::state::GitRecord {
             repository,
             path: target,
             commit,
+            branch,
             access: request.access.clone(),
             source_ref: request.source.as_ref().map(ToString::to_string),
             source_locator: source.locator.clone(),
             source_dirty,
         };
         let allocation = self.allocation(&material_ref, &record);
-        self.records.insert(material_ref, record);
+        self.records
+            .borrow_mut()
+            .insert(material_ref, record);
+        self.persist()?;
         Ok(allocation)
     }
 
@@ -161,7 +183,9 @@ impl WorkspaceProvider for GitWorktreeWorkspaceProvider {
         detail.insert("path".into(), record.path.display().to_string());
         detail.insert("commit".into(), record.commit.clone());
         if !record.path.exists() {
+            self.prune_if_gone(&allocation.material_ref, &record);
             detail.insert("exists".into(), "false".into());
+            detail.insert("pruned".into(), "true".into());
             detail.insert("dirty".into(), "unknown".into());
             return Ok(ProviderObservation {
                 provider_ref: self.provider_ref.clone(),
@@ -179,6 +203,9 @@ impl WorkspaceProvider for GitWorktreeWorkspaceProvider {
         .is_empty();
         detail.insert("exists".into(), "true".into());
         detail.insert("dirty".into(), dirty.to_string());
+        if let Some(branch) = &record.branch {
+            detail.insert("branch".into(), branch.clone());
+        }
         Ok(ProviderObservation {
             provider_ref: self.provider_ref.clone(),
             material_ref: allocation.material_ref.clone(),
@@ -192,6 +219,10 @@ impl WorkspaceProvider for GitWorktreeWorkspaceProvider {
         allocation: &ProviderAllocation,
         retention: &RetentionExpectation,
     ) -> Result<ProviderReleaseResult> {
+        // Capture the record before any observation: observe prunes entries
+        // whose path is gone, and the release contract for a missing worktree
+        // (prune the repository's stale metadata) must keep working.
+        let record = self.record(allocation)?;
         let observation = self.observe_workspace(allocation)?;
         let dirty = observation
             .detail
@@ -214,7 +245,6 @@ impl WorkspaceProvider for GitWorktreeWorkspaceProvider {
                         "git worktree is dirty; refusing silent discard".into(),
                     ));
                 }
-                let record = self.record(allocation)?.clone();
                 let changed = if record.path.exists() {
                     if record.access == WorkspaceAccess::ReadOnly {
                         make_directories_writable(&record.path)?;
@@ -233,7 +263,8 @@ impl WorkspaceProvider for GitWorktreeWorkspaceProvider {
                     )?;
                     false
                 };
-                self.records.remove(&allocation.material_ref);
+                self.records.borrow_mut().remove(&allocation.material_ref);
+                self.persist()?;
                 Ok(ProviderReleaseResult {
                     provider_ref: self.provider_ref.clone(),
                     material_ref: allocation.material_ref.clone(),

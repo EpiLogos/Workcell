@@ -45,3 +45,38 @@ pub(super) fn path_arg(path: &Path) -> Result<&str> {
         ))
     })
 }
+
+/// Deliverable facts about a worktree's branch, for run records: the checked-out
+/// branch (`None` when detached), the tip commit, and whether any
+/// remote-tracking ref on this machine already contains the tip. `pushed` is a
+/// local remote-tracking observation — no network is contacted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitBranchFacts {
+    pub branch: Option<String>,
+    pub commit: String,
+    pub pushed: bool,
+}
+
+pub(super) fn branch_facts(worktree: &Path) -> Result<GitBranchFacts> {
+    let commit = stdout(worktree, &["rev-parse", "HEAD"], "resolve worktree commit")?;
+    let branch = stdout(
+        worktree,
+        &["rev-parse", "--abbrev-ref", "HEAD"],
+        "resolve worktree branch",
+    )?;
+    let branch = match branch.as_str() {
+        "HEAD" | "" => None,
+        name => Some(name.to_owned()),
+    };
+    let containing = stdout(
+        worktree,
+        &["branch", "-r", "--contains", "HEAD"],
+        "inspect remote refs containing the worktree tip",
+    )
+    .unwrap_or_default();
+    Ok(GitBranchFacts {
+        branch,
+        commit,
+        pushed: !containing.trim().is_empty(),
+    })
+}

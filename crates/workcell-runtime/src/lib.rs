@@ -20,6 +20,7 @@ mod place_scan;
 mod profile;
 mod reference_services;
 mod resource_usage;
+mod run;
 mod runtime;
 mod secret;
 mod service;
@@ -48,8 +49,8 @@ pub use instance_scan::{
 };
 pub use local::{
     CollapsedLocalConfig, CollapsedLocalWorkcell, ExternalExecutionProviderFactory,
-    ServiceDeclarationSource, MANAGED_SERVICE_PROVIDER_REF, OPENSANDBOX_PROVIDER_REF,
-    TARGET_SERVICE_PROVIDER_REF,
+    ExternalWorkspaceProviderFactory, ServiceDeclarationSource, GIT_WORKSPACE_PROVIDER_REF,
+    MANAGED_SERVICE_PROVIDER_REF, OPENSANDBOX_PROVIDER_REF, TARGET_SERVICE_PROVIDER_REF,
 };
 pub use place::{
     decide_place_release, herdr_place_ref, parse_place_ref, release_place_live, request_place_live,
@@ -80,7 +81,13 @@ pub use resource_usage::{
     observe_resource_usage, validate_resource_usage, ResourceUsageReport, DEFAULT_INTERVAL,
     MAX_INTERVAL, RESOURCE_USAGE_SCHEMA,
 };
+pub use run::{
+    compose_prepared_run_scope, set_run_status, validate_run_record, validate_agency_block,
+    validate_operative_block, RunLedger, EXECUTION_STATUSES, PREPARED_RUN_SCOPE_SCHEMA,
+    RUN_RUNGS, RUN_SCHEMA, RUNS_DIRECTORY, RUNS_INDEX_FILE,
+};
 pub use runtime::{ReferenceProjectRuntimeProvider, RuntimeMode};
+pub use epilogos_workcell_workspace::{git_branch_facts, GitBranchFacts};
 pub use secret::{
     run_with_secret_env, run_with_secret_file, run_with_secret_pipe, MaterialisedChild,
 };

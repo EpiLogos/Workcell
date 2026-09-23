@@ -45,6 +45,7 @@ fn directory_workspace_reconstructs_from_persisted_allocation_after_restart() {
         access: WorkspaceAccess::Writable,
         persistence: None,
         retention: RetentionExpectation::Release,
+        branch_name: None,
     };
     let mut first = DirectoryWorkspaceProvider::new(provider_ref.clone(), &root);
     let allocation = first.prepare_workspace(&request).unwrap();
