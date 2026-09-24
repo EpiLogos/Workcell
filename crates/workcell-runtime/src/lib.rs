@@ -83,9 +83,9 @@ pub use resource_usage::{
     MAX_INTERVAL, RESOURCE_USAGE_SCHEMA,
 };
 pub use run::{
-    compose_prepared_run_scope, set_run_status, validate_agency_block, validate_operative_block,
-    validate_run_record, RunLedger, EXECUTION_STATUSES, PREPARED_RUN_SCOPE_SCHEMA, RUNS_DIRECTORY,
-    RUNS_INDEX_FILE, RUN_RUNGS, RUN_SCHEMA,
+    compose_prepared_run_scope, run_record_revision, set_run_status, validate_agency_block,
+    validate_operative_block, validate_run_record, RunLedger, EXECUTION_STATUSES,
+    PREPARED_RUN_SCOPE_SCHEMA, RUNS_DIRECTORY, RUNS_INDEX_FILE, RUN_RUNGS, RUN_SCHEMA,
 };
 pub use runtime::{ReferenceProjectRuntimeProvider, RuntimeMode};
 pub use secret::{

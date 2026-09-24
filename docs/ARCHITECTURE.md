@@ -113,3 +113,58 @@ The Fabric/networking work in #26 completes an already-canonical part of those r
 The next product tranche makes those territories directly inhabitable through the native CLI, a zero-setup local profile, an optional Control Service, persistent service/agent-host conformance, public SDK/conformance tooling, the reference Ubuntu remote topology, real connectivity-fabric conformance, source-pinned remote bootstrap and gateway-management integrations.
 
 The reference Ubuntu worker is a specimen, not the ontology. Tailscale is a reference fabric, not the ontology. exe.dev is a reference remote-bootstrap shape, not the ontology. Hermes/OpenClaw gateway integrations are conformance targets, not a gateway ontology. Later distribution is a placement/provider extension, not a reason to make a cluster framework, VPN brand or harness protocol part of semantic demand.
+
+### Existing runs and exact task scopes
+
+`workcell --json run list --full` returns complete `workcell.run/v1` records in
+one owner read; ordinary `run list` keeps its short listing. Stored scope files
+are not runs. `run show --run SLUG` also returns `run_revision`, the digest of the
+exact native record. The ledger serializes writes and supports a scope's
+compare-and-swap against the actual record inspected, so concurrent release
+cannot be overwritten by scope preparation.
+
+`run scope --run SLUG --expected-demand-digest DIGEST --write-boundary FILE`
+prepares the supplied `workcell.write-boundary/v1` requirements verbatim. The
+policy ref, revision, authority, expiry, writable/protected paths and coverage
+belong to their existing owners. Workcell does not synthesize any of them. The
+selected run's exact worktree must appear in that boundary; a parent path is
+not substituted and the owner never silently widens the request. Unsupported
+protection returns the explicit unavailable boundary; an execution consumer
+must refuse it. This operation reuses existing material and never creates a
+worktree.
+
+An Agency-bearing run is admitted by the actual Actuation
+`agency actualise` operation using bounded exact source bytes. The returned
+receipt must preserve the request, binding, bounds, authority and source
+lineage. `run start --agency-ref REF --agency-source PATH --agency-rev REV`
+retains this native admission; a caller's asserted binding-revision string is
+not proof. Scope preparation re-admits an attached Agency and verifies the
+requested task Action and authority. A previously material-only run can attach
+an admitted source at scope preparation with the same Agency flags plus
+`--expected-agency-digest blake3:DIGEST`; a different existing Agency basis is
+refused. No source policy is rewritten.
+
+An arbitrary `--place-grant` file is not accepted as an owned place. A scope
+without a native place receipt keeps that field absent. Material preparation
+and a live agent/terminal remain different claims.
+
+### Native machine, credential and run disclosures
+
+`workcell system --json` includes machine declarations, recorded connections,
+control-service declarations, credential-reference inventory, projection
+metadata and material runs. These are read-only observations of native records.
+They do not connect to remote machines, resolve secrets, or treat a saved run
+status as current provider health. Each unavailable live axis names the native
+operation needed for a current reading.
+
+`workcell --json secret list` returns `workcell.secret-reference-inventory/v1`:
+known refs, schemes and names from machine declarations, connection receipts and
+projection records. It does not enumerate the complete origin store. Native
+providers do not supply credential creation dates here; these remain null.
+No secret material is read. The response explicitly reports this partial
+coverage rather than mistaking an empty reference list for an empty vault.
+
+Prepared run scopes use `<slug>-<run-revision>.scope.json` by default so a new
+scope revision preserves earlier receipts. Workcell canonicalizes the already
+existing provider worktree before comparing exact owner boundary paths; it does
+not substitute an ancestor or create a replacement directory.

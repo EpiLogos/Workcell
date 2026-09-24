@@ -1,3 +1,4 @@
+include!("run_admission.rs");
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
@@ -7,40 +8,41 @@ use std::{
 };
 
 use epilogos_workcell_control::{
-    check_compatibility, credential_sha256, generate_credential, grant_ref_for, parse_duration_millis,
-    software_version, validate_label, ConnectionGrants, ControlClient, ControlClientError,
-    ControlService, CreateOutcome, ProjectionDecision, RemoteMachineDeclaration, RemoteMachineRegistry,
-    SecretProjectionLedger, SecretProjectionRecord, TcpControlServer, TcpControlTransport,
-    CONTROL_OPERATIONS, CONTROL_PROTOCOL_VERSION, GRANTS_FILE,
+    check_compatibility, credential_sha256, generate_credential, grant_ref_for,
+    parse_duration_millis, software_version, validate_label, ConnectionGrants, ControlClient,
+    ControlClientError, ControlService, CreateOutcome, ProjectionDecision,
+    RemoteMachineDeclaration, RemoteMachineRegistry, SecretProjectionLedger,
+    SecretProjectionRecord, TcpControlServer, TcpControlTransport, CONTROL_OPERATIONS,
+    CONTROL_PROTOCOL_VERSION, GRANTS_FILE,
 };
 use epilogos_workcell_core::{
     broker_handle, correlate_projection, AffordanceRequirement, Availability, BindingRef,
     BrokerPolicy, BrokerRoute, CollectionBundle, Degradation, DemandRef, DesiredMaterialState,
     Discovery, ExecutionDemand, ExposureBundle, ExposureRequirement, ExternalRef, HealthState,
     IsolationTrustRequirement, LogicalConnectionRequirement, MaterialisationPlan,
-    MaterialisedExecutionWorld, ObservationBundle, OutputRequirement, PersistenceScope, PlanOmission,
-    PlanStatus, ProjectRuntimeRequirement, ProjectionCorrelation, ProviderAllocation,
-    ProviderPortKind, ReconciliationResult, ReleaseDisposition, ReleaseResult, RequirementNecessity,
-    ResourceRequirement, RetentionExpectation, SecretMaterialisationClass,
+    MaterialisedExecutionWorld, ObservationBundle, OutputRequirement, PersistenceScope,
+    PlanOmission, PlanStatus, ProjectRuntimeRequirement, ProjectionCorrelation, ProviderAllocation,
+    ProviderPortKind, ReconciliationResult, ReleaseDisposition, ReleaseResult,
+    RequirementNecessity, ResourceRequirement, RetentionExpectation, SecretMaterialisationClass,
     SecretMaterialisationRequest, SecretProjectionRequest, SecretProjectionTarget,
-    SecretRevocationState, Tiered, WorkcellControlPlane, WorkcellError, WorkcellRef, WorkspaceAccess,
-    WorkspaceRequirement, WorldRef, AIKIT_WORKTREE_PROJECTION_SOURCE,
+    SecretRevocationState, Tiered, WorkcellControlPlane, WorkcellError, WorkcellRef,
+    WorkspaceAccess, WorkspaceRequirement, WorldRef, AIKIT_WORKTREE_PROJECTION_SOURCE,
 };
 use epilogos_workcell_keychain::{
     store_bootstrap_material as store_keychain_material, KeychainAclPolicy, KeychainSecretProvider,
 };
 use epilogos_workcell_onepassword::{OnePasswordCli, OnePasswordSecretProvider};
-use epilogos_workcell_secret_scan as secret_scan;
-use epilogos_workcell_secret_service::{
-    store_bootstrap_material as store_secret_service_material, SecretServiceSecretProvider,
-};
 use epilogos_workcell_opensandbox::{
-    project_credential_to_sandbox, OpenSandboxCredentialAuth, OpenSandboxCredentialBindingSpec,
-    OpenSandboxCredentialBroker, OpenSandboxConfig, StdHttpOpenSandboxTransport,
+    project_credential_to_sandbox, OpenSandboxConfig, OpenSandboxCredentialAuth,
+    OpenSandboxCredentialBindingSpec, OpenSandboxCredentialBroker, StdHttpOpenSandboxTransport,
 };
 use epilogos_workcell_runtime::{
     compose_prepared_run_scope, set_run_status, CollapsedLocalConfig, CollapsedLocalWorkcell,
     RunLedger,
+};
+use epilogos_workcell_secret_scan as secret_scan;
+use epilogos_workcell_secret_service::{
+    store_bootstrap_material as store_secret_service_material, SecretServiceSecretProvider,
 };
 use epilogos_workcell_wire::{
     connection_value, correlated_observation_value, decode_connection, decode_world,
@@ -239,7 +241,10 @@ fn command_status(global: &GlobalArgs) -> Result<(), WorkcellError> {
                     record.label,
                     record.state,
                     record.endpoint,
-                    record.remote_workcell_ref.as_deref().unwrap_or("remote identity unknown"),
+                    record
+                        .remote_workcell_ref
+                        .as_deref()
+                        .unwrap_or("remote identity unknown"),
                     expiry_note(record.expires_at_unix_ms),
                 );
             }
@@ -282,7 +287,10 @@ fn connection_status_json(record: &ConnectionRecord) -> Value {
 fn grants_status_summary(
     global: &GlobalArgs,
 ) -> Result<Option<(usize, usize, usize)>, WorkcellError> {
-    let registry = ConnectionGrants::new(&global.state_root, parse_workcell_ref(&global.workcell_ref)?);
+    let registry = ConnectionGrants::new(
+        &global.state_root,
+        parse_workcell_ref(&global.workcell_ref)?,
+    );
     if !registry.path().exists() {
         return Ok(None);
     }
@@ -566,8 +574,16 @@ fn command_recover(global: &GlobalArgs) -> Result<(), WorkcellError> {
     let recovered = workcell.recover(&world.world_ref)?;
     let receipt = default_receipt_path(&global.state_root, recovered.world_ref.as_str());
     write_receipt(&receipt, &recovered)?;
-    if global.json { emit_json(json!({"ok":true,"receipt":receipt,"world":world_value(&recovered)?})); }
-    else { println!("material recovery: {} -> {}; receipt {}", world.world_ref, recovered.world_ref, receipt.display()); }
+    if global.json {
+        emit_json(json!({"ok":true,"receipt":receipt,"world":world_value(&recovered)?}));
+    } else {
+        println!(
+            "material recovery: {} -> {}; receipt {}",
+            world.world_ref,
+            recovered.world_ref,
+            receipt.display()
+        );
+    }
     Ok(())
 }
 
@@ -742,10 +758,7 @@ fn command_reconcile(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
 // opaque checkout subject on the world. It runs no git, re-derives nothing, and
 // does not touch material lifecycle — this is an annotation over a world
 // reading, never a `reconcile` that computes git.
-fn command_correlate_projection(
-    global: &GlobalArgs,
-    args: &[String],
-) -> Result<(), WorkcellError> {
+fn command_correlate_projection(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
     let mut projection_path = None;
     let mut subject_key = None;
     let mut index = 0;
@@ -854,7 +867,10 @@ fn read_aikit_projection_correlation(
     subject_key: String,
 ) -> Result<ProjectionCorrelation, WorkcellError> {
     let raw = fs::read(path).map_err(|error| {
-        WorkcellError::InvalidDemand(format!("read projection JSON `{}`: {error}", path.display()))
+        WorkcellError::InvalidDemand(format!(
+            "read projection JSON `{}`: {error}",
+            path.display()
+        ))
     })?;
     if raw.len() > 4_194_304 {
         return Err(WorkcellError::InvalidDemand(
@@ -896,10 +912,9 @@ fn read_aikit_projection_correlation(
     let mut surfaced = Vec::new();
     let mut projected = !entries.is_empty();
     for entry in entries {
-        let key = entry
-            .get("key")
-            .and_then(Value::as_str)
-            .ok_or_else(|| WorkcellError::InvalidDemand("projection entry is missing `key`".into()))?;
+        let key = entry.get("key").and_then(Value::as_str).ok_or_else(|| {
+            WorkcellError::InvalidDemand("projection entry is missing `key`".into())
+        })?;
         let action = entry
             .get("action")
             .and_then(Value::as_object)
@@ -971,10 +986,18 @@ fn locate_projection_object(value: &Value) -> Option<&Map<String, Value>> {
 
 fn parse_demand(args: &[String]) -> Result<ExecutionDemand, WorkcellError> {
     if args.first().map(String::as_str) == Some("--demand-json") {
-        if args.len() != 2 { return Err(WorkcellError::InvalidDemand("--demand-json requires exactly one file and cannot be mixed with requirement flags".into())); }
-        let raw = fs::read(&args[1]).map_err(|e| WorkcellError::InvalidDemand(format!("read demand JSON: {e}")))?;
-        if raw.len() > 1_048_576 { return Err(WorkcellError::InvalidDemand("demand JSON exceeds 1 MiB".into())); }
-        let value = serde_json::from_slice(&raw).map_err(|e| WorkcellError::InvalidDemand(format!("parse demand JSON: {e}")))?;
+        if args.len() != 2 {
+            return Err(WorkcellError::InvalidDemand("--demand-json requires exactly one file and cannot be mixed with requirement flags".into()));
+        }
+        let raw = fs::read(&args[1])
+            .map_err(|e| WorkcellError::InvalidDemand(format!("read demand JSON: {e}")))?;
+        if raw.len() > 1_048_576 {
+            return Err(WorkcellError::InvalidDemand(
+                "demand JSON exceeds 1 MiB".into(),
+            ));
+        }
+        let value = serde_json::from_slice(&raw)
+            .map_err(|e| WorkcellError::InvalidDemand(format!("parse demand JSON: {e}")))?;
         let demand = epilogos_workcell_control::codec::decode_demand(&value)?;
         demand.validate()?;
         return Ok(demand);
@@ -1931,7 +1954,9 @@ fn command_place_release(_global: &GlobalArgs, args: &[String]) -> Result<(), Wo
                     args.get(index)
                         .and_then(|value| value.parse::<u32>().ok())
                         .ok_or_else(|| {
-                            WorkcellError::InvalidDemand("--pid requires a numeric process id".into())
+                            WorkcellError::InvalidDemand(
+                                "--pid requires a numeric process id".into(),
+                            )
                         })?,
                 );
             }
@@ -2149,7 +2174,11 @@ fn command_sandboxes(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
             let asserted = operator_releases.contains(id);
             println!(
                 "  released sandbox{}: {id}",
-                if asserted { " (operator-asserted)" } else { " orphan" },
+                if asserted {
+                    " (operator-asserted)"
+                } else {
+                    " orphan"
+                },
             );
         }
         for id in &report.deleted_snapshots {
@@ -2200,7 +2229,7 @@ fn command_run(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError
         "observe" => run_observe(global, rest),
         "collect" => run_collect(global, rest),
         "release" => run_release(global, rest),
-        "list" => run_list(global),
+        "list" => run_list(global, args),
         "show" => run_show(global, rest),
         "scope" => run_scope(global, rest),
         other => Err(WorkcellError::InvalidDemand(format!(
@@ -2286,9 +2315,8 @@ fn run_append_correlation(record: &mut Value, document: Value) -> Result<(), Wor
 }
 
 fn run_start(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
-    let slug = run_flag(args, "--run")?.ok_or_else(|| {
-        WorkcellError::InvalidDemand("run start requires `--run <slug>`".into())
-    })?;
+    let slug = run_flag(args, "--run")?
+        .ok_or_else(|| WorkcellError::InvalidDemand("run start requires `--run <slug>`".into()))?;
     let rung = run_flag(args, "--rung")?.unwrap_or_else(|| "local".into());
     if !["local", "remote", "sandbox"].contains(&rung.as_str()) {
         return Err(WorkcellError::InvalidDemand(format!(
@@ -2353,36 +2381,20 @@ fn run_start(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> 
     if let Some(agency_ref) = &agency_ref {
         let agency_source = agency_source.as_ref().ok_or_else(|| {
             WorkcellError::InvalidDemand(
-                "--agency-ref requires --agency-source <path to the minted agency source>"
-                    .into(),
+                "--agency-ref requires --agency-source <path to the minted agency source>".into(),
             )
         })?;
-        let source_bytes = fs::read(agency_source).map_err(|error| {
-            WorkcellError::NotFound(format!(
-                "read agency source `{agency_source}`: {error}"
-            ))
+        let revision = run_flag(args, "--agency-rev")?.ok_or_else(|| {
+            WorkcellError::InvalidDemand(
+                "--agency-rev is required for the exact source basis".into(),
+            )
         })?;
-        if source_bytes.len() > 1_048_576 {
-            return Err(WorkcellError::InvalidDemand(
-                "agency source exceeds 1 MiB".into(),
-            ));
-        }
-        record["agency"] = json!({
-            "agency_ref": agency_ref,
-            "agency_rev": run_flag(args, "--agency-rev").unwrap_or_default(),
-            "source_ref": agency_source,
-            "source_digest": format!("blake3:{}", blake3::hash(&source_bytes).to_hex()),
-            "binding_revision": run_flag(args, "--agency-binding-revision").unwrap_or_default(),
-            "minted_by": run_flag(args, "--minted-by").unwrap_or_default(),
-        });
-        // The workcell run attaches to an already-actualised agency; it never
-        // mints (A-3). A non-empty binding revision is the attach receipt.
-        if record["agency"]["binding_revision"].as_str().unwrap_or("").is_empty() {
-            return Err(WorkcellError::InvalidDemand(
-                "attaching an agency requires --agency-binding-revision (the run attaches, it does not mint)"
-                    .into(),
-            ));
-        }
+        record["agency"] = admit_run_agency(
+            Path::new(agency_source),
+            agency_ref,
+            &revision,
+            &global.state_root,
+        )?;
     } else if agency_source.is_some() {
         return Err(WorkcellError::InvalidDemand(
             "--agency-source requires --agency-ref".into(),
@@ -2405,6 +2417,7 @@ fn run_start(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> 
         run_append_correlation(&mut record, document)?;
     }
     let record = ledger.create(record)?;
+    let original_record = record.clone();
 
     let mut record = match rung.as_str() {
         "remote" => run_start_remote(global, args, record, &demand, &machine.expect("checked")),
@@ -2428,7 +2441,7 @@ fn run_start(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> 
         }
     }
     set_run_status(&mut record, "running", None)?;
-    ledger.update(&record)?;
+    ledger.update_if_unchanged(&original_record, &record)?;
     if global.json {
         emit_json(json!({"ok": true, "run": record}));
     } else {
@@ -2448,9 +2461,19 @@ fn run_start(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> 
 /// is expressed exactly like `workcell prepare --demand-json … | --require …`.
 fn run_demand_flags(args: &[String]) -> Vec<String> {
     let recognised = [
-        "--run", "--rung", "--machine", "--correlation", "--agency-ref", "--agency-source",
-        "--agency-rev", "--agency-binding-revision", "--minted-by", "--operative-harness",
-        "--operative-connection", "--operative-model", "--operative-agent-profile",
+        "--run",
+        "--rung",
+        "--machine",
+        "--correlation",
+        "--agency-ref",
+        "--agency-source",
+        "--agency-rev",
+        "--agency-binding-revision",
+        "--minted-by",
+        "--operative-harness",
+        "--operative-connection",
+        "--operative-model",
+        "--operative-agent-profile",
         "--canonical-run-ref",
     ];
     let mut demand_flags = Vec::new();
@@ -2479,8 +2502,9 @@ fn read_json_file(path: &Path) -> Result<Value, WorkcellError> {
             path.display()
         )));
     }
-    serde_json::from_slice(&raw)
-        .map_err(|error| WorkcellError::InvalidDemand(format!("parse JSON `{}`: {error}", path.display())))
+    serde_json::from_slice(&raw).map_err(|error| {
+        WorkcellError::InvalidDemand(format!("parse JSON `{}`: {error}", path.display()))
+    })
 }
 
 fn load_world_receipt_path(path: &Path) -> Result<MaterialisedExecutionWorld, WorkcellError> {
@@ -2501,11 +2525,7 @@ fn run_start_local(
     demand: &ExecutionDemand,
 ) -> Result<Value, WorkcellError> {
     let channels = demand_output_channels(demand);
-    let mut workcell = new_local(
-        global,
-        parse_workcell_ref(&global.workcell_ref)?,
-        channels,
-    )?;
+    let mut workcell = new_local(global, parse_workcell_ref(&global.workcell_ref)?, channels)?;
     let world = workcell.prepare(demand)?;
     let receipt = global
         .receipt
@@ -2528,11 +2548,7 @@ fn run_start_sandbox(
     demand: &ExecutionDemand,
 ) -> Result<Value, WorkcellError> {
     let channels = demand_output_channels(demand);
-    let workcell = new_local(
-        global,
-        parse_workcell_ref(&global.workcell_ref)?,
-        channels,
-    )?;
+    let workcell = new_local(global, parse_workcell_ref(&global.workcell_ref)?, channels)?;
     let discovery = workcell.discover()?;
     let sandbox_offer = discovery.offers.iter().find(|offer| {
         offer.port == ProviderPortKind::Execution.as_str()
@@ -2545,7 +2561,12 @@ fn run_start_sandbox(
     // The sandbox provider is execution-only: a sandbox run executes inside
     // the provider's own image, so a git-worktree branch law is refused
     // rather than silently dropped.
-    if sandbox_demand.extensions.get("branch_law").map(String::as_str) == Some("aikit") {
+    if sandbox_demand
+        .extensions
+        .get("branch_law")
+        .map(String::as_str)
+        == Some("aikit")
+    {
         return Err(WorkcellError::InvalidDemand(
             "the sandbox rung has no git worktree materialisation; drop the branch_law extension or use the local rung"
                 .into(),
@@ -2614,9 +2635,7 @@ fn remote_client_for_machine(
     Ok(client)
 }
 
-fn remote_error(
-    context: &'static str,
-) -> impl Fn(ControlClientError) -> WorkcellError {
+fn remote_error(context: &'static str) -> impl Fn(ControlClientError) -> WorkcellError {
     move |error| match error {
         ControlClientError::TransportUnavailable(message) => WorkcellError::Unavailable(format!(
             "{context}: remote machine is unreachable: {message}"
@@ -2627,6 +2646,7 @@ fn remote_error(
 
 fn run_observe(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
     let (ledger, mut record) = require_run(global, args)?;
+    let original_record = record.clone();
     let correlate = run_flag(args, "--correlate")?;
     if let Some(document_path) = &correlate {
         let document = read_json_file(Path::new(document_path))?;
@@ -2664,10 +2684,7 @@ fn run_observe(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError
             match unhealthy {
                 None => true,
                 Some(observation) => {
-                    reason = format!(
-                        "material `{}` is unhealthy",
-                        observation.logical_ref
-                    );
+                    reason = format!("material `{}` is unhealthy", observation.logical_ref);
                     false
                 }
             }
@@ -2677,9 +2694,16 @@ fn run_observe(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError
             false
         }
     };
-    let current = record["execution_status"].as_str().unwrap_or("queued").to_owned();
+    let current = record["execution_status"]
+        .as_str()
+        .unwrap_or("queued")
+        .to_owned();
     let status = if current == "running" {
-        if healthy { "running" } else { "blocked" }
+        if healthy {
+            "running"
+        } else {
+            "blocked"
+        }
     } else {
         current.as_str()
     };
@@ -2692,7 +2716,7 @@ fn run_observe(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError
     } else if !healthy {
         record["status_reason"] = json!(reason);
     }
-    ledger.update(&record)?;
+    ledger.update_if_unchanged(&original_record, &record)?;
     if global.json {
         emit_json(json!({"ok": true, "run": record}));
     } else {
@@ -2705,7 +2729,11 @@ fn run_observe(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError
                 .map(|reason| format!(" ({reason})"))
                 .unwrap_or_default(),
         );
-        if !record["correlations"].as_array().unwrap_or(&Vec::new()).is_empty() {
+        if !record["correlations"]
+            .as_array()
+            .unwrap_or(&Vec::new())
+            .is_empty()
+        {
             println!(
                 "correlations: {}",
                 record["correlations"].as_array().unwrap().len()
@@ -2723,9 +2751,11 @@ fn worktree_branch_deliverable(record: &Value) -> Result<Option<Value>, Workcell
         return Ok(None);
     };
     let world = load_world_receipt_path(&receipt)?;
-    let git_binding = world.binding_graph.bindings.iter().find(|binding| {
-        binding.material_ref.starts_with("workspace:git-worktree:")
-    });
+    let git_binding = world
+        .binding_graph
+        .bindings
+        .iter()
+        .find(|binding| binding.material_ref.starts_with("workspace:git-worktree:"));
     let Some(binding) = git_binding else {
         return Ok(None);
     };
@@ -2742,6 +2772,7 @@ fn worktree_branch_deliverable(record: &Value) -> Result<Option<Value>, Workcell
 
 fn run_collect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
     let (ledger, mut record) = require_run(global, args)?;
+    let original_record = record.clone();
     let outputs = match record["rung"].as_str() {
         Some("remote") => {
             let mut client = remote_client_for_record(global, &record)?;
@@ -2750,11 +2781,14 @@ fn run_collect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError
                 .map_err(remote_error("collect run outputs from the remote machine"))?
         }
         _ => {
-            let receipt = record["world_receipt"].as_str().map(PathBuf::from).ok_or_else(|| {
-                WorkcellError::OperationFailed(
-                    "run has no material world receipt; collect needs a prepared world".into(),
-                )
-            })?;
+            let receipt = record["world_receipt"]
+                .as_str()
+                .map(PathBuf::from)
+                .ok_or_else(|| {
+                    WorkcellError::OperationFailed(
+                        "run has no material world receipt; collect needs a prepared world".into(),
+                    )
+                })?;
             let (workcell, world, _) = resume_receipt(global, &receipt)?;
             let collection = workcell.collect(&world.world_ref)?;
             json!({
@@ -2768,7 +2802,7 @@ fn run_collect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError
     record["deliverable"]["outputs"] = outputs["outputs"].clone();
     record["deliverable"]["branch"] = worktree_branch_deliverable(&record)?.unwrap_or(Value::Null);
     set_run_status(&mut record, "returned", None)?;
-    ledger.update(&record)?;
+    ledger.update_if_unchanged(&original_record, &record)?;
     if global.json {
         emit_json(json!({
             "ok": true,
@@ -2781,7 +2815,10 @@ fn run_collect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError
             "run {} collected (returned — recognition pending)",
             record["run_slug"].as_str().unwrap_or("?")
         );
-        for output in record["deliverable"]["outputs"].as_array().unwrap_or(&Vec::new()) {
+        for output in record["deliverable"]["outputs"]
+            .as_array()
+            .unwrap_or(&Vec::new())
+        {
             println!(
                 "  {} -> {}",
                 output["logical_ref"].as_str().unwrap_or("?"),
@@ -2806,6 +2843,7 @@ fn run_collect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError
 
 fn run_release(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
     let (ledger, mut record) = require_run(global, args)?;
+    let original_record = record.clone();
     let release = match record["rung"].as_str() {
         Some("remote") => {
             let mut client = remote_client_for_record(global, &record)?;
@@ -2824,11 +2862,14 @@ fn run_release(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError
             })
         }
         _ => {
-            let receipt = record["world_receipt"].as_str().map(PathBuf::from).ok_or_else(|| {
-                WorkcellError::OperationFailed(
-                    "run has no material world receipt; release needs a prepared world".into(),
-                )
-            })?;
+            let receipt = record["world_receipt"]
+                .as_str()
+                .map(PathBuf::from)
+                .ok_or_else(|| {
+                    WorkcellError::OperationFailed(
+                        "run has no material world receipt; release needs a prepared world".into(),
+                    )
+                })?;
             let (mut workcell, world, _) = resume_receipt(global, &receipt)?;
             workcell.release(&world.world_ref)
         }
@@ -2842,7 +2883,7 @@ fn run_release(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError
                 ReleaseDisposition::Suspended => "suspended",
                 ReleaseDisposition::Snapshotted => "snapshotted",
             });
-            ledger.update(&record)?;
+            ledger.update_if_unchanged(&original_record, &record)?;
             if global.json {
                 emit_json(json!({"ok": true, "run": record}));
             } else {
@@ -2859,7 +2900,7 @@ fn run_release(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError
             // discarded, and the record is never deleted.
             let reason = format!("release refused: {error}");
             set_run_status(&mut record, "blocked", Some(&reason))?;
-            ledger.update(&record)?;
+            ledger.update_if_unchanged(&original_record, &record)?;
             if global.json {
                 emit_json(json!({
                     "ok": false,
@@ -2877,9 +2918,13 @@ fn run_release(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError
     }
 }
 
-fn run_list(global: &GlobalArgs) -> Result<(), WorkcellError> {
+fn run_list(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
     let ledger = RunLedger::new(&global.state_root);
     let runs = ledger.list()?;
+    if global.json && args.iter().any(|arg| arg == "--full") {
+        emit_json(json!({"ok":true,"runs":runs}));
+        return Ok(());
+    }
     if global.json {
         emit_json(json!({
             "ok": true,
@@ -2917,7 +2962,9 @@ fn run_list(global: &GlobalArgs) -> Result<(), WorkcellError> {
 fn run_show(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
     let (_, record) = require_run(global, args)?;
     if global.json {
-        emit_json(json!({"ok": true, "run": record}));
+        emit_json(
+            json!({"ok": true, "run_revision": epilogos_workcell_runtime::run_record_revision(&record), "run": record}),
+        );
     } else {
         println!(
             "run {} [{}] rung={}",
@@ -2938,7 +2985,11 @@ fn run_show(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
                 println!("{field}: {}", record[field]);
             }
         }
-        if !record["material_refs"].as_array().unwrap_or(&Vec::new()).is_empty() {
+        if !record["material_refs"]
+            .as_array()
+            .unwrap_or(&Vec::new())
+            .is_empty()
+        {
             println!(
                 "material: {}",
                 record["material_refs"]
@@ -2961,7 +3012,11 @@ fn run_show(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
                 "branch: {} at {}{}",
                 branch["name"].as_str().unwrap_or("(detached)"),
                 branch["commit"].as_str().unwrap_or("?"),
-                if branch["pushed"].as_bool() == Some(true) { " (pushed)" } else { "" },
+                if branch["pushed"].as_bool() == Some(true) {
+                    " (pushed)"
+                } else {
+                    ""
+                },
             );
         }
     }
@@ -2975,25 +3030,123 @@ fn run_show(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
 /// degradation — never a weaker stand-in.
 fn run_scope(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
     let (ledger, mut record) = require_run(global, args)?;
-    let policy_revision = run_flag(args, "--policy-revision")?
-        .ok_or_else(|| {
-            WorkcellError::InvalidDemand(
-                "run scope requires --policy-revision REV (the placement policy revision the boundary is prepared under)"
-                    .into(),
-            )
-        })?;
-    let scope_out = run_flag(args, "--scope-out")?;
-    let place_grant = match run_flag(args, "--place-grant")? {
-        Some(path) => Some(read_json_file(Path::new(&path))?),
-        None => None,
-    };
-
-    // The worktree material this run must bind the resident to.
-    let receipt = record["world_receipt"].as_str().map(PathBuf::from).ok_or_else(|| {
-        WorkcellError::OperationFailed(
-            "run scope needs a prepared material world; start the run first".into(),
+    let original_record = record.clone();
+    let expected_demand = run_flag(args, "--expected-demand-digest")?.ok_or_else(|| {
+        WorkcellError::InvalidDemand(
+            "run scope requires --expected-demand-digest from the selected run".into(),
         )
     })?;
+    if record["demand_digest"].as_str() != Some(expected_demand.as_str()) {
+        return Err(WorkcellError::OperationFailed(
+            "Run demand changed; scope was not prepared".into(),
+        ));
+    }
+    if !matches!(
+        record["execution_status"].as_str(),
+        Some("running" | "blocked")
+    ) {
+        return Err(WorkcellError::OperationFailed(
+            "Only a live material run can prepare a resident scope".into(),
+        ));
+    }
+    let requirements_path = run_flag(args, "--write-boundary")?.ok_or_else(||
+        WorkcellError::InvalidDemand("run scope requires --write-boundary PATH containing the authority owner's exact boundary; Workcell does not mint authority".into()))?;
+    let requirements_value = read_json_file(Path::new(&requirements_path))?;
+    use epilogos_workcell_runtime::{PreparedWriteBoundary, WriteBoundaryRequirements};
+    let requirements = WriteBoundaryRequirements::from_json(&requirements_value.to_string())?;
+    let policy_revision = requirements.policy_revision.clone();
+    if let Some(expected) = run_flag(args, "--policy-revision")? {
+        if expected != policy_revision {
+            return Err(WorkcellError::InvalidDemand(
+                "Boundary policy revision differs from expected revision".into(),
+            ));
+        }
+    }
+    if let Some(agency_ref) = run_flag(args, "--agency-ref")? {
+        let source = run_flag(args, "--agency-source")?
+            .ok_or_else(|| WorkcellError::InvalidDemand("Agency source required".into()))?;
+        let revision = run_flag(args, "--agency-rev")?.ok_or_else(|| {
+            WorkcellError::InvalidDemand("Agency source revision required".into())
+        })?;
+        let digest = run_flag(args, "--expected-agency-digest")?.ok_or_else(|| {
+            WorkcellError::InvalidDemand("Exact Agency source digest required".into())
+        })?;
+        let admitted = admit_run_agency(
+            Path::new(&source),
+            &agency_ref,
+            &revision,
+            &global.state_root,
+        )?;
+        if admitted["source_digest"] != digest {
+            return Err(WorkcellError::OperationFailed(
+                "Agency source digest changed before native admission".into(),
+            ));
+        }
+        if record["agency"].is_object()
+            && (record["agency"]["agency_ref"] != admitted["agency_ref"]
+                || record["agency"]["source_digest"] != admitted["source_digest"])
+        {
+            return Err(WorkcellError::OperationFailed(
+                "Run is already bound to another Agency basis".into(),
+            ));
+        }
+        record["agency"] = admitted;
+    }
+    if record["agency"].is_object() {
+        let agency = &record["agency"];
+        let current = admit_run_agency(
+            Path::new(
+                agency["source_ref"]
+                    .as_str()
+                    .ok_or_else(|| WorkcellError::InvalidDemand("Agency source absent".into()))?,
+            ),
+            agency["agency_ref"].as_str().unwrap_or(""),
+            agency["agency_rev"].as_str().unwrap_or(""),
+            &global.state_root,
+        )?;
+        if current["source_digest"] != agency["source_digest"]
+            || agency["admission"]["status"] != "actualised"
+        {
+            return Err(WorkcellError::OperationFailed(
+                "The run's Agency admission changed; re-enter explicitly".into(),
+            ));
+        }
+        let allowed = &current["admission"]["determination"]["delegated_autonomy"];
+        if !allowed["allowed_action_refs"]
+            .as_array()
+            .is_some_and(|rows| rows.contains(&json!("action/aikit/encounter-task")))
+            || allowed["denied_action_refs"]
+                .as_array()
+                .is_some_and(|rows| rows.contains(&json!("action/aikit/encounter-task")))
+            || !current["admission"]["determination"]["authority_refs"]
+                .as_array()
+                .is_some_and(|rows| rows.contains(&json!(requirements.authority_ref)))
+        {
+            return Err(WorkcellError::OperationFailed(
+                "Actuation Agency does not admit this task authority".into(),
+            ));
+        }
+    }
+    let scope_out = run_flag(args, "--scope-out")?;
+    // A place remains absent unless the run actually owns its receipt. Do not
+    // elevate an arbitrary JSON file into a native place grant.
+    if run_flag(args, "--place-grant")?.is_some() {
+        return Err(WorkcellError::InvalidDemand(
+            "Use the run's native place receipt; a caller-supplied place grant is not admitted"
+                .into(),
+        ));
+    }
+    let place_grant = None::<Value>;
+
+    // The worktree material this run must bind the resident to.
+    let receipt = record["world_receipt"]
+        .as_str()
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            WorkcellError::OperationFailed(
+                "run scope needs a prepared material world; start the run first".into(),
+            )
+        })?;
     let world = load_world_receipt_path(&receipt)?;
     let git_binding = world
         .binding_graph
@@ -3016,35 +3169,31 @@ fn run_scope(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> 
         })?
         .clone();
 
+    // Material receipts may carry an OS alias (/var on macOS). Resolve the
+    // provider's existing object before comparing Central's canonical paths.
+    let canonical_worktree = PathBuf::from(&worktree_path)
+        .canonicalize()
+        .map_err(|e| WorkcellError::OperationFailed(format!("Run worktree is unavailable: {e}")))?;
+    if !canonical_worktree.is_dir() {
+        return Err(WorkcellError::OperationFailed(
+            "Run worktree is not a directory".into(),
+        ));
+    }
+    let worktree_path = canonical_worktree.display().to_string();
+
     // The prepared write boundary: prepared-not-executed, exact object and
     // digest, or null with a named degradation on an OS without an adapter.
-    use epilogos_workcell_runtime::{
-        WriteBoundaryRequirements, PreparedWriteBoundary,
-    };
-    let coverage = epilogos_workcell_runtime::WRITE_BOUNDARY_COVERAGE
-        .iter()
-        .map(|value| value.to_string())
-        .collect::<Vec<_>>();
-    let requirements = WriteBoundaryRequirements {
-        policy_ref: format!(
-            "workcell.run/{}/write-boundary",
-            record["run_slug"].as_str().unwrap_or("?")
-        ),
-        policy_revision: policy_revision.clone(),
-        authority_ref: format!(
-            "authority:workcell-run/{}",
-            record["run_slug"].as_str().unwrap_or("?")
-        ),
-        writable_paths: vec![PathBuf::from(&worktree_path)],
-        protected_paths: Vec::new(),
-        required_coverage: coverage,
-        expires_at_unix_ms: now_unix_ms() + 86_400_000,
-    };
+    let worktree = PathBuf::from(&worktree_path);
+    if !requirements.writable_paths.contains(&worktree) {
+        return Err(WorkcellError::InvalidDemand("The exact owner boundary must include the selected run worktree; Workcell will not broaden it".into()));
+    }
     let (prepared_write_boundary, boundary_digest, degradation) =
         match PreparedWriteBoundary::prepare(requirements, &policy_revision) {
             Ok(prepared) => {
                 let inspection = prepared.inspect(&policy_revision)?;
-                let digest = inspection["requirements_digest"].as_str().map(str::to_owned);
+                let digest = inspection["requirements_digest"]
+                    .as_str()
+                    .map(str::to_owned);
                 (Some(inspection), digest, None)
             }
             Err(error) => (None, None, Some(error.to_string())),
@@ -3053,16 +3202,15 @@ fn run_scope(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> 
         Some(digest) => json!(digest),
         None => Value::Null,
     };
-    ledger.update(&record)?;
+    ledger.update_if_unchanged(&original_record, &record)?;
 
-    let mut scope =
-        compose_prepared_run_scope(
-            &record,
-            &worktree_path,
-            git_binding.material_ref.as_str(),
-            prepared_write_boundary.as_ref(),
-            place_grant.as_ref(),
-        );
+    let mut scope = compose_prepared_run_scope(
+        &record,
+        &worktree_path,
+        git_binding.material_ref.as_str(),
+        prepared_write_boundary.as_ref(),
+        place_grant.as_ref(),
+    );
     if let Some(reason) = degradation.clone() {
         scope["degradations"] = json!([{
             "subject_ref": "prepared_write_boundary",
@@ -3076,8 +3224,12 @@ fn run_scope(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> 
             .state_root
             .join(epilogos_workcell_runtime::RUNS_DIRECTORY)
             .join(format!(
-                "{}.scope.json",
-                record["run_slug"].as_str().unwrap_or("run")
+                "{}-{}.scope.json",
+                record["run_slug"].as_str().unwrap_or("run"),
+                scope["run_revision"]
+                    .as_str()
+                    .unwrap_or("unreadable")
+                    .trim_start_matches("sha256:")
             ))
     });
     if let Some(parent) = out_path.parent() {
@@ -3133,8 +3285,7 @@ fn remote_client_for_record(
         .as_str()
         .ok_or_else(|| {
             WorkcellError::OperationFailed(
-                "remote run record names no machine; the record cannot be continued"
-                    .into(),
+                "remote run record names no machine; the record cannot be continued".into(),
             )
         })?
         .to_owned();
@@ -3161,14 +3312,7 @@ fn run_world_ref(record: &Value) -> Result<WorldRef, WorkcellError> {
 fn resume_receipt(
     global: &GlobalArgs,
     receipt: &Path,
-) -> Result<
-    (
-        CollapsedLocalWorkcell,
-        MaterialisedExecutionWorld,
-        PathBuf,
-    ),
-    WorkcellError,
-> {
+) -> Result<(CollapsedLocalWorkcell, MaterialisedExecutionWorld, PathBuf), WorkcellError> {
     let encoded = fs::read_to_string(receipt).map_err(|error| {
         WorkcellError::NotFound(format!(
             "read material-world receipt `{}`: {error}",
@@ -3230,8 +3374,7 @@ fn command_serve(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellErr
     }
 
     let mut config = with_declared_services(
-        CollapsedLocalConfig::new(workcell_ref, &global.state_root)
-            .with_persistent_host_lifetime(),
+        CollapsedLocalConfig::new(workcell_ref, &global.state_root).with_persistent_host_lifetime(),
         global,
     );
     if let Some(source) = &global.workspace_source {
@@ -3255,10 +3398,8 @@ fn command_serve(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellErr
                 system_descriptor(&disclosure_global)
             })),
     };
-    let mut server =
-        TcpControlServer::bind(&listen, service).map_err(|error| {
-            WorkcellError::OperationFailed(format!("bind serve endpoint: {error}"))
-        })?;
+    let mut server = TcpControlServer::bind(&listen, service)
+        .map_err(|error| WorkcellError::OperationFailed(format!("bind serve endpoint: {error}")))?;
     let bound = server.local_addr().map_err(|error| {
         WorkcellError::OperationFailed(format!("read bound serve endpoint: {error}"))
     })?;
@@ -3400,7 +3541,8 @@ fn serve_enable(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellErro
         );
         println!(
             "declaration: {}",
-            epilogos_workcell_runtime::default_service_declaration_path(&global.state_root).display()
+            epilogos_workcell_runtime::default_service_declaration_path(&global.state_root)
+                .display()
         );
     }
     Ok(())
@@ -3409,8 +3551,7 @@ fn serve_enable(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellErro
 /// Append (or replace) the `service:workcell-control` entry in the state
 /// root's services.json, preserving every other declared service verbatim.
 fn write_serve_declaration(global: &GlobalArgs, service: &Value) -> Result<(), WorkcellError> {
-    let path =
-        epilogos_workcell_runtime::default_service_declaration_path(&global.state_root);
+    let path = epilogos_workcell_runtime::default_service_declaration_path(&global.state_root);
     let mut document = match fs::read_to_string(&path) {
         Ok(raw) => serde_json::from_str::<Value>(&raw).map_err(|error| {
             WorkcellError::OperationFailed(format!(
@@ -3453,16 +3594,21 @@ fn write_serve_declaration(global: &GlobalArgs, service: &Value) -> Result<(), W
         ));
     }
     let array = services.as_array_mut().expect("checked array");
-    array.retain(|entry| entry.get("logical_ref").and_then(Value::as_str) != Some("service:workcell-control"));
+    array.retain(|entry| {
+        entry.get("logical_ref").and_then(Value::as_str) != Some("service:workcell-control")
+    });
     array.push(service.clone());
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             WorkcellError::OperationFailed(format!("create declaration directory: {error}"))
         })?;
     }
-    fs::write(&path, serde_json::to_vec_pretty(&document).map_err(|error| {
-        WorkcellError::OperationFailed(format!("encode service declaration: {error}"))
-    })?)
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&document).map_err(|error| {
+            WorkcellError::OperationFailed(format!("encode service declaration: {error}"))
+        })?,
+    )
     .map_err(|error| {
         WorkcellError::OperationFailed(format!(
             "write service declaration `{}`: {error}",
@@ -3476,8 +3622,7 @@ fn write_serve_declaration(global: &GlobalArgs, service: &Value) -> Result<(), W
 /// declaration's stop command remains the target-native surface.
 fn serve_disable(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
     let _ = serve_listen_address(args)?;
-    let path =
-        epilogos_workcell_runtime::default_service_declaration_path(&global.state_root);
+    let path = epilogos_workcell_runtime::default_service_declaration_path(&global.state_root);
     let mut document: Value = match fs::read_to_string(&path) {
         Ok(raw) => serde_json::from_str(&raw).map_err(|error| {
             WorkcellError::OperationFailed(format!(
@@ -3512,9 +3657,12 @@ fn serve_disable(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellErr
             "serve is not declared in this state root's services.json".into(),
         ));
     }
-    fs::write(&path, serde_json::to_vec_pretty(&document).map_err(|error| {
-        WorkcellError::OperationFailed(format!("encode service declaration: {error}"))
-    })?)
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&document).map_err(|error| {
+            WorkcellError::OperationFailed(format!("encode service declaration: {error}"))
+        })?,
+    )
     .map_err(|error| {
         WorkcellError::OperationFailed(format!(
             "write service declaration `{}`: {error}",
@@ -3524,7 +3672,9 @@ fn serve_disable(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellErr
     if global.json {
         emit_json(json!({"ok": true, "enabled": false, "logical_ref": "service:workcell-control"}));
     } else {
-        println!("serve declaration removed (service:workcell-control); other declared services kept");
+        println!(
+            "serve declaration removed (service:workcell-control); other declared services kept"
+        );
     }
     Ok(())
 }
@@ -3533,14 +3683,15 @@ fn serve_disable(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellErr
 /// when the declared endpoint answers, non-zero otherwise. Read-only.
 fn serve_status(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
     let listen = serve_listen_address(args)?;
-    let (host, port) = listen
-        .rsplit_once(':')
-        .ok_or_else(|| {
-            WorkcellError::InvalidDemand(format!("serve listen `{listen}` must be HOST:PORT"))
-        })?;
-    let answering = std::net::TcpStream::connect((host, port.parse::<u16>().map_err(|_| {
-        WorkcellError::InvalidDemand(format!("serve listen `{listen}` has an invalid port"))
-    })?))
+    let (host, port) = listen.rsplit_once(':').ok_or_else(|| {
+        WorkcellError::InvalidDemand(format!("serve listen `{listen}` must be HOST:PORT"))
+    })?;
+    let answering = std::net::TcpStream::connect((
+        host,
+        port.parse::<u16>().map_err(|_| {
+            WorkcellError::InvalidDemand(format!("serve listen `{listen}` has an invalid port"))
+        })?,
+    ))
     .is_ok();
     if global.json {
         emit_json(json!({
@@ -3917,29 +4068,30 @@ fn command_connect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellE
 
     // 2. Compatibility. The protocol version is the contract; software
     //    revisions are reported, never refused on and never updated.
-    let protocol = handshake["protocol"].as_str().unwrap_or("unknown").to_owned();
+    let protocol = handshake["protocol"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_owned();
     let remote_software = handshake["software"].as_str().map(str::to_owned);
-    let compatibility = match check_compatibility(
-        &protocol,
-        remote_software.as_deref().unwrap_or("unknown"),
-    ) {
-        Ok(report) => report,
-        Err(error) => {
-            store_connection_record(
-                &global.state_root,
-                reconciled_record(&existing, |record| {
-                    record.label = label.clone();
-                    record.endpoint = endpoint.clone();
-                    record.protocol = protocol.clone();
-                    record.remote_software = remote_software.clone();
-                    record.state = "incompatible".to_owned();
-                    record.detail = Some(error.to_string());
-                }),
-                &label,
-            )?;
-            return Err(error);
-        }
-    };
+    let compatibility =
+        match check_compatibility(&protocol, remote_software.as_deref().unwrap_or("unknown")) {
+            Ok(report) => report,
+            Err(error) => {
+                store_connection_record(
+                    &global.state_root,
+                    reconciled_record(&existing, |record| {
+                        record.label = label.clone();
+                        record.endpoint = endpoint.clone();
+                        record.protocol = protocol.clone();
+                        record.remote_software = remote_software.clone();
+                        record.state = "incompatible".to_owned();
+                        record.detail = Some(error.to_string());
+                    }),
+                    &label,
+                )?;
+                return Err(error);
+            }
+        };
 
     let authorised = handshake["authorised"].as_bool().unwrap_or(false);
     if !authorised {
@@ -3978,9 +4130,14 @@ fn command_connect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellE
                 .map(str::to_owned)
                 .collect()
         })
-        .unwrap_or_else(|| CONTROL_OPERATIONS.iter().map(|value| value.to_string()).collect());
-    let expires_at_unix_ms: Option<u64> = grant_payload
-        .and_then(|grant| grant["expires_at_unix_ms"].as_u64());
+        .unwrap_or_else(|| {
+            CONTROL_OPERATIONS
+                .iter()
+                .map(|value| value.to_string())
+                .collect()
+        });
+    let expires_at_unix_ms: Option<u64> =
+        grant_payload.and_then(|grant| grant["expires_at_unix_ms"].as_u64());
 
     // 4. Probes under the grant: identity and, when discovery is granted,
     //    what the cell advertises to this connection specifically.
@@ -3991,7 +4148,10 @@ fn command_connect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellE
         .as_str()
         .map(str::to_owned)
         .or_else(|| handshake["workcell_ref"].as_str().map(str::to_owned));
-    let discovery = if granted_operations.iter().any(|operation| operation == "discover") {
+    let discovery = if granted_operations
+        .iter()
+        .any(|operation| operation == "discover")
+    {
         Some(
             client
                 .discover()
@@ -4020,8 +4180,9 @@ fn command_connect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellE
         .unwrap_or(0);
 
     // 5. Optional keychain storage of the credential material.
-    let mut credential_ref =
-        existing.as_ref().and_then(|record| record.credential_ref.clone());
+    let mut credential_ref = existing
+        .as_ref()
+        .and_then(|record| record.credential_ref.clone());
     if store_credential {
         let credential = credential.as_deref().ok_or_else(|| {
             WorkcellError::InvalidDemand(
@@ -4058,10 +4219,8 @@ fn command_connect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellE
     // is named in both directions instead of leaving the field decorative.
     if let Some(machine) = &machine {
         if !machine.operations.is_empty() {
-            let granted: std::collections::BTreeSet<&str> = granted_operations
-                .iter()
-                .map(String::as_str)
-                .collect();
+            let granted: std::collections::BTreeSet<&str> =
+                granted_operations.iter().map(String::as_str).collect();
             let declared: std::collections::BTreeSet<&str> =
                 machine.operations.iter().map(String::as_str).collect();
             let unexpected: Vec<&str> = granted.difference(&declared).copied().collect();
@@ -4141,7 +4300,11 @@ fn command_connect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellE
     } else {
         println!(
             "{} `{label}` -> {endpoint}",
-            if existing.is_some() { "reconnected" } else { "connected" },
+            if existing.is_some() {
+                "reconnected"
+            } else {
+                "connected"
+            },
         );
         println!(
             "compatibility: protocol {} on both cells",
@@ -4159,7 +4322,10 @@ fn command_connect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellE
             Some(expires_at) => println!("grant expires: {expires_at} (unix ms)"),
             None => println!("grant expires: never"),
         }
-        if granted_operations.iter().any(|operation| operation == "discover") {
+        if granted_operations
+            .iter()
+            .any(|operation| operation == "discover")
+        {
             println!(
                 "advertised capabilities: {advertised_offers} offer(s) across ports: {}",
                 if advertised_ports.is_empty() {
@@ -4206,7 +4372,10 @@ fn command_connections(global: &GlobalArgs, args: &[String]) -> Result<(), Workc
                         record.label,
                         record.state,
                         record.endpoint,
-                        record.remote_workcell_ref.as_deref().unwrap_or("remote identity unknown"),
+                        record
+                            .remote_workcell_ref
+                            .as_deref()
+                            .unwrap_or("remote identity unknown"),
                         expiry_note(record.expires_at_unix_ms),
                     );
                 }
@@ -4258,7 +4427,9 @@ fn command_connections(global: &GlobalArgs, args: &[String]) -> Result<(), Workc
             });
             store_connection_record(&global.state_root, record, label)?;
             if global.json {
-                emit_json(json!({ "ok": true, "label": label, "state": "disconnected", "changed": true }));
+                emit_json(
+                    json!({ "ok": true, "label": label, "state": "disconnected", "changed": true }),
+                );
             } else {
                 println!("disconnected `{label}`; the connection record is kept");
             }
@@ -4276,28 +4447,23 @@ fn reconciled_record(
     existing: &Option<ConnectionRecord>,
     apply: impl FnOnce(&mut ConnectionRecord),
 ) -> ConnectionRecord {
-    let mut record = existing
-        .clone()
-        .unwrap_or_else(|| ConnectionRecord {
-            connection_ref: String::new(),
-            label: String::new(),
-            endpoint: String::new(),
-            protocol: CONTROL_PROTOCOL_VERSION.to_owned(),
-            remote_workcell_ref: None,
-            remote_software: None,
-            local_software: software_version(),
-            granted_operations: Vec::new(),
-            credential_ref: None,
-            state: "disconnected".to_owned(),
-            detail: None,
-            connected_at_unix_ms: None,
-            expires_at_unix_ms: None,
-            last_reconciled_at_unix_ms: now_unix_ms(),
-            provenance: BTreeMap::from([(
-                "created_by".to_owned(),
-                "workcell connect".to_owned(),
-            )]),
-        });
+    let mut record = existing.clone().unwrap_or_else(|| ConnectionRecord {
+        connection_ref: String::new(),
+        label: String::new(),
+        endpoint: String::new(),
+        protocol: CONTROL_PROTOCOL_VERSION.to_owned(),
+        remote_workcell_ref: None,
+        remote_software: None,
+        local_software: software_version(),
+        granted_operations: Vec::new(),
+        credential_ref: None,
+        state: "disconnected".to_owned(),
+        detail: None,
+        connected_at_unix_ms: None,
+        expires_at_unix_ms: None,
+        last_reconciled_at_unix_ms: now_unix_ms(),
+        provenance: BTreeMap::from([("created_by".to_owned(), "workcell connect".to_owned())]),
+    });
     apply(&mut record);
     record.connection_ref = format!("connection:{}", record.label);
     record.local_software = software_version();
@@ -4323,12 +4489,12 @@ fn load_connection_record(
             path.display()
         ))
     })?;
-    decode_connection(&encoded)
-        .map(Some)
-        .map_err(|error| WorkcellError::OperationFailed(format!(
+    decode_connection(&encoded).map(Some).map_err(|error| {
+        WorkcellError::OperationFailed(format!(
             "connection record `{}` is invalid: {error}",
             path.display()
-        )))
+        ))
+    })
 }
 
 fn store_connection_record(
@@ -4616,7 +4782,8 @@ fn detect_faculties(discovery: &Discovery) -> Vec<FacultyDetection> {
     detections.push(FacultyDetection {
         subject_ref: "hardware.accelerator",
         state: "unavailable",
-        reason: "no accelerator-observation faculty exists in collapsed-local; a GPU is never invented",
+        reason:
+            "no accelerator-observation faculty exists in collapsed-local; a GPU is never invented",
     });
     detections.push(FacultyDetection {
         subject_ref: "hardware.host_enumeration",
@@ -4717,7 +4884,9 @@ fn command_system(global: &GlobalArgs) -> Result<(), WorkcellError> {
     if global.json {
         emit_json(descriptor);
     } else {
-        let availability = descriptor["availability"]["state"].as_str().unwrap_or("unknown");
+        let availability = descriptor["availability"]["state"]
+            .as_str()
+            .unwrap_or("unknown");
         println!(
             "Workcell System disclosure (oi.product-settings-disclosure/v2)\n  product: workcell\n  availability: {availability}\n  sections: {}\n  actions: {}\n  degradations: {}\n  obligations: {}\n  reading digest: {}",
             descriptor["sections"].as_array().map_or(0, Vec::len),
@@ -4775,10 +4944,8 @@ fn system_descriptor(global: &GlobalArgs) -> Result<Value, WorkcellError> {
     let reference_path = format!("{owner_ref}:reference-services");
 
     // Provider inventory, offers, capabilities and aggregate capacity.
-    let mut providers_by_ref: BTreeMap<
-        String,
-        Vec<&epilogos_workcell_core::OperationalOffer>,
-    > = BTreeMap::new();
+    let mut providers_by_ref: BTreeMap<String, Vec<&epilogos_workcell_core::OperationalOffer>> =
+        BTreeMap::new();
     for offer in &discovery.offers {
         providers_by_ref
             .entry(offer.provider_ref.to_string())
@@ -4951,7 +5118,14 @@ fn system_descriptor(global: &GlobalArgs) -> Result<Value, WorkcellError> {
 
     // Model-serving materialisation: reference services (declared capability) and
     // any currently-declared model-serving service (active).
-    let model_targets = ["aikit-gateway", "hermes", "openclaw", "ollama", "llama.cpp", "vllm"];
+    let model_targets = [
+        "aikit-gateway",
+        "hermes",
+        "openclaw",
+        "ollama",
+        "llama.cpp",
+        "vllm",
+    ];
     let model_serving_active: Vec<Value> = service_offers
         .iter()
         .filter(|offer| {
@@ -4983,7 +5157,136 @@ fn system_descriptor(global: &GlobalArgs) -> Result<Value, WorkcellError> {
         "diverged"
     };
 
+    // These are native declarations and ledger observations. Reading Settings does
+    // not connect to a remote, resolve a credential, or start/observe a run.
+    let machine_registry = RemoteMachineRegistry::new(&global.state_root);
+    let machines = machine_registry.list()?;
+    let machine_path = machine_registry.path().display().to_string();
+    let machine_rows: Vec<Value> = machines
+        .iter()
+        .map(RemoteMachineDeclaration::to_json)
+        .collect();
+    let projection_ledger = SecretProjectionLedger::new(&global.state_root, workcell_ref.clone());
+    let projections = projection_ledger.list()?;
+    let projection_path = projection_ledger.path().display().to_string();
+    let credential_inventory = secret_inventory(global)?;
+    let credential_refs: Vec<Value> = credential_inventory["credentials"]
+        .as_array()
+        .expect("inventory rows")
+        .iter()
+        .map(|row| row["credential_ref"].clone())
+        .collect();
+    let connection_rows: Vec<Value> = list_connection_records(&global.state_root)?
+        .iter()
+        .map(|record| {
+            json!({
+                "label": record.label, "endpoint": record.endpoint,
+                "remote_workcell_ref": record.remote_workcell_ref,
+                "state": record.state, "detail": record.detail,
+                "last_reconciled_at_unix_ms": record.last_reconciled_at_unix_ms,
+                "expires_at_unix_ms": record.expires_at_unix_ms,
+            })
+        })
+        .collect();
+    let serve_rows: Vec<Value> = services_declared
+        .iter()
+        .filter(|service| service["logical_ref"] == "service:workcell-control")
+        .cloned()
+        .collect();
+    let projection_rows: Vec<Value> = projections
+        .iter()
+        .map(|projection| {
+            json!({
+                "projection_ref": projection.projection_ref,
+                "credential_ref": projection.credential_ref,
+                "target_workcell_ref": projection.target_workcell_ref,
+                "target_provider_ref": projection.target_provider_ref,
+                "target_allocation_ref": projection.target_allocation_ref,
+                "class": projection.class,
+                "purpose": projection.purpose,
+                "scope": projection.scope,
+                "state": projection.state,
+            })
+        })
+        .collect();
+    let run_path = global.state_root.join("runs").display().to_string();
+    let run_rows: Vec<Value> = RunLedger::new(&global.state_root)
+        .list()?
+        .iter()
+        .map(|run| {
+            json!({
+                "run_slug": run["run_slug"],
+                "canonical_run_ref": run["canonical_run_ref"],
+                "execution_status": run["execution_status"],
+                "status_reason": run["status_reason"],
+                "rung": run["rung"],
+                "provider_ref": run["provider_ref"],
+                "demand_ref": run["demand_ref"],
+            })
+        })
+        .collect();
+
     let sections = vec![
+        json!({
+            "id": "machines",
+            "title": "Machines",
+            "settings": [system_setting(
+                "machines.declarations", "Declared remote machines", "table",
+                &owner_ref, &machine_path, now,
+                json!({ "machines": machine_rows }), json!({ "machines": machine_rows }),
+                system_unavailable("Machine declarations are recorded; connection health is not probed by Settings. Use workcell connect for a live reading."),
+                Some(&machine_path), false, Some("workcell machine add|list|remove"), false,
+                "none", &["declared", "effective"], None,
+            ), system_setting(
+                "machines.connections", "Recorded connections", "table",
+                &owner_ref, &format!("{owner_ref}:connections"), now,
+                json!({ "connections": connection_rows }), json!({ "connections": connection_rows }),
+                system_unavailable("Connection receipts show the last native reconciliation; endpoints are not contacted by this reading."),
+                None, false, Some("workcell connections list"), false,
+                "none", &["declared", "effective"], None,
+            ), system_setting(
+                "machines.serve", "Control service declaration", "table",
+                &owner_ref, &discovery_path, now,
+                json!({ "services": serve_rows }), json!({ "services": serve_rows }),
+                system_unavailable("Service declarations do not prove a listening daemon. Use workcell serve status --listen HOST:PORT for an explicit live reading."),
+                None, false, Some("workcell serve enable|disable|status"), false,
+                "none", &["declared", "effective"], None,
+            )],
+        }),
+        json!({
+            "id": "keys",
+            "title": "Keys / credential references",
+            "settings": [
+                system_setting(
+                    "keys.references", "Declared credential references", "table",
+                    &owner_ref, &format!("{owner_ref}:credential-references"), now,
+                    json!({ "references": credential_refs }), credential_inventory.clone(),
+                    system_unavailable("References come from machine declarations and projection records. The native origin stores do not expose an inventory or credential-health reading here; no secret values are read."),
+                    None, false, Some("workcell secret list"), false,
+                    "none", &["declared", "effective"], None,
+                ),
+                system_setting(
+                    "keys.projections", "Recorded credential projections", "table",
+                    &owner_ref, &projection_path, now,
+                    json!({ "projections": projection_rows }), json!({ "projections": projection_rows }),
+                    system_unavailable("Projection state is recorded metadata; delivery and credential usability are not verified by this reading."),
+                    Some(&projection_path), false, Some("workcell secret projections"), false,
+                    "none", &["declared", "effective"], None,
+                ),
+            ],
+        }),
+        json!({
+            "id": "runs",
+            "title": "Runs",
+            "settings": [system_setting(
+                "runs.ledger", "Recorded material runs", "table",
+                &owner_ref, &run_path, now,
+                json!({ "runs": run_rows }), json!({ "runs": run_rows }),
+                system_unavailable("Execution status is the durable run ledger reading. Use workcell run observe for a current provider observation."),
+                Some(&run_path), false, Some("workcell run list|show|observe"), false,
+                "none", &["declared", "effective"], None,
+            )],
+        }),
         json!({
             "id": "workcells",
             "title": "Workcells / instances",
@@ -5321,24 +5624,168 @@ fn system_descriptor(global: &GlobalArgs) -> Result<Value, WorkcellError> {
     ];
 
     let actions = vec![
-        system_action("workcell.status", "Summarise this Workcell", vec![], vec!["workcell.material"], "disclosed", &["workcell", "status", "--json"], &["workcell", "status", "--json"]),
-        system_action("workcell.discover", "Discover material offers", vec![], vec!["workcell.material"], "disclosed", &["workcell", "discover", "--json"], &["workcell", "discover", "--json"]),
-        system_action("workcell.providers", "List provider inventory", vec![], vec!["workcell.provider"], "disclosed", &["workcell", "providers", "--json"], &["workcell", "providers", "--json"]),
-        system_action("workcell.doctor", "Verify the zero-setup local baseline", vec![], vec!["workcell.material"], "disclosed", &["workcell", "doctor", "--json"], &["workcell", "doctor", "--json"]),
-        system_action("workcell.material", "Compose a material reading for a prepared world", vec![json!({"name": "receipt", "kind": "path"})], vec!["workcell.world"], "disclosed", &["workcell", "material", "--json"], &["workcell", "material", "--json"]),
-        system_action("workcell.plan", "Plan an ExecutionDemand", vec![json!({"name": "demand", "kind": "string"})], vec!["workcell.plan"], "disclosed", &["workcell", "plan", "--json"], &["workcell", "plan", "--json"]),
-        system_action("workcell.prepare", "Prepare a material world", vec![json!({"name": "demand", "kind": "string"})], vec!["workcell.world"], "disclosed", &["workcell", "prepare", "--json"], &["workcell", "prepare", "--json"]),
-        system_action("workcell.observe", "Observe a prepared world", vec![json!({"name": "receipt", "kind": "path"})], vec!["workcell.world"], "disclosed", &["workcell", "observe", "--json"], &["workcell", "observe", "--json"]),
-        system_action("workcell.expose", "Resolve prepared exposure surfaces", vec![json!({"name": "receipt", "kind": "path"})], vec!["workcell.world"], "disclosed", &["workcell", "expose", "--json"], &["workcell", "expose", "--json"]),
-        system_action("workcell.collect", "Collect prepared output channels", vec![json!({"name": "receipt", "kind": "path"})], vec!["workcell.world"], "disclosed", &["workcell", "collect", "--json"], &["workcell", "collect", "--json"]),
-        system_action("workcell.release", "Release or preserve a prepared world", vec![json!({"name": "receipt", "kind": "path"})], vec!["workcell.world"], "disclosed", &["workcell", "release", "--json"], &["workcell", "release", "--json"]),
-        system_action("workcell.reconcile", "Reconcile desired material state", vec![json!({"name": "desired", "kind": "string"})], vec!["workcell.world"], "disclosed", &["workcell", "reconcile", "--json"], &["workcell", "reconcile", "--json"]),
-        system_action("workcell.instances.list", "List registered harness instances", vec![], vec!["workcell.instance"], "disclosed", &["workcell", "instances", "list", "--json"], &["workcell", "instances", "list", "--json"]),
-        system_action("workcell.instances.scan", "Scan live harness instances", vec![], vec!["workcell.instance"], "disclosed", &["workcell", "instances", "scan", "--json"], &["workcell", "instances", "scan", "--json"]),
-        system_action("workcell.instances.usage", "Observe bounded resource usage of a live instance", vec![json!({"name": "instance_ref", "kind": "string"})], vec!["workcell.instance"], "disclosed", &["workcell", "instances", "usage", "--json"], &["workcell", "instances", "usage", "--json"]),
-        system_action("workcell.sandboxes.reconcile", "Reconcile OpenSandbox server-side sandboxes", vec![json!({"name": "server", "kind": "string"})], vec!["workcell.sandbox"], "disclosed", &["workcell", "sandboxes", "reconcile", "--json"], &["workcell", "sandboxes", "reconcile", "--json"]),
-        system_action("workcell.intent", "Preview a lifecycle change through the O:I kernel seam", vec![], vec!["workcell.world"], "missing_native_obligation", &["workcell", "intent"], &["workcell", "intent"]),
-        system_action("workcell.invoke", "Invoke a lifecycle change through the O:I kernel seam", vec![], vec!["workcell.world"], "missing_native_obligation", &["workcell", "invoke"], &["workcell", "invoke"]),
+        system_action(
+            "workcell.status",
+            "Summarise this Workcell",
+            vec![],
+            vec!["workcell.material"],
+            "disclosed",
+            &["workcell", "status", "--json"],
+            &["workcell", "status", "--json"],
+        ),
+        system_action(
+            "workcell.discover",
+            "Discover material offers",
+            vec![],
+            vec!["workcell.material"],
+            "disclosed",
+            &["workcell", "discover", "--json"],
+            &["workcell", "discover", "--json"],
+        ),
+        system_action(
+            "workcell.providers",
+            "List provider inventory",
+            vec![],
+            vec!["workcell.provider"],
+            "disclosed",
+            &["workcell", "providers", "--json"],
+            &["workcell", "providers", "--json"],
+        ),
+        system_action(
+            "workcell.doctor",
+            "Verify the zero-setup local baseline",
+            vec![],
+            vec!["workcell.material"],
+            "disclosed",
+            &["workcell", "doctor", "--json"],
+            &["workcell", "doctor", "--json"],
+        ),
+        system_action(
+            "workcell.material",
+            "Compose a material reading for a prepared world",
+            vec![json!({"name": "receipt", "kind": "path"})],
+            vec!["workcell.world"],
+            "disclosed",
+            &["workcell", "material", "--json"],
+            &["workcell", "material", "--json"],
+        ),
+        system_action(
+            "workcell.plan",
+            "Plan an ExecutionDemand",
+            vec![json!({"name": "demand", "kind": "string"})],
+            vec!["workcell.plan"],
+            "disclosed",
+            &["workcell", "plan", "--json"],
+            &["workcell", "plan", "--json"],
+        ),
+        system_action(
+            "workcell.prepare",
+            "Prepare a material world",
+            vec![json!({"name": "demand", "kind": "string"})],
+            vec!["workcell.world"],
+            "disclosed",
+            &["workcell", "prepare", "--json"],
+            &["workcell", "prepare", "--json"],
+        ),
+        system_action(
+            "workcell.observe",
+            "Observe a prepared world",
+            vec![json!({"name": "receipt", "kind": "path"})],
+            vec!["workcell.world"],
+            "disclosed",
+            &["workcell", "observe", "--json"],
+            &["workcell", "observe", "--json"],
+        ),
+        system_action(
+            "workcell.expose",
+            "Resolve prepared exposure surfaces",
+            vec![json!({"name": "receipt", "kind": "path"})],
+            vec!["workcell.world"],
+            "disclosed",
+            &["workcell", "expose", "--json"],
+            &["workcell", "expose", "--json"],
+        ),
+        system_action(
+            "workcell.collect",
+            "Collect prepared output channels",
+            vec![json!({"name": "receipt", "kind": "path"})],
+            vec!["workcell.world"],
+            "disclosed",
+            &["workcell", "collect", "--json"],
+            &["workcell", "collect", "--json"],
+        ),
+        system_action(
+            "workcell.release",
+            "Release or preserve a prepared world",
+            vec![json!({"name": "receipt", "kind": "path"})],
+            vec!["workcell.world"],
+            "disclosed",
+            &["workcell", "release", "--json"],
+            &["workcell", "release", "--json"],
+        ),
+        system_action(
+            "workcell.reconcile",
+            "Reconcile desired material state",
+            vec![json!({"name": "desired", "kind": "string"})],
+            vec!["workcell.world"],
+            "disclosed",
+            &["workcell", "reconcile", "--json"],
+            &["workcell", "reconcile", "--json"],
+        ),
+        system_action(
+            "workcell.instances.list",
+            "List registered harness instances",
+            vec![],
+            vec!["workcell.instance"],
+            "disclosed",
+            &["workcell", "instances", "list", "--json"],
+            &["workcell", "instances", "list", "--json"],
+        ),
+        system_action(
+            "workcell.instances.scan",
+            "Scan live harness instances",
+            vec![],
+            vec!["workcell.instance"],
+            "disclosed",
+            &["workcell", "instances", "scan", "--json"],
+            &["workcell", "instances", "scan", "--json"],
+        ),
+        system_action(
+            "workcell.instances.usage",
+            "Observe bounded resource usage of a live instance",
+            vec![json!({"name": "instance_ref", "kind": "string"})],
+            vec!["workcell.instance"],
+            "disclosed",
+            &["workcell", "instances", "usage", "--json"],
+            &["workcell", "instances", "usage", "--json"],
+        ),
+        system_action(
+            "workcell.sandboxes.reconcile",
+            "Reconcile OpenSandbox server-side sandboxes",
+            vec![json!({"name": "server", "kind": "string"})],
+            vec!["workcell.sandbox"],
+            "disclosed",
+            &["workcell", "sandboxes", "reconcile", "--json"],
+            &["workcell", "sandboxes", "reconcile", "--json"],
+        ),
+        system_action(
+            "workcell.intent",
+            "Preview a lifecycle change through the O:I kernel seam",
+            vec![],
+            vec!["workcell.world"],
+            "missing_native_obligation",
+            &["workcell", "intent"],
+            &["workcell", "intent"],
+        ),
+        system_action(
+            "workcell.invoke",
+            "Invoke a lifecycle change through the O:I kernel seam",
+            vec![],
+            vec!["workcell.world"],
+            "missing_native_obligation",
+            &["workcell", "invoke"],
+            &["workcell", "invoke"],
+        ),
     ];
 
     let availability_state = match discovery.health {
@@ -5571,7 +6018,11 @@ fn config_unique_id(prefix: &str) -> String {
     );
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(material.as_bytes());
-    let short: String = digest.iter().take(8).map(|byte| format!("{byte:02x}")).collect();
+    let short: String = digest
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     format!("{prefix}-{short}")
 }
 
@@ -5609,7 +6060,10 @@ fn config_scope_from_json(value: &Value) -> Result<(String, Option<String>, Valu
     if !CONFIG_SCOPE_KINDS.contains(&kind) {
         return Err(ConfigFailure::new(
             "unknown_scope_kind",
-            format!("unknown scope kind `{kind}`; the frozen scope registry is: {}", CONFIG_SCOPE_KINDS.join(", ")),
+            format!(
+                "unknown scope kind `{kind}`; the frozen scope registry is: {}",
+                CONFIG_SCOPE_KINDS.join(", ")
+            ),
         )
         .for_scope_kind(kind));
     }
@@ -5722,13 +6176,19 @@ fn config_read_stdin_or_file(spec: &str, flag: &str) -> Result<String, ConfigFai
     if spec == "-" {
         use std::io::Read;
         let mut raw = String::new();
-        std::io::stdin()
-            .read_to_string(&mut raw)
-            .map_err(|error| ConfigFailure::new("validation_failed", format!("read {flag} from stdin: {error}")))?;
+        std::io::stdin().read_to_string(&mut raw).map_err(|error| {
+            ConfigFailure::new(
+                "validation_failed",
+                format!("read {flag} from stdin: {error}"),
+            )
+        })?;
         Ok(raw)
     } else {
         fs::read_to_string(spec).map_err(|error| {
-            ConfigFailure::new("validation_failed", format!("read {flag} `{spec}`: {error}"))
+            ConfigFailure::new(
+                "validation_failed",
+                format!("read {flag} `{spec}`: {error}"),
+            )
         })
     }
 }
@@ -5826,12 +6286,7 @@ fn config_services_violations(value: &Value) -> Vec<Value> {
     violations
 }
 
-fn config_material_violation(
-    logical_ref: &str,
-    index: usize,
-    role: &str,
-    program: &str,
-) -> Value {
+fn config_material_violation(logical_ref: &str, index: usize, role: &str, program: &str) -> Value {
     // A managed service declares `program` directly; a target-owned command
     // nests it under its role, and the JSON path follows the value's shape.
     let path = if role == "program" {
@@ -5911,9 +6366,8 @@ fn config_read_value(args: &[String]) -> Result<Value, ConfigFailure> {
                         "--value and --value-file are mutually exclusive",
                     ));
                 }
-                let raw = require_value(args, index, "--value").map_err(|error| {
-                    ConfigFailure::new("validation_failed", error.to_string())
-                })?;
+                let raw = require_value(args, index, "--value")
+                    .map_err(|error| ConfigFailure::new("validation_failed", error.to_string()))?;
                 value = Some(config_parse_json(raw, "--value")?);
                 index += 2;
             }
@@ -5924,9 +6378,8 @@ fn config_read_value(args: &[String]) -> Result<Value, ConfigFailure> {
                         "--value and --value-file are mutually exclusive",
                     ));
                 }
-                let spec = require_value(args, index, "--value-file").map_err(|error| {
-                    ConfigFailure::new("validation_failed", error.to_string())
-                })?;
+                let spec = require_value(args, index, "--value-file")
+                    .map_err(|error| ConfigFailure::new("validation_failed", error.to_string()))?;
                 let raw = config_read_stdin_or_file(spec, "--value-file")?;
                 value = Some(config_parse_json(&raw, "--value-file")?);
                 index += 2;
@@ -5963,10 +6416,11 @@ fn config_parse_setting_scope(
         match args[index].as_str() {
             "--setting" => {
                 setting_ref = Some(
-                    require_value(args, index, "--setting").map_err(|error| {
-                        ConfigFailure::new("validation_failed", error.to_string())
-                    })?
-                    .to_owned(),
+                    require_value(args, index, "--setting")
+                        .map_err(|error| {
+                            ConfigFailure::new("validation_failed", error.to_string())
+                        })?
+                        .to_owned(),
                 );
                 index += 2;
             }
@@ -5994,8 +6448,7 @@ fn config_parse_setting_scope(
         )
     })?;
     config_resolve_setting(&setting_ref)?;
-    let scope =
-        scope.unwrap_or_else(|| config_scope_json("workcell", Some(&global.workcell_ref)));
+    let scope = scope.unwrap_or_else(|| config_scope_json("workcell", Some(&global.workcell_ref)));
     Ok((setting_ref, scope))
 }
 
@@ -6053,7 +6506,9 @@ fn config_plan(global: &GlobalArgs, args: &[String]) -> Result<(), ConfigFailure
 }
 
 fn config_history_path(state_root: &Path) -> PathBuf {
-    state_root.join(CONFIG_HISTORY_DIR).join(CONFIG_HISTORY_FILE)
+    state_root
+        .join(CONFIG_HISTORY_DIR)
+        .join(CONFIG_HISTORY_FILE)
 }
 
 /// The owner's own history is the record of record (09 §9); receipts reference
@@ -6076,7 +6531,10 @@ fn config_history_records(state_root: &Path) -> Result<Vec<Value>, ConfigFailure
             serde_json::from_str(line).map_err(|error| {
                 ConfigFailure::new(
                     "internal",
-                    format!("config history `{}` has an unreadable line: {error}", path.display()),
+                    format!(
+                        "config history `{}` has an unreadable line: {error}",
+                        path.display()
+                    ),
                 )
             })
         })
@@ -6170,8 +6628,9 @@ fn config_write_services_document(
         "schema": epilogos_workcell_runtime::SERVICE_DECLARATION_SCHEMA,
         "services": services,
     });
-    let body = serde_json::to_string_pretty(&document)
-        .map_err(|error| ConfigFailure::new("internal", format!("serialise declaration: {error}")))?;
+    let body = serde_json::to_string_pretty(&document).map_err(|error| {
+        ConfigFailure::new("internal", format!("serialise declaration: {error}"))
+    })?;
     let target = epilogos_workcell_runtime::default_service_declaration_path(state_root);
     let temporary = state_root.join(format!(".services.json.tmp-{}", std::process::id()));
     fs::write(&temporary, format!("{body}\n")).map_err(|error| {
@@ -6232,19 +6691,21 @@ fn config_apply(global: &GlobalArgs, args: &[String]) -> Result<(), ConfigFailur
         match args[index].as_str() {
             "--plan-file" => {
                 plan_source = Some(
-                    require_value(args, index, "--plan-file").map_err(|error| {
-                        ConfigFailure::new("validation_failed", error.to_string())
-                    })?
-                    .to_owned(),
+                    require_value(args, index, "--plan-file")
+                        .map_err(|error| {
+                            ConfigFailure::new("validation_failed", error.to_string())
+                        })?
+                        .to_owned(),
                 );
                 index += 2;
             }
             "--changeset" => {
                 changeset = Some(
-                    require_value(args, index, "--changeset").map_err(|error| {
-                        ConfigFailure::new("validation_failed", error.to_string())
-                    })?
-                    .to_owned(),
+                    require_value(args, index, "--changeset")
+                        .map_err(|error| {
+                            ConfigFailure::new("validation_failed", error.to_string())
+                        })?
+                        .to_owned(),
                 );
                 index += 2;
             }
@@ -6290,15 +6751,16 @@ fn config_apply(global: &GlobalArgs, args: &[String]) -> Result<(), ConfigFailur
     let (kind, _scope_ref, scope) =
         config_scope_from_json(plan.get("scope").unwrap_or(&Value::Null))
             .map_err(|failure| failure.for_setting(&setting_ref))?;
-    config_check_scope_allowed(&kind)
-        .map_err(|failure| failure.for_setting(&setting_ref))?;
+    config_check_scope_allowed(&kind).map_err(|failure| failure.for_setting(&setting_ref))?;
 
     // The plan is verified against its minted digest before anything runs:
     // a modified plan is not the plan the owner made.
     if config_plan_digest(&plan) != digest {
         return Err(ConfigFailure::new(
             "validation_failed",
-            format!("plan `{plan_id}` does not match its plan_digest; it was modified after minting"),
+            format!(
+                "plan `{plan_id}` does not match its plan_digest; it was modified after minting"
+            ),
         )
         .for_setting(&setting_ref));
     }
@@ -6315,8 +6777,7 @@ fn config_apply(global: &GlobalArgs, args: &[String]) -> Result<(), ConfigFailur
             .for_scope_kind(&kind));
     }
 
-    let changeset =
-        changeset.unwrap_or_else(|| config_unique_id("cs-workcell"));
+    let changeset = changeset.unwrap_or_else(|| config_unique_id("cs-workcell"));
     if let Some(original) = config_find_executed(
         &global.state_root,
         &changeset,
@@ -6378,10 +6839,11 @@ fn config_reset(global: &GlobalArgs, args: &[String]) -> Result<(), ConfigFailur
         match args[index].as_str() {
             "--changeset" => {
                 changeset = Some(
-                    require_value(args, index, "--changeset").map_err(|error| {
-                        ConfigFailure::new("validation_failed", error.to_string())
-                    })?
-                    .to_owned(),
+                    require_value(args, index, "--changeset")
+                        .map_err(|error| {
+                            ConfigFailure::new("validation_failed", error.to_string())
+                        })?
+                        .to_owned(),
                 );
                 index += 2;
             }
@@ -6396,13 +6858,9 @@ fn config_reset(global: &GlobalArgs, args: &[String]) -> Result<(), ConfigFailur
     }
     let changeset = changeset.unwrap_or_else(|| config_unique_id("cs-workcell"));
 
-    if let Some(original) = config_find_executed(
-        &global.state_root,
-        &changeset,
-        &setting_ref,
-        &scope,
-        None,
-    )? {
+    if let Some(original) =
+        config_find_executed(&global.state_root, &changeset, &setting_ref, &scope, None)?
+    {
         let original_id = original
             .get("receipt_id")
             .and_then(Value::as_str)
@@ -6910,9 +7368,8 @@ fn machine_add(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError
             }
         }
     }
-    let label = label.ok_or_else(|| {
-        WorkcellError::InvalidDemand("machine add needs --label LABEL".into())
-    })?;
+    let label = label
+        .ok_or_else(|| WorkcellError::InvalidDemand("machine add needs --label LABEL".into()))?;
     validate_label(&label)?;
     let endpoint = endpoint.ok_or_else(|| {
         WorkcellError::InvalidDemand(
@@ -6996,9 +7453,8 @@ fn machine_remove(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellEr
             }
         }
     }
-    let label = label.ok_or_else(|| {
-        WorkcellError::InvalidDemand("machine remove needs --label LABEL".into())
-    })?;
+    let label = label
+        .ok_or_else(|| WorkcellError::InvalidDemand("machine remove needs --label LABEL".into()))?;
     let registry = RemoteMachineRegistry::new(&global.state_root);
     registry.remove(&label)?;
     if global.json {
@@ -7017,7 +7473,77 @@ fn machine_remove(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellEr
 // into the origin store without ever printing it, and projections record
 // authorised relations (refs, classes, purpose, scope) — never material.
 
-const SECRET_USAGE: &str = "usage: workcell secret scan | vault --from env:NAME|PATH [--select KEY] --ref REF [--provider secret-service|keychain] | project --name LABEL --to-sandbox --allocation-ref REF [--sandbox-provider REF] --credential-ref REF --source-provider REF --class CLASS --purpose P --scope S --by REF (workcell targets are not yet materialisable and are refused) | projections | deliver (--name LABEL | --ref PREF) --allocation SANDBOX-ID --route HOST=METHOD [--binding NAME] [--auth bearer|api-key:HEADER] | revoke-projection (--name LABEL | --ref PREF) [--sandbox SANDBOX-ID]";
+const SECRET_USAGE: &str = "usage: workcell secret list | scan | vault --from env:NAME|PATH [--select KEY] --ref REF [--provider secret-service|keychain] | project --name LABEL --to-sandbox --allocation-ref REF [--sandbox-provider REF] --credential-ref REF --source-provider REF --class CLASS --purpose P --scope S --by REF (workcell targets are not yet materialisable and are refused) | projections | deliver (--name LABEL | --ref PREF) --allocation SANDBOX-ID --route HOST=METHOD [--binding NAME] [--auth bearer|api-key:HEADER] | revoke-projection (--name LABEL | --ref PREF) [--sandbox SANDBOX-ID]";
+
+/// Native reference inventory. It never resolves a secret or scans ambient
+/// credentials. Origin-store creation time is not inferred from declaration time.
+fn secret_inventory(global: &GlobalArgs) -> Result<Value, WorkcellError> {
+    let mut entries: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for machine in RemoteMachineRegistry::new(&global.state_root).list()? {
+        if let Some(reference) = machine.credential_ref {
+            entries
+                .entry(reference)
+                .or_default()
+                .insert(format!("machine:{}", machine.label));
+        }
+    }
+    for connection in list_connection_records(&global.state_root)? {
+        if let Some(reference) = connection.credential_ref {
+            entries
+                .entry(reference)
+                .or_default()
+                .insert(connection.connection_ref);
+        }
+    }
+    for projection in SecretProjectionLedger::new(
+        &global.state_root,
+        parse_workcell_ref(&global.workcell_ref)?,
+    )
+    .list()?
+    {
+        entries
+            .entry(projection.credential_ref)
+            .or_default()
+            .insert(projection.projection_ref);
+    }
+    let credentials: Vec<Value> = entries
+        .into_iter()
+        .map(|(reference, observed_in)| {
+            let (scheme, name) = reference
+                .split_once("://")
+                .unwrap_or(("unknown", reference.as_str()));
+            json!({ "credential_ref": reference, "scheme": scheme, "name": name,
+            "created_at_unix_ms": null, "observed_in": observed_in })
+        })
+        .collect();
+    Ok(
+        json!({ "schema": "workcell.secret-reference-inventory/v1", "credentials": credentials,
+        "coverage": "recorded-references", "origin_inventory": system_unavailable(
+            "Only references in machine declarations, connection receipts and projection records are known. Origin-store inventory, creation dates and credential usability are not exposed by the native providers; no secret values are read.") }),
+    )
+}
+
+fn secret_list(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    if !args.is_empty() {
+        return Err(WorkcellError::InvalidDemand(
+            "secret list takes no arguments".into(),
+        ));
+    }
+    let inventory = secret_inventory(global)?;
+    if global.json {
+        emit_json(inventory);
+    } else {
+        for row in inventory["credentials"].as_array().expect("inventory rows") {
+            println!(
+                "{} [{}]",
+                row["name"].as_str().unwrap_or(""),
+                row["scheme"].as_str().unwrap_or("")
+            );
+        }
+        println!("Known references only; origin-store inventory and creation dates are unavailable. No secret values were read.");
+    }
+    Ok(())
+}
 
 fn command_secret(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
     let Some(subcommand) = args.first() else {
@@ -7025,6 +7551,7 @@ fn command_secret(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellEr
     };
     let rest = &args[1..];
     match subcommand.as_str() {
+        "list" => secret_list(global, rest),
         "scan" => secret_scan(global, rest),
         "vault" => secret_vault(global, rest),
         "project" => secret_project(global, rest),
@@ -7156,18 +7683,17 @@ fn secret_deliver(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellEr
         }
     };
     let projection = record.to_request()?;
-    let (target_provider_ref, target_allocation_ref) = match &projection.target {
-        SecretProjectionTarget::Sandbox {
-            provider_ref,
-            allocation_ref,
-        } => (provider_ref.as_str().to_owned(), allocation_ref.clone()),
-        SecretProjectionTarget::Workcell { .. } => {
-            return Err(WorkcellError::InvalidDemand(
+    let (target_provider_ref, target_allocation_ref) =
+        match &projection.target {
+            SecretProjectionTarget::Sandbox {
+                provider_ref,
+                allocation_ref,
+            } => (provider_ref.as_str().to_owned(), allocation_ref.clone()),
+            SecretProjectionTarget::Workcell { .. } => return Err(WorkcellError::InvalidDemand(
                 "deliver projects to sandbox allocations; this projection names a workcell target"
                     .into(),
-            ))
-        }
-    };
+            )),
+        };
     if target_allocation_ref != allocation {
         return Err(WorkcellError::UnsatisfiedDemand(format!(
             "projection targets sandbox allocation `{target_allocation_ref}`, not `{allocation}`"
@@ -7197,7 +7723,8 @@ fn secret_deliver(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellEr
         fn resolve(
             &self,
             credential_ref: &ExternalRef,
-        ) -> epilogos_workcell_core::Result<epilogos_workcell_core::ProviderSecretMaterial> {
+        ) -> epilogos_workcell_core::Result<epilogos_workcell_core::ProviderSecretMaterial>
+        {
             match self {
                 Self::SecretService(provider) => provider.resolve(credential_ref),
                 Self::Keychain(provider) => provider.resolve(credential_ref),
@@ -7437,7 +7964,9 @@ fn read_vault_material(from: &str, select: Option<&str>) -> Result<Vec<u8>, Work
         return Ok(value.into_bytes());
     }
     let text = fs::read_to_string(from).map_err(|error| {
-        WorkcellError::Unavailable(format!("could not read `{from}`: {error}; nothing was vaulted"))
+        WorkcellError::Unavailable(format!(
+            "could not read `{from}`: {error}; nothing was vaulted"
+        ))
     })?;
     if let Some(select) = select {
         return Ok(select_json_path(&text, select)?.into_bytes());
@@ -7463,8 +7992,9 @@ fn read_vault_material(from: &str, select: Option<&str>) -> Result<Vec<u8>, Work
 }
 
 fn select_json_path(text: &str, select: &str) -> Result<String, WorkcellError> {
-    let value: Value = serde_json::from_str(text)
-        .map_err(|error| WorkcellError::Unavailable(format!("the source is not valid JSON: {error}")))?;
+    let value: Value = serde_json::from_str(text).map_err(|error| {
+        WorkcellError::Unavailable(format!("the source is not valid JSON: {error}"))
+    })?;
     let mut current = &value;
     for segment in select.split('.') {
         let (key, index) = match segment.split_once('[') {
@@ -7577,8 +8107,7 @@ fn secret_project(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellEr
                 index += 2;
             }
             "--source-provider" => {
-                source_provider =
-                    Some(require_value(args, index, "--source-provider")?.to_owned());
+                source_provider = Some(require_value(args, index, "--source-provider")?.to_owned());
                 index += 2;
             }
             "--class" => {
@@ -7627,9 +8156,8 @@ fn secret_project(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellEr
         WorkcellError::InvalidDemand("project needs --name LABEL for the projection ref".into())
     })?;
     validate_label(&name)?;
-    let credential_ref = credential_ref.ok_or_else(|| {
-        WorkcellError::InvalidDemand("project needs --credential-ref REF".into())
-    })?;
+    let credential_ref = credential_ref
+        .ok_or_else(|| WorkcellError::InvalidDemand("project needs --credential-ref REF".into()))?;
     let source_provider = source_provider.ok_or_else(|| {
         WorkcellError::InvalidDemand("project needs --source-provider REF".into())
     })?;
@@ -7643,14 +8171,12 @@ fn secret_project(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellEr
             "unknown materialisation class `{class}`; known classes: process-env, one-shot-child-process, fd-or-pipe, file, provider-native-lease, credential-broker, short-lived-federated-credential"
         ))
     })?;
-    let purpose = purpose.ok_or_else(|| {
-        WorkcellError::InvalidDemand("project needs --purpose PURPOSE".into())
-    })?;
+    let purpose = purpose
+        .ok_or_else(|| WorkcellError::InvalidDemand("project needs --purpose PURPOSE".into()))?;
     let scope =
         scope.ok_or_else(|| WorkcellError::InvalidDemand("project needs --scope SCOPE".into()))?;
-    let requested_by = requested_by.ok_or_else(|| {
-        WorkcellError::InvalidDemand("project needs --by REQUESTER-REF".into())
-    })?;
+    let requested_by = requested_by
+        .ok_or_else(|| WorkcellError::InvalidDemand("project needs --by REQUESTER-REF".into()))?;
 
     let target = match (to_workcell, to_sandbox) {
         (Some(workcell_ref), false) => {
@@ -7732,7 +8258,10 @@ fn secret_projections(global: &GlobalArgs, _args: &[String]) -> Result<(), Workc
         }));
     } else {
         if records.is_empty() {
-            println!("no secret projections recorded in {}", ledger.path().display());
+            println!(
+                "no secret projections recorded in {}",
+                ledger.path().display()
+            );
         }
         for record in records {
             let target = match (&record.target_workcell_ref, &record.target_provider_ref) {
@@ -7748,7 +8277,12 @@ fn secret_projections(global: &GlobalArgs, _args: &[String]) -> Result<(), Workc
             };
             println!(
                 "{} -> {} class={} purpose={} scope={} state={}",
-                record.projection_ref, target, record.class, record.purpose, record.scope, record.state
+                record.projection_ref,
+                target,
+                record.class,
+                record.purpose,
+                record.scope,
+                record.state
             );
         }
     }
