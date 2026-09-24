@@ -5484,12 +5484,12 @@ fn system_descriptor(global: &GlobalArgs) -> Result<Value, WorkcellError> {
                     "model-serving.reference_services", "Reference service materialisation", "table",
                     &owner_ref, &reference_path, now,
                     json!({ "services": [
-                        { "target": "aikit-gateway", "shape": "managed host service (serve --ws)", "source_revision": AIKIT_GATEWAY_SOURCE_REVISION, "application_protocol": AIKIT_GATEWAY_APPLICATION_PROTOCOL },
+                        { "target": "aikit-gateway", "shape": "managed host service (aikit gateway serve --unix --ws)", "source_revision": AIKIT_GATEWAY_SOURCE_REVISION, "application_protocol": AIKIT_GATEWAY_APPLICATION_PROTOCOL },
                         { "target": "hermes", "shape": "target-owned external service (gateway start/stop/restart/status)", "source_revision": HERMES_SOURCE_REVISION },
                         { "target": "openclaw", "shape": "target-owned external service (gateway start/stop/health/status)", "source_revision": OPENCLAW_SOURCE_REVISION },
                     ] }),
                     json!({ "services": [
-                        { "target": "aikit-gateway", "shape": "managed host service (serve --ws)", "source_revision": AIKIT_GATEWAY_SOURCE_REVISION, "application_protocol": AIKIT_GATEWAY_APPLICATION_PROTOCOL },
+                        { "target": "aikit-gateway", "shape": "managed host service (aikit gateway serve --unix --ws)", "source_revision": AIKIT_GATEWAY_SOURCE_REVISION, "application_protocol": AIKIT_GATEWAY_APPLICATION_PROTOCOL },
                         { "target": "hermes", "shape": "target-owned external service (gateway start/stop/restart/status)", "source_revision": HERMES_SOURCE_REVISION },
                         { "target": "openclaw", "shape": "target-owned external service (gateway start/stop/health/status)", "source_revision": OPENCLAW_SOURCE_REVISION },
                     ] }),
