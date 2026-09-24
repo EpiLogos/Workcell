@@ -6,3 +6,4 @@ publish = false
 
 [dependencies]
 epilogos-workcell-core = { path = "../workcell-core" }
+serde_json = "1"

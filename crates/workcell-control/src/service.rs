@@ -1,9 +1,16 @@
 use epilogos_workcell_core::{WorkcellControlPlane, WorkcellError};
 use epilogos_workcell_wire::ConnectionGrant;
 use serde_json::{json, Map, Value};
+use std::sync::Arc;
 
 use crate::grants::{ConnectionGrants, GrantDecision};
 use crate::{codec, software_version, CONNECTION_HANDSHAKE_OPERATION, CONTROL_PROTOCOL_VERSION};
+
+/// The disclosure a serving cell emits for the `system` control operation:
+/// the cell's own `oi.product-settings-disclosure/v2` reading, assembled by
+/// the host that composed the service (the reading is host-owned — the
+/// service only carries it).
+pub type SystemDisclosure = Arc<dyn Fn() -> Result<Value, WorkcellError> + Send + Sync>;
 
 /// One access decision for one request. `FullAccess` is the pre-existing
 /// open/static-token behaviour; `Scoped` is a connection grant's scope.
@@ -17,6 +24,7 @@ pub struct ControlService<C> {
     control: C,
     authorization: Option<String>,
     grants: Option<ConnectionGrants>,
+    system_disclosure: Option<SystemDisclosure>,
 }
 
 impl<C> ControlService<C>
@@ -28,11 +36,20 @@ where
             control,
             authorization: None,
             grants: None,
+            system_disclosure: None,
         }
     }
 
     pub fn with_authorization(mut self, authorization: impl Into<String>) -> Self {
         self.authorization = Some(authorization.into());
+        self
+    }
+
+    /// Give the service the host-owned settings disclosure the `system`
+    /// operation returns. A service without one refuses `system` by name —
+    /// it never fabricates a reading.
+    pub fn with_system_disclosure(mut self, disclosure: SystemDisclosure) -> Self {
+        self.system_disclosure = Some(disclosure);
         self
     }
 
@@ -338,6 +355,13 @@ where
                     .reconcile(&desired)
                     .map(|value| codec::reconciliation_value(&value))
             }
+            "system" => match &self.system_disclosure {
+                Some(disclosure) => disclosure(),
+                None => Err(WorkcellError::Unsupported(
+                    "this serving Workcell does not expose a settings disclosure through workcell.control/v1; run `workcell system` on the Workcell host"
+                        .into(),
+                )),
+            },
             other => Err(WorkcellError::Unsupported(format!(
                 "control operation `{other}` is not supported"
             ))),

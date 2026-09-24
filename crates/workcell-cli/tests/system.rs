@@ -222,12 +222,50 @@ fn actions_are_disclosed_and_obligations_are_named() {
 }
 
 #[test]
-fn remote_system_reading_reports_unavailable_instead_of_fabricating() {
+fn remote_system_reading_is_unavailable_with_reason_and_never_fabricated() {
+    // An unreachable endpoint: the remote's merged section reads
+    // unavailable with its named reason, the local reading survives the
+    // merge unchanged, and nothing about the remote is invented.
     let output = run(&["--endpoint", "127.0.0.1:1", "system", "--json"]);
     assert!(output.status.success());
     let reading = json_stdout(&output);
     assert_eq!(reading["schema"], "oi.product-settings-disclosure/v2");
     assert_eq!(reading["product_id"], "workcell");
-    assert_eq!(reading["availability"]["state"], "unavailable");
     assert!(!reading["obligations"].as_array().unwrap().is_empty());
+
+    let remote_id = "remote:127.0.0.1:1";
+    let remote: Vec<&Value> = reading["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|section| section["id"].as_str().unwrap_or("").starts_with(remote_id))
+        .collect();
+    assert_eq!(remote.len(), 1, "exactly one honest remote section");
+    let axis = &remote[0]["settings"][0]["effective"];
+    assert_eq!(axis["state"], "unavailable");
+    assert!(
+        axis["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("did not supply a settings disclosure"),
+        "the unavailability must name its reason"
+    );
+
+    let degradation = reading["degradations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["subject_ref"] == remote_id)
+        .expect("the remote must be named in degradations");
+    assert_eq!(degradation["state"], "unavailable");
+
+    // The local sections are the merge's base and are never displaced.
+    assert!(
+        reading["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|section| section["id"] == "workcells"),
+        "the local reading must survive the merge"
+    );
 }

@@ -48,6 +48,7 @@ fn request(source: &Path, access: WorkspaceAccess) -> WorkspaceMaterialRequest {
         access,
         persistence: None,
         retention: RetentionExpectation::Release,
+        branch_name: None,
     }
 }
 

@@ -479,3 +479,178 @@ fn sandboxes_reconcile_no_longer_accepts_a_raw_api_key() {
         "`--api-key-env` still parses; the failure is the missing server: {env_text}"
     );
 }
+
+// ---- Projection correlation -------------------------------------------
+//
+// `workcell correlate-projection` carries an AIKit git-projection verdict as a
+// correlated observation on a prepared world's checkout subject, running no git.
+
+fn write_json(label: &str, body: &str) -> PathBuf {
+    let path = temp_path(label);
+    fs::write(&path, body).unwrap();
+    path
+}
+
+/// A `workcell.material-world/v1` receipt carrying an opaque `checkout:workcell`
+/// subject — exactly what `prepare --subject checkout:workcell=<ref>` persists.
+fn checkout_world_receipt() -> PathBuf {
+    write_json(
+        "corr-world",
+        r#"{
+          "version": "workcell.material-world/v1",
+          "world_ref": "world:dev-environment",
+          "workcell_ref": "workcell:local",
+          "demand_ref": "demand:dev-environment",
+          "subjects": { "checkout:workcell": "dev-environment:/Users/dev/worktrees/env-1/workcell" },
+          "binding_graph": {"bindings": [], "relations": []},
+          "planned_exposures": [],
+          "planned_constraints": [],
+          "plan_degradations": [],
+          "plan_omissions": [],
+          "persistence": null,
+          "retention": "release",
+          "state": "healthy",
+          "provenance": {}
+        }"#,
+    )
+}
+
+#[test]
+fn correlate_projection_carries_a_projected_verdict_attributed_to_aikit() {
+    let receipt = checkout_world_receipt();
+    // A full `aikit worktree project --json` reply envelope: SuiteProjection
+    // under `data`, all checkouts ending at the target.
+    let projection = write_json(
+        "corr-projected",
+        r#"{
+          "ok": true,
+          "data": {
+            "version": "aikit.worktree-projection/v1",
+            "target": "origin/main",
+            "applied": true,
+            "entries": [
+              { "key": "workcell", "action": { "action": "fast-forwarded" } },
+              { "key": "central", "action": { "action": "already-projected" } }
+            ],
+            "summary": ["2/2 checkouts projected onto origin/main (apply)"]
+          },
+          "warnings": []
+        }"#,
+    );
+
+    let output = run(&[
+        "--json",
+        "--receipt",
+        path_arg(&receipt),
+        "correlate-projection",
+        "--projection",
+        path_arg(&projection),
+        "--subject",
+        "checkout:workcell",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reading = json_stdout(&output);
+    assert_eq!(reading["ok"], true);
+    assert_eq!(reading["version"], "workcell.correlated-observation/v1");
+    assert_eq!(reading["world_ref"], "world:dev-environment");
+    assert_eq!(reading["subject_key"], "checkout:workcell");
+    // The opaque checkout ref is preserved verbatim from the world's subject.
+    assert_eq!(
+        reading["subject"],
+        "dev-environment:/Users/dev/worktrees/env-1/workcell"
+    );
+    // The verdict is attributed to AIKit and carried, not computed by Workcell.
+    assert_eq!(reading["attributed_to"], "aikit.worktree-projection/v1");
+    assert_eq!(reading["correlation"]["projected"], true);
+    assert_eq!(reading["correlation"]["applied"], true);
+    assert_eq!(reading["correlation"]["target"], "origin/main");
+    assert!(reading["correlation"]["surfaced"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn correlate_projection_carries_surfaced_drift_verbatim() {
+    let receipt = checkout_world_receipt();
+    let projection = write_json(
+        "corr-surfaced",
+        r#"{
+          "data": {
+            "version": "aikit.worktree-projection/v1",
+            "target": "origin/main",
+            "applied": false,
+            "entries": [
+              { "key": "workcell", "action": { "action": "already-projected" } },
+              { "key": "o-i", "action": { "action": "surfaced", "reason": "ahead of origin/main" } },
+              { "key": "factory", "action": { "action": "failed", "reason": "could not be read" } }
+            ],
+            "summary": ["1/3 checkouts projected onto origin/main (observe)"]
+          }
+        }"#,
+    );
+
+    let output = run(&[
+        "--json",
+        "--receipt",
+        path_arg(&receipt),
+        "correlate-projection",
+        "--projection",
+        path_arg(&projection),
+        "--subject",
+        "checkout:workcell",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reading = json_stdout(&output);
+    assert_eq!(reading["correlation"]["projected"], false);
+    let surfaced = reading["correlation"]["surfaced"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    // AIKit's surfaced/failed keys are carried verbatim; Workcell derives nothing.
+    assert_eq!(surfaced, vec!["o-i".to_owned(), "factory".to_owned()]);
+}
+
+#[test]
+fn correlate_projection_refuses_a_subject_absent_from_the_world() {
+    let receipt = checkout_world_receipt();
+    let projection = write_json(
+        "corr-absent",
+        r#"{
+          "data": {
+            "version": "aikit.worktree-projection/v1",
+            "target": "origin/main",
+            "applied": false,
+            "entries": [ { "key": "workcell", "action": { "action": "already-projected" } } ],
+            "summary": ["1/1 checkouts projected onto origin/main (observe)"]
+          }
+        }"#,
+    );
+
+    let output = run(&[
+        "--json",
+        "--receipt",
+        path_arg(&receipt),
+        "correlate-projection",
+        "--projection",
+        path_arg(&projection),
+        "--subject",
+        "checkout:not-on-this-world",
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not a subject of world"),
+        "expected a subject-refusal, got: {stderr}"
+    );
+}
