@@ -128,13 +128,15 @@ pub fn redis_now_config_policy(
     ))
 }
 
-/// Source pin for the accepted persistent `aikit-gateway serve` carrier implementation.
+/// Source pin for the accepted persistent `aikit gateway serve` carrier implementation.
 ///
 /// This remains a target source revision rather than a Workcell-owned protocol
 /// version: AIKit owns the Gateway semantics and Workcell materialises that body.
-pub const AIKIT_GATEWAY_SOURCE_REVISION: &str = "4b614a732090df3abda7940d2fede649fc218492";
+/// Pinned to the revision that resolves occupancy across declared Workcells
+/// (EpiLogos/ai-kit#425) and serves with a token location (#433).
+pub const AIKIT_GATEWAY_SOURCE_REVISION: &str = "363def309b2ca24a3fdfac2e08a8cfe999d8d631";
 pub const AIKIT_GATEWAY_MANAGEMENT_SOURCE: &str =
-    "EpiLogos/ai-kit:crates/aikit-adapters/src/bin/aikit-gateway.rs";
+    "EpiLogos/ai-kit:crates/aikit-cli/src/gateway_ops.rs";
 pub const AIKIT_GATEWAY_APPLICATION_PROTOCOL: &str = "aikit.agency-gateway/v1";
 
 /// Target-specific material description for the first-party AIKit Agency Gateway.
@@ -143,53 +145,86 @@ pub const AIKIT_GATEWAY_APPLICATION_PROTOCOL: &str = "aikit.agency-gateway/v1";
 /// path and lifecycle. AIKit owns the gateway protocol, AgentSession, Agency,
 /// ActuationStream, connector and messaging semantics.
 ///
-/// The bearer secret is deliberately NOT accepted by this function. `token_env`
-/// is only the name of the environment variable from which the already-materialised
-/// gateway process reads its token. Workcell's existing secret layer remains the
-/// place that may materialise the actual value into the child environment.
+/// The body is the `aikit` CLI's `gateway serve`, serving the home's Unix socket
+/// (local inbox and turn-boundary delivery) beside the authenticated WebSocket
+/// that other Workcells relay through.
+///
+/// The bearer secret is deliberately NOT accepted by this function.
+/// `token_location` names where the token lives — `file:/abs/path` (owner-only)
+/// or a `keychain://`, `pass://`, `op://` or `varlock://` reference — and the
+/// gateway reads it from there itself. A value that is not a location is refused,
+/// so a token pasted in place of its location never reaches a descriptor.
 pub fn aikit_gateway_service(
     logical_ref: impl Into<String>,
     host: impl Into<String>,
     port: u16,
     state_file: impl Into<String>,
-    token_env: impl Into<String>,
+    token_location: impl Into<String>,
 ) -> Result<ManagedHostService> {
     let host = host.into();
     let state_file = state_file.into();
-    let token_env = token_env.into();
+    let token_location = token_location.into();
     if state_file.trim().is_empty() {
         return Err(WorkcellError::InvalidDemand(
             "AIKit gateway state file must not be empty".into(),
         ));
     }
-    if !valid_env_name(&token_env) {
+    if !valid_token_location(&token_location) {
         return Err(WorkcellError::InvalidDemand(format!(
-            "AIKit gateway token environment name `{token_env}` is invalid"
+            "AIKit gateway token location `{}` is not a location: expected `file:/abs/path` or a keychain://, pass://, op:// or varlock:// reference, never the token itself",
+            redact_location(&token_location)
         )));
     }
     let readiness = TcpEndpointProbe::new(host.clone(), port)?;
     let bind = format!("{host}:{port}");
     let endpoint = format!("ws://{bind}");
 
-    Ok(
-        ManagedHostService::new(logical_ref, endpoint, "aikit-gateway")?
-            .with_arg("serve")
-            .with_arg("--ws")
-            .with_arg(bind)
-            .with_arg("--token-env")
-            .with_arg(token_env.clone())
-            .with_arg("--state-file")
-            .with_arg(state_file)
-            .with_metadata("target", "aikit-gateway")
-            .with_metadata("target_source_revision", AIKIT_GATEWAY_SOURCE_REVISION)
-            .with_metadata("target_management_source", AIKIT_GATEWAY_MANAGEMENT_SOURCE)
-            .with_metadata("configuration_owner", "aikit")
-            .with_metadata("application_protocol", AIKIT_GATEWAY_APPLICATION_PROTOCOL)
-            .with_metadata("credential_materialisation", "environment-name-only")
-            .with_metadata("credential_env", token_env)
-            .with_metadata("semantic_state_owner", "aikit")
-            .with_tcp_readiness(readiness),
-    )
+    Ok(ManagedHostService::new(logical_ref, endpoint, "aikit")?
+        .with_arg("gateway")
+        .with_arg("serve")
+        .with_arg("--unix")
+        .with_arg("--ws")
+        .with_arg(bind)
+        .with_arg("--ws-token-location")
+        .with_arg(token_location.clone())
+        .with_arg("--state-file")
+        .with_arg(state_file)
+        .with_metadata("target", "aikit-gateway")
+        .with_metadata("target_source_revision", AIKIT_GATEWAY_SOURCE_REVISION)
+        .with_metadata("target_management_source", AIKIT_GATEWAY_MANAGEMENT_SOURCE)
+        .with_metadata("configuration_owner", "aikit")
+        .with_metadata("application_protocol", AIKIT_GATEWAY_APPLICATION_PROTOCOL)
+        .with_metadata("credential_materialisation", "location-only")
+        .with_metadata("credential_location", token_location)
+        .with_metadata("semantic_state_owner", "aikit")
+        .with_tcp_readiness(readiness))
+}
+
+/// A token location, never a token: an absolute `file:` path or a reference in
+/// one of the secret stores AIKit resolves, on one line, without whitespace.
+fn valid_token_location(location: &str) -> bool {
+    if location.is_empty()
+        || location
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control())
+    {
+        return false;
+    }
+    if let Some(path) = location.strip_prefix("file:") {
+        return path.starts_with('/') && path.len() > 1;
+    }
+    ["keychain://", "pass://", "op://", "varlock://"]
+        .iter()
+        .any(|scheme| location.len() > scheme.len() && location.starts_with(scheme))
+}
+
+/// What a refusal may echo of a rejected location: its scheme at most, so a
+/// token supplied by mistake is not printed back.
+fn redact_location(location: &str) -> String {
+    match location.split_once(':') {
+        Some((scheme, _)) if !scheme.is_empty() && scheme.len() <= 16 => format!("{scheme}:…"),
+        _ => "…".into(),
+    }
 }
 
 /// Target-specific material management description for a Hermes gateway.
@@ -276,15 +311,6 @@ fn command(program: &str, args: &[&str]) -> Result<ExternalServiceCommand> {
     Ok(command)
 }
 
-fn valid_env_name(value: &str) -> bool {
-    let mut chars = value.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    (first == '_' || first.is_ascii_alphabetic())
-        && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,21 +322,23 @@ mod tests {
             "127.0.0.1",
             7778,
             "/var/lib/oi/gateway/state.json",
-            "AIKIT_GATEWAY_TOKEN",
+            "file:/var/lib/oi/gateway/ws.token",
         )
         .unwrap();
 
         assert_eq!(service.logical_ref, "service:agency-gateway/personal-world");
         assert_eq!(service.endpoint, "ws://127.0.0.1:7778");
-        assert_eq!(service.program, "aikit-gateway");
+        assert_eq!(service.program, "aikit");
         assert_eq!(
             service.args,
             [
+                "gateway",
                 "serve",
+                "--unix",
                 "--ws",
                 "127.0.0.1:7778",
-                "--token-env",
-                "AIKIT_GATEWAY_TOKEN",
+                "--ws-token-location",
+                "file:/var/lib/oi/gateway/ws.token",
                 "--state-file",
                 "/var/lib/oi/gateway/state.json",
             ]
@@ -330,8 +358,18 @@ mod tests {
             Some(AIKIT_GATEWAY_APPLICATION_PROTOCOL)
         );
         assert_eq!(
-            service.metadata.get("credential_env").map(String::as_str),
-            Some("AIKIT_GATEWAY_TOKEN")
+            service
+                .metadata
+                .get("credential_materialisation")
+                .map(String::as_str),
+            Some("location-only")
+        );
+        assert_eq!(
+            service
+                .metadata
+                .get("credential_location")
+                .map(String::as_str),
+            Some("file:/var/lib/oi/gateway/ws.token")
         );
         let encoded = format!("{service:?}");
         assert!(!encoded.contains("bot-token"));
@@ -341,30 +379,39 @@ mod tests {
 
     #[test]
     fn aikit_gateway_rejects_invalid_material_configuration_without_importing_gateway_semantics() {
-        assert!(aikit_gateway_service(
-            "service:agency-gateway/personal-world",
-            "127.0.0.1",
-            0,
-            "/var/lib/oi/gateway/state.json",
+        let build = |port, state: &str, location: &str| {
+            aikit_gateway_service(
+                "service:agency-gateway/personal-world",
+                "127.0.0.1",
+                port,
+                state,
+                location,
+            )
+        };
+        assert!(build(0, "/var/lib/oi/gateway/state.json", "file:/t").is_err());
+        assert!(build(7778, "", "file:/t").is_err());
+        // Locations are accepted in every store AIKit resolves.
+        for location in [
+            "file:/home/me/.aikit/credentials/gateway-ws.token",
+            "keychain://aikit/gateway-ws",
+            "pass://aikit/gateway-ws",
+            "op://vault/aikit/gateway-ws",
+            "varlock://aikit/GATEWAY_WS",
+        ] {
+            assert!(build(7778, "/s.json", location).is_ok(), "{location}");
+        }
+        // A relative file, an empty ref, a bare environment name or a pasted
+        // token is refused, and the refusal never echoes the value.
+        for rejected in [
+            "file:relative/ws.token",
+            "keychain://",
             "AIKIT_GATEWAY_TOKEN",
-        )
-        .is_err());
-        assert!(aikit_gateway_service(
-            "service:agency-gateway/personal-world",
-            "127.0.0.1",
-            7778,
-            "",
-            "AIKIT_GATEWAY_TOKEN",
-        )
-        .is_err());
-        assert!(aikit_gateway_service(
-            "service:agency-gateway/personal-world",
-            "127.0.0.1",
-            7778,
-            "/var/lib/oi/gateway/state.json",
-            "AIKIT-GATEWAY-TOKEN",
-        )
-        .is_err());
+            "4f2c9a0e1b7d3c5a8e6f0b2d4c6a8e0f",
+            "file:/a b",
+        ] {
+            let error = build(7778, "/s.json", rejected).unwrap_err();
+            assert!(!format!("{error:?}").contains("4f2c9a0e"), "{rejected}");
+        }
     }
 
     #[test]
