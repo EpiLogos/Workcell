@@ -61,7 +61,7 @@ fn transition_allowed(from: &str, to: &str) -> bool {
         return true;
     }
     match from {
-        "queued" => matches!(to, "running" | "cancelled" | "fail"),
+        "queued" => matches!(to, "running" | "blocked" | "cancelled" | "fail"),
         "running" => matches!(
             to,
             "blocked" | "returned" | "success" | "fail" | "cancelled"
@@ -323,9 +323,27 @@ impl RunLedger {
         self.runs_dir().join(RUNS_INDEX_FILE)
     }
 
+    // All writers share the ledger lock, including the index projection.
+    // A scope can compare its exact inspected record without racing a release.
+    fn lock(&self) -> Result<fs::File> {
+        fs::create_dir_all(self.runs_dir())
+            .map_err(|e| WorkcellError::OperationFailed(e.to_string()))?;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.runs_dir().join(".lock"))
+            .map_err(|e| WorkcellError::OperationFailed(e.to_string()))?;
+        file.lock()
+            .map_err(|e| WorkcellError::OperationFailed(e.to_string()))?;
+        Ok(file)
+    }
+
     /// Write a new run record. A duplicate slug is refused — a run slug names
     /// one material execution, and history is never silently replaced.
     pub fn create(&self, mut record: Value) -> Result<Value> {
+        let _lock = self.lock()?;
         if record["schema"] != RUN_SCHEMA {
             record["schema"] = json!(RUN_SCHEMA);
         }
@@ -374,8 +392,31 @@ impl RunLedger {
         Ok(record)
     }
 
-    /// Rewrite an existing record (the same slug, validated, transition-checked).
-    pub fn update(&self, record: &Value) -> Result<()> {
+    /// Commit only if the owner record still equals the one inspected.
+    pub fn update_if_unchanged(&self, previous: &Value, record: &Value) -> Result<()> {
+        let _lock = self.lock()?;
+        let slug = previous["run_slug"]
+            .as_str()
+            .ok_or_else(|| WorkcellError::InvalidDemand("Missing run slug".into()))?;
+        if record["run_slug"] != previous["run_slug"] || self.get(slug)?.as_ref() != Some(previous)
+        {
+            return Err(WorkcellError::OperationFailed(
+                "Run changed while the operation was returning; read the current run and retry"
+                    .into(),
+            ));
+        }
+        validate_run_record(record)?;
+        let from = previous["execution_status"].as_str().unwrap_or("");
+        let to = record["execution_status"].as_str().unwrap_or("");
+        if !transition_allowed(from, to) {
+            return Err(WorkcellError::InvalidDemand(format!(
+                "run cannot transition from `{from}` to `{to}`"
+            )));
+        }
+        self.update_locked(record)
+    }
+
+    fn update_locked(&self, record: &Value) -> Result<()> {
         validate_run_record(record)?;
         let slug = record["run_slug"].as_str().expect("validated slug");
         let path = self.record_path(slug);
@@ -434,7 +475,10 @@ impl RunLedger {
             })?;
             let path = entry.path();
             if path.extension().and_then(|value| value.to_str()) != Some("json")
-                || path.file_name().and_then(|value| value.to_str()) == Some(RUNS_INDEX_FILE)
+                || path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| name == RUNS_INDEX_FILE || name.ends_with(".scope.json"))
             {
                 continue;
             }
@@ -530,6 +574,15 @@ impl RunLedger {
     }
 }
 
+/// Digest of the exact native run reading used to compose a scope.
+pub fn run_record_revision(run: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    format!(
+        "sha256:{:x}",
+        Sha256::digest(serde_json::to_vec(run).expect("JSON value"))
+    )
+}
+
 /// Compose a `workcell.prepared-run-scope/v1` document from receipts that
 /// already exist. `prepared_write_boundary` is the exact
 /// `workcell.prepared-write-boundary/v1` object (digest included) when the
@@ -544,6 +597,7 @@ pub fn compose_prepared_run_scope(
 ) -> Value {
     json!({
         "schema": PREPARED_RUN_SCOPE_SCHEMA,
+        "run_revision": run_record_revision(run),
         "run_slug": run["run_slug"],
         "worktree_path": worktree_path,
         "workspace_material_ref": workspace_material_ref,
@@ -585,6 +639,109 @@ mod tests {
         record["correlations"] = json!([]);
         record["deliverable"] = json!({"outputs": [], "branch": null});
         record
+    }
+
+    #[test]
+    fn stale_scope_cannot_overwrite_a_later_run_transition() {
+        let root = temp_root("scope-cas");
+        let ledger = RunLedger::new(&root);
+        let original = ledger.create(sample_record("scope-cas")).unwrap();
+        let mut later = original.clone();
+        set_run_status(&mut later, "blocked", Some("native boundary refused")).unwrap();
+        ledger.update_if_unchanged(&original, &later).unwrap();
+        let mut stale = original.clone();
+        stale["boundary_digest"] = json!("sha256:scope");
+        assert!(ledger.update_if_unchanged(&original, &stale).is_err());
+        assert_eq!(ledger.get("scope-cas").unwrap().unwrap(), later);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stale_observer_cannot_resurrect_a_concurrently_released_run() {
+        let root = temp_root("observe-release-cas");
+        let ledger = RunLedger::new(&root);
+        let queued = ledger.create(sample_record("observe-release")).unwrap();
+        let mut running = queued.clone();
+        set_run_status(&mut running, "running", None).unwrap();
+        ledger.update_if_unchanged(&queued, &running).unwrap();
+
+        // The observer reads the real ledger before the release completes.
+        // Its delayed return must never replace the newer terminal record.
+        let (read_tx, read_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let observer_root = root.clone();
+        let observer = std::thread::spawn(move || {
+            let ledger = RunLedger::new(observer_root);
+            let original = ledger.get("observe-release").unwrap().unwrap();
+            read_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            let mut observed = original.clone();
+            set_run_status(&mut observed, "blocked", Some("late observation")).unwrap();
+            ledger.update_if_unchanged(&original, &observed)
+        });
+        read_rx.recv().unwrap();
+        let mut released = running.clone();
+        set_run_status(&mut released, "success", None).unwrap();
+        released["release_disposition"] = json!("released");
+        ledger.update_if_unchanged(&running, &released).unwrap();
+        release_tx.send(()).unwrap();
+        let error = observer.join().unwrap().unwrap_err();
+        assert!(error.to_string().contains("Run changed"));
+        assert_eq!(ledger.get("observe-release").unwrap().unwrap(), released);
+        assert_eq!(ledger.list().unwrap(), vec![released.clone()]);
+
+        // Even a caller bypassing set_run_status cannot reverse a terminal
+        // transition through the sole durable update method.
+        let mut invalid = released.clone();
+        invalid["execution_status"] = json!("running");
+        assert!(ledger.update_if_unchanged(&released, &invalid).is_err());
+        assert_eq!(ledger.get("observe-release").unwrap().unwrap(), released);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_run_writers_commit_only_one_exact_basis() {
+        let root = temp_root("simultaneous-cas");
+        let ledger = RunLedger::new(&root);
+        let queued = ledger.create(sample_record("simultaneous-cas")).unwrap();
+        let mut running = queued.clone();
+        set_run_status(&mut running, "running", None).unwrap();
+        ledger.update_if_unchanged(&queued, &running).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let writers: Vec<_> = ["first-return", "second-return"]
+            .into_iter()
+            .map(|label| {
+                let root = root.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let ledger = RunLedger::new(root);
+                    let original = ledger.get("simultaneous-cas").unwrap().unwrap();
+                    let mut changed = original.clone();
+                    set_run_status(&mut changed, "blocked", Some(label)).unwrap();
+                    barrier.wait();
+                    (ledger.update_if_unchanged(&original, &changed), changed)
+                })
+            })
+            .collect();
+        barrier.wait();
+        let results: Vec<_> = writers
+            .into_iter()
+            .map(|writer| writer.join().unwrap())
+            .collect();
+        assert_eq!(
+            results.iter().filter(|(result, _)| result.is_ok()).count(),
+            1
+        );
+        assert_eq!(
+            results.iter().filter(|(result, _)| result.is_err()).count(),
+            1
+        );
+        let winner = &results.iter().find(|(result, _)| result.is_ok()).unwrap().1;
+        assert_eq!(
+            ledger.get("simultaneous-cas").unwrap().as_ref(),
+            Some(winner)
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

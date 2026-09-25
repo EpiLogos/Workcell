@@ -120,6 +120,36 @@ fn a_worktree_run_lives_end_to_end_on_the_branch_law_with_dirty_refusal() {
     assert_eq!(started["run"]["rung"], "local");
     assert!(started["run"]["canonical_run_ref"].is_null());
 
+    // Settings reads the native ledger produced above, without treating its
+    // persisted running status as a fresh provider-health observation.
+    let system = run(&workcell(&state_root, &[], &["system".into()]));
+    assert!(
+        system.status.success(),
+        "{}",
+        String::from_utf8_lossy(&system.stderr)
+    );
+    let settings = stdout_json(&system);
+    let run_setting = &settings["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|section| section["id"] == "runs")
+        .unwrap()["settings"][0];
+    let rows = run_setting["axes"]["effective"]["value"]["runs"]
+        .as_array()
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["run_slug"], slug);
+    assert_eq!(
+        rows[0]["execution_status"],
+        started["run"]["execution_status"]
+    );
+    assert_eq!(rows[0]["demand_ref"], started["run"]["demand_ref"]);
+    assert_eq!(
+        run_setting["axes"]["active"]["value"]["state"],
+        "unavailable"
+    );
+
     // 2. The branch law: the worktree materialised on `aikit/<slug>`, not a
     //    detached checkout, and the journal knows it.
     assert!(
@@ -251,8 +281,29 @@ fn scope_names_the_worktree_and_degrades_honestly_without_a_write_adapter() {
             "writable".into(),
         ],
     );
-    run(&args);
-
+    let output = run(&args);
+    assert!(
+        output.status.success(),
+        "start failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let started = stdout_json(&output);
+    let worktree = started["run"]["material_refs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|reference| reference.as_str()?.strip_prefix("workspace:git-worktree:"))
+        .map(|key| state_root.join("workspaces").join(key))
+        .unwrap()
+        .canonicalize()
+        .unwrap();
+    let requirements = serde_json::json!({
+        "schema":"workcell.write-boundary/v1", "policy_ref":"test-owner:policy", "policy_revision":"test-policy-1",
+        "authority_ref":"test-owner:authority", "writable_paths":[worktree], "protected_paths":[],
+        "required_coverage":["file-content"], "expires_at_unix_ms":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000,
+    });
+    let requirements_path = root.join("requirements.json");
+    fs::write(&requirements_path, requirements.to_string()).unwrap();
     let args = workcell(
         &state_root,
         &[],
@@ -261,12 +312,19 @@ fn scope_names_the_worktree_and_degrades_honestly_without_a_write_adapter() {
             "scope".into(),
             "--run".into(),
             slug.into(),
-            "--policy-revision".into(),
-            "test-policy-1".into(),
+            "--write-boundary".into(),
+            requirements_path.display().to_string(),
+            "--expected-demand-digest".into(),
+            started["run"]["demand_digest"].as_str().unwrap().into(),
         ],
     );
     let output = run(&args);
-    assert!(output.status.success(), "scope failed");
+    assert!(
+        output.status.success(),
+        "scope failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     let scoped = stdout_json(&output);
     assert_eq!(scoped["scope"]["schema"], "workcell.prepared-run-scope/v1");
     assert_eq!(scoped["scope"]["run_slug"], slug);
@@ -293,7 +351,69 @@ fn scope_names_the_worktree_and_degrades_honestly_without_a_write_adapter() {
     } else {
         assert_eq!(boundary["schema"], "workcell.prepared-write-boundary/v1");
         assert_eq!(boundary["state"], "prepared-not-executed");
+        assert_eq!(
+            boundary["requirements"], requirements,
+            "native scope must carry every exact supplied owner requirement"
+        );
     }
 
+    let first_path = PathBuf::from(scoped["scope_path"].as_str().unwrap());
+    let first_bytes = fs::read(&first_path).unwrap();
+    assert!(first_path.file_name().unwrap().to_str().unwrap().contains(
+        scoped["scope"]["run_revision"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("sha256:")
+    ));
+    let mut next_requirements = requirements.clone();
+    next_requirements["expires_at_unix_ms"] =
+        serde_json::json!(requirements["expires_at_unix_ms"].as_u64().unwrap() + 1_000);
+    fs::write(&requirements_path, next_requirements.to_string()).unwrap();
+    let next = run(&args);
+    assert!(
+        next.status.success(),
+        "{}",
+        String::from_utf8_lossy(&next.stderr)
+    );
+    let next_scope = stdout_json(&next);
+    if !boundary.is_null() {
+        assert_ne!(
+            next_scope["scope_path"], scoped["scope_path"],
+            "a changed boundary produces a new revision-addressed scope receipt"
+        );
+        assert_eq!(
+            fs::read(&first_path).unwrap(),
+            first_bytes,
+            "earlier scope remains byte-exact"
+        );
+    }
+
+    let mut stale = args.clone();
+    *stale.last_mut().unwrap() = "sha256:stale".into();
+    assert!(!run(&stale).status.success(), "stale demand must refuse");
+    let mut wrong = requirements.clone();
+    wrong["writable_paths"] = serde_json::json!([root.canonicalize().unwrap()]);
+    fs::write(&requirements_path, wrong.to_string()).unwrap();
+    assert!(
+        !run(&args).status.success(),
+        "a parent path cannot substitute for the exact selected worktree"
+    );
+    let listed = run(&workcell(&state_root, &[], &["run".into(), "list".into()]));
+    assert_eq!(
+        stdout_json(&listed)["runs"].as_array().unwrap().len(),
+        1,
+        "scope documents are not runs"
+    );
+    let release = run(&workcell(
+        &state_root,
+        &[],
+        &["run".into(), "release".into(), "--run".into(), slug.into()],
+    ));
+    assert!(
+        release.status.success(),
+        "release failed: {}",
+        String::from_utf8_lossy(&release.stderr)
+    );
     let _ = fs::remove_dir_all(root);
+    let _ = fs::remove_dir_all(repository);
 }
