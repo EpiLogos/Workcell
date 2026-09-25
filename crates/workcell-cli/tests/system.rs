@@ -92,8 +92,11 @@ fn system_disclosure_is_a_valid_v2_descriptor() {
         "reading_digest should be a 64-char sha256 hex"
     );
 
-    // All nine sections named by the Wave 5 Workcell scope are present.
+    // The original sections and native run/machine/credential disclosures are present.
     let expected = [
+        "machines",
+        "keys",
+        "runs",
         "workcells",
         "providers",
         "processes-services",
@@ -268,4 +271,98 @@ fn remote_system_reading_is_unavailable_with_reason_and_never_fabricated() {
             .any(|section| section["id"] == "workcells"),
         "the local reading must survive the merge"
     );
+}
+
+#[test]
+fn machines_and_credential_references_follow_native_declarations_without_claiming_connection() {
+    let state = temp_path("machine-keys");
+    let credential = "keychain://system-disclosure/native-machine";
+    let added = run(&[
+        "--state-root",
+        path_arg(&state),
+        "--json",
+        "machine",
+        "add",
+        "--label",
+        "native-machine",
+        "--endpoint",
+        "127.0.0.1:1",
+        "--credential-ref",
+        credential,
+    ]);
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let listed = json_stdout(&run(&[
+        "--state-root",
+        path_arg(&state),
+        "--json",
+        "machine",
+        "list",
+    ]));
+    let output = run(&["--state-root", path_arg(&state), "system", "--json"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reading = json_stdout(&output);
+    let machines = setting(section(&reading, "machines"), "machines.declarations");
+    assert_eq!(
+        machines["axes"]["effective"]["value"]["machines"],
+        listed["machines"]
+    );
+    assert_eq!(machines["axes"]["active"]["value"]["state"], "unavailable");
+    let keys = setting(section(&reading, "keys"), "keys.references");
+    assert_eq!(
+        keys["axes"]["effective"]["value"]["credentials"][0]["credential_ref"],
+        credential
+    );
+    assert_eq!(keys["axes"]["active"]["value"]["state"], "unavailable");
+    let inventory = json_stdout(&run(&[
+        "--state-root",
+        path_arg(&state),
+        "--json",
+        "secret",
+        "list",
+    ]));
+    assert_eq!(keys["axes"]["effective"]["value"], inventory);
+    assert_eq!(inventory["credentials"][0]["scheme"], "keychain");
+    assert!(inventory["credentials"][0]["created_at_unix_ms"].is_null());
+    assert_eq!(inventory["coverage"], "recorded-references");
+    assert_eq!(inventory["origin_inventory"]["state"], "unavailable");
+    assert_eq!(
+        setting(section(&reading, "keys"), "keys.projections")["axes"]["effective"]["value"]
+            ["projections"],
+        serde_json::json!([])
+    );
+    let removed = run(&[
+        "--state-root",
+        path_arg(&state),
+        "--json",
+        "machine",
+        "remove",
+        "--label",
+        "native-machine",
+    ]);
+    assert!(removed.status.success());
+    let reread = json_stdout(&run(&[
+        "--state-root",
+        path_arg(&state),
+        "system",
+        "--json",
+    ]));
+    assert_eq!(
+        setting(section(&reread, "keys"), "keys.references")["axes"]["effective"]["value"]
+            ["credentials"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        setting(section(&reread, "machines"), "machines.declarations")["axes"]["effective"]
+            ["value"]["machines"],
+        serde_json::json!([])
+    );
+    fs::remove_dir_all(state).unwrap();
 }
