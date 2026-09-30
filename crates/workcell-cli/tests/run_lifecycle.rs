@@ -417,3 +417,216 @@ fn scope_names_the_worktree_and_degrades_honestly_without_a_write_adapter() {
     let _ = fs::remove_dir_all(root);
     let _ = fs::remove_dir_all(repository);
 }
+
+fn existing_source_run(root: &Path, seats: &[&str]) -> (PathBuf, Value) {
+    let state = root.join("state");
+    fs::create_dir_all(&state).unwrap();
+    let mut directories = Vec::new();
+    let mut storage = Vec::new();
+    for name in seats {
+        let source = root.join(name);
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("partial.rs"), "partial source bytes\n").unwrap();
+        directories.push(serde_json::json!({"logical_ref":name,"path":source}));
+        storage.push(serde_json::json!({"logical_ref":name,"access":"writable","sharing":"shared","minimum_capacity":null,"unit":null,"persistence":"external","retention":"preserve"}));
+    }
+    fs::write(
+        state.join("storage.json"),
+        serde_json::json!({"schema":"workcell.directory-storage/v1","directories":directories})
+            .to_string(),
+    )
+    .unwrap();
+    let empty = serde_json::json!({"required":[],"preferred":[],"optional":[]});
+    let demand = serde_json::json!({"demand_ref":"demand:source-seat-owner-test","subjects":{"test":"actual-native-existing-source-seat"},
+        "affordances":empty,"connectivity":empty,"exposure":empty,"outputs":empty,
+        "storage":{"required":storage,"preferred":[],"optional":[]},"workspace":null,"project_runtime":null,
+        "resources":[],"persistence":null,"isolation_trust":null,"retention":"preserve","extensions":{}});
+    let demand_path = root.join("demand.json");
+    fs::write(&demand_path, demand.to_string()).unwrap();
+    let output = run(&workcell(
+        &state,
+        &[],
+        &[
+            "run".into(),
+            "start".into(),
+            "--run".into(),
+            "source-seat-native".into(),
+            "--demand-json".into(),
+            demand_path.display().to_string(),
+        ],
+    ));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (state, stdout_json(&output))
+}
+
+fn source_scope_args(
+    root: &Path,
+    state: &Path,
+    started: &Value,
+    selected: Option<&str>,
+    generation: u64,
+) -> Vec<String> {
+    let source = root.join("seat-a").canonicalize().unwrap();
+    let requirements = root.join(format!("requirements-{generation}.json"));
+    fs::write(&requirements, serde_json::json!({"schema":"workcell.write-boundary/v1","policy_ref":"owner:test-source-seat","policy_revision":format!("policy:{generation}"),"authority_ref":"owner:test-native-authority",
+        "writable_paths":[source],"protected_paths":[],"required_coverage":["file-content"],
+        "expires_at_unix_ms":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64 + 120_000}).to_string()).unwrap();
+    let mut args = workcell(
+        state,
+        &[],
+        &[
+            "run".into(),
+            "scope".into(),
+            "--run".into(),
+            "source-seat-native".into(),
+            "--expected-demand-digest".into(),
+            started["run"]["demand_digest"].as_str().unwrap().into(),
+            "--write-boundary".into(),
+            requirements.display().to_string(),
+        ],
+    );
+    if let Some(selected) = selected {
+        args.extend(["--source-seat".into(), selected.into()]);
+    }
+    args
+}
+
+#[test]
+fn existing_source_seat_scope_preserves_bytes_and_retains_both_scope_generations() {
+    let root = temp_path("existing-source-seat");
+    let (state, started) = existing_source_run(&root, &["seat-a"]);
+    let original = fs::read(root.join("seat-a/partial.rs")).unwrap();
+    let first = run(&source_scope_args(&root, &state, &started, None, 1));
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first = stdout_json(&first);
+    assert_eq!(
+        first["scope"]["worktree_path"],
+        root.join("seat-a")
+            .canonicalize()
+            .unwrap()
+            .display()
+            .to_string()
+    );
+    assert!(first["scope"]["workspace_material_ref"]
+        .as_str()
+        .unwrap()
+        .starts_with("storage:directory:"));
+    let held_scope = PathBuf::from(first["scope_path"].as_str().unwrap());
+    let first_bytes = fs::read(&held_scope).unwrap();
+    let second = run(&source_scope_args(
+        &root,
+        &state,
+        &started,
+        Some("seat-a"),
+        2,
+    ));
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second = stdout_json(&second);
+    assert_ne!(
+        first["scope"]["run_revision"],
+        second["scope"]["run_revision"]
+    );
+    assert_ne!(first["scope_path"], second["scope_path"]);
+    assert_eq!(fs::read(&held_scope).unwrap(), first_bytes);
+    assert_eq!(fs::read(root.join("seat-a/partial.rs")).unwrap(), original);
+    let current = stdout_json(&run(&workcell(
+        &state,
+        &[],
+        &[
+            "run".into(),
+            "show".into(),
+            "--run".into(),
+            "source-seat-native".into(),
+        ],
+    )));
+    assert_eq!(current["run_revision"], second["scope"]["run_revision"]);
+    let released = run(&workcell(
+        &state,
+        &[],
+        &[
+            "run".into(),
+            "release".into(),
+            "--run".into(),
+            "source-seat-native".into(),
+        ],
+    ));
+    assert!(
+        released.status.success(),
+        "{}",
+        String::from_utf8_lossy(&released.stderr)
+    );
+    assert_eq!(fs::read(root.join("seat-a/partial.rs")).unwrap(), original);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn ambiguous_or_replaced_source_seat_refuses_before_committing_scope() {
+    let root = temp_path("source-seat-fences");
+    let (state, started) = existing_source_run(&root, &["seat-a", "seat-b"]);
+    let before = stdout_json(&run(&workcell(
+        &state,
+        &[],
+        &[
+            "run".into(),
+            "show".into(),
+            "--run".into(),
+            "source-seat-native".into(),
+        ],
+    )));
+    let ambiguous = run(&source_scope_args(&root, &state, &started, None, 1));
+    assert!(!ambiguous.status.success());
+    assert!(String::from_utf8_lossy(&ambiguous.stderr).contains("ambiguous"));
+    let wrong = run(&source_scope_args(
+        &root,
+        &state,
+        &started,
+        Some("missing-seat"),
+        1,
+    ));
+    assert!(!wrong.status.success());
+    fs::rename(root.join("seat-a"), root.join("preserved-old-seat-a")).unwrap();
+    fs::create_dir(root.join("seat-a")).unwrap();
+    fs::write(root.join("seat-a/partial.rs"), "replacement bytes").unwrap();
+    let replaced = run(&source_scope_args(
+        &root,
+        &state,
+        &started,
+        Some("seat-a"),
+        2,
+    ));
+    assert!(
+        !replaced.status.success(),
+        "old receipt must not silently bind replacement inode"
+    );
+    let after = stdout_json(&run(&workcell(
+        &state,
+        &[],
+        &[
+            "run".into(),
+            "show".into(),
+            "--run".into(),
+            "source-seat-native".into(),
+        ],
+    )));
+    assert_eq!(
+        before, after,
+        "refused source scope must not partially write owner state"
+    );
+    assert_eq!(
+        fs::read(root.join("preserved-old-seat-a/partial.rs")).unwrap(),
+        b"partial source bytes\n"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
