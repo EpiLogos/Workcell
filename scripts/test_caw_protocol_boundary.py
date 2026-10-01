@@ -39,7 +39,9 @@ class NativeProtocolBoundary(unittest.TestCase):
         self.assertTrue(caps.get('protocol_exec'), caps)
         self.temp = tempfile.TemporaryDirectory(prefix='workcell-protocol-')
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        # Material admission compares physical routes; macOS TMPDIR may itself
+        # be a /var alias. Use a canonical fixture and test aliases explicitly.
+        self.root = Path(self.temp.name).resolve(strict=True)
         self.now = self.root / 'T'
         self.now.mkdir()
         self.source = self.root / 'human.txt'
