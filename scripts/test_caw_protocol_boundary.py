@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import tempfile
@@ -56,9 +57,88 @@ class NativeProtocolBoundary(unittest.TestCase):
         self.path = self.root / 'preparation.json'
         self.path.write_text(json.dumps(self.preparation))
 
-    def argv(self, revision='revision:1'):
+    def argv(self, revision='revision:1', body=BODY):
         return [self.binary, 'exec', str(self.path), revision,
-                self.preparation['requirements_digest'], '--', sys.executable, '-u', '-c', BODY]
+                self.preparation['requirements_digest'], '--', sys.executable, '-u', '-c', body]
+
+    def test_failed_provider_retains_diagnostics_without_polluting_protocol_stdout(self):
+        body = r'''
+import json, os
+print(json.dumps({'pid': os.getpid(), 'protocol': 'ready'}), flush=True)
+raise RuntimeError('CONTROLLED_NATIVE_PROVIDER_FAILURE')
+'''
+        process = subprocess.Popen(self.argv(body=body), stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+        out, err = process.communicate('', timeout=10)
+        self.assertEqual(process.returncode, 1)
+        self.assertEqual(json.loads(out), {'pid': process.pid, 'protocol': 'ready'})
+        self.assertIn('RuntimeError: CONTROLLED_NATIVE_PROVIDER_FAILURE', err)
+        self.assertNotIn('CONTROLLED_NATIVE_PROVIDER_FAILURE', out)
+
+    def test_socket_diagnostic_channel_retains_actual_provider_bytes(self):
+        reader, writer = socket.socketpair()
+        self.addCleanup(reader.close)
+        self.addCleanup(writer.close)
+        reader.settimeout(10)
+        body = "import sys; sys.stderr.write('CONTROLLED_SOCKET_DIAGNOSTIC\\n'); sys.exit(23)"
+        process = subprocess.Popen(self.argv(body=body), stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=writer)
+        self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+        writer.close()
+        out, _ = process.communicate(b'', timeout=10)
+        self.assertEqual(process.returncode, 23)
+        self.assertEqual(out, b'')
+        diagnostics = []
+        while chunk := reader.recv(4096):
+            diagnostics.append(chunk)
+        self.assertEqual(b''.join(diagnostics), b'CONTROLLED_SOCKET_DIAGNOSTIC\n')
+
+    def test_regular_file_stderr_refuses_provider_execution(self):
+        diagnostic_file = self.root / 'preopened-stderr.txt'
+        marker = self.now / 'must-not-run.txt'
+        body = "import pathlib, sys; pathlib.Path(%r).write_text('FORBIDDEN_EXECUTION'); sys.stderr.write('FORBIDDEN_PROVIDER_DIAGNOSTIC')" % str(marker)
+        with diagnostic_file.open('w') as diagnostic:
+            result = subprocess.run(self.argv(body=body), input='', stdout=subprocess.PIPE,
+                                    stderr=diagnostic, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, '')
+        self.assertFalse(marker.exists())
+        refusal = json.loads(diagnostic_file.read_text())
+        self.assertFalse(refusal['executed'])
+        self.assertIn('pipe/socket', refusal['error'])
+        self.assertNotIn('FORBIDDEN_PROVIDER_DIAGNOSTIC', diagnostic_file.read_text())
+
+    def test_nonstdio_file_and_socket_handles_are_closed_before_provider_exec(self):
+        inherited_file = self.root / 'inherited.txt'
+        inherited_file.write_text('RETAINED_BYTES')
+        reader, writer = socket.socketpair()
+        self.addCleanup(reader.close)
+        self.addCleanup(writer.close)
+        with inherited_file.open('a') as extra:
+            fds = [extra.fileno(), writer.fileno()]
+            body = r'''
+import errno, json, os
+closed = []
+for fd in %r:
+    try:
+        os.write(fd, b'FORBIDDEN_INHERITED_EFFECT')
+        closed.append(False)
+    except OSError as error:
+        closed.append(error.errno == errno.EBADF)
+print(json.dumps({'pid': os.getpid(), 'closed': closed}), flush=True)
+''' % fds
+            process = subprocess.Popen(self.argv(body=body), stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       pass_fds=fds, text=True)
+            self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+            out, err = process.communicate('', timeout=10)
+        self.assertEqual(process.returncode, 0, err)
+        self.assertEqual(json.loads(out), {'pid': process.pid, 'closed': [True, True]})
+        self.assertEqual(inherited_file.read_text(), 'RETAINED_BYTES')
+        writer.close()
+        reader.settimeout(10)
+        self.assertEqual(reader.recv(1), b'')
 
     def test_two_turns_use_same_process_and_cannot_write_protected_source(self):
         process = subprocess.Popen(self.argv(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,

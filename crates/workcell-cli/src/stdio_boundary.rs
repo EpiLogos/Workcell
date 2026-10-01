@@ -51,13 +51,14 @@ pub fn execute(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 fn protocol_exec(mut command: Command) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
-    // The existing ruleset's pre-exec hook closes all other inherited handles
-    // on exec. Provider diagnostics are deliberately not an unrestricted fd 2.
-    // Launcher refusals go to stderr; successful stdout is ONLY provider bytes.
+    // All three inherited channels were checked as pipes/sockets, and the
+    // ruleset checks again after remapping. The caller owns the diagnostic
+    // reader; no writable file descriptor bypasses the material boundary.
+    // Other inherited handles close on exec. Stdout stays ONLY provider bytes.
     command
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::null());
+        .stderr(Stdio::inherit());
     Err(command.exec().into())
 }
 
