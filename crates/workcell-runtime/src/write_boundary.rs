@@ -228,8 +228,44 @@ pub fn write_boundary_capabilities() -> Value {
 pub struct PreparedWriteBoundary {
     requirements: WriteBoundaryRequirements,
     paths: Vec<MaterialPath>,
-    protected: Vec<MaterialPath>,
+    protected: Vec<ProtectedMaterial>,
     platform: platform::Ruleset,
+}
+
+#[derive(Clone, Debug)]
+enum ProtectedMaterial {
+    Object(MaterialPath),
+    DirectoryCoveredFile {
+        file: MaterialPath,
+        directory: MaterialPath,
+    },
+}
+impl ProtectedMaterial {
+    fn validate(&self) -> Result<()> {
+        match self {
+            Self::Object(path) => path.validate(),
+            Self::DirectoryCoveredFile { file, directory } => {
+                directory.validate()?;
+                file.validate_covered_file()
+            }
+        }
+    }
+    fn inspection(&self) -> Value {
+        match self {
+            Self::Object(path) => path.inspection(),
+            Self::DirectoryCoveredFile { file, directory } => json!({
+                "path": file.canonical,
+                "presence": "existing",
+                "kind": "regular-file",
+                "identity": Value::Null,
+                "protection_basis": {
+                    "kind": "protected-directory",
+                    "path": directory.canonical,
+                    "identity": directory.identity
+                }
+            }),
+        }
+    }
 }
 impl PreparedWriteBoundary {
     pub fn prepare(
@@ -258,11 +294,39 @@ impl PreparedWriteBoundary {
                 ));
             }
         }
+        // A protected ancestor may contain an explicitly writable subtree.
+        // Only a wholly disjoint directory can cover a redundant regular-file
+        // exclusion; neither the original requirements nor their digest change.
+        let mut protections = Vec::with_capacity(protected.len());
+        for path in &protected {
+            let directory = if path.is_direct_single_link_file()? {
+                protected
+                    .iter()
+                    .filter(|parent| {
+                        parent.is_direct_directory()
+                            && path.canonical.starts_with(&parent.canonical)
+                            && paths.iter().all(|allowed| {
+                                !allowed.canonical.starts_with(&parent.canonical)
+                                    && !parent.canonical.starts_with(&allowed.canonical)
+                            })
+                    })
+                    .max_by_key(|parent| parent.canonical.components().count())
+            } else {
+                None
+            };
+            protections.push(match directory {
+                Some(directory) => ProtectedMaterial::DirectoryCoveredFile {
+                    file: path.clone(),
+                    directory: directory.clone(),
+                },
+                None => ProtectedMaterial::Object(path.clone()),
+            });
+        }
         let platform = platform::Ruleset::prepare(&paths)?;
         Ok(Self {
             requirements,
             paths,
-            protected,
+            protected: protections,
             platform,
         })
     }
@@ -273,13 +337,16 @@ impl PreparedWriteBoundary {
             "requirements_digest": self.requirements.digest(), "requirements": self.requirements.as_json(),
             "capabilities": write_boundary_capabilities(),
             "objects": self.paths.iter().map(MaterialPath::inspection).collect::<Vec<_>>(),
-            "protected_objects": self.protected.iter().map(MaterialPath::inspection).collect::<Vec<_>>() }),
+            "protected_objects": self.protected.iter().map(ProtectedMaterial::inspection).collect::<Vec<_>>() }),
         )
     }
     pub fn revalidate(&self, current_policy_revision: &str) -> Result<()> {
         self.requirements.validate(current_policy_revision)?;
         platform::probe()?;
-        for path in self.paths.iter().chain(&self.protected) {
+        for path in &self.paths {
+            path.validate()?;
+        }
+        for path in &self.protected {
             path.validate()?;
         }
         Ok(())

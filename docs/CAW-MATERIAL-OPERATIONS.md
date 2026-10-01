@@ -138,6 +138,24 @@ A writable ancestor of a protected path or `/` is refused. A protected
 parent such as Work may contain an explicitly permitted NOW/project subtree.
 Revision, expiry and path/object identity are rechecked immediately before exec.
 
+A redundant existing regular-file protection may use the enclosing protected
+directory as its exclusion basis only when both routes are canonical, the file
+has one hard link, and the declared directory is disjoint from every writable
+root. The directory retains its strict native identity pin. Every launch still
+checks the child's canonical route, regular-file type and single-link status;
+an outside owner's atomic replacement of that excluded child does not invalidate
+the unchanged directory protection. Inspection keeps the child's requested row
+in `protected_objects`, with `presence:existing`, `kind:regular-file`,
+`identity:null` and an explicit `protection_basis` containing
+`kind:protected-directory` plus the actual directory path and pinned identity.
+The null child identity means it is not separately inode-bound; it does not
+mean that the child is absent. The complete `protected_paths` and requirements
+digest remain unchanged. A protected parent containing any writable subtree
+cannot supply this basis. Standalone files, missing paths, aliases, directories
+and writable seats retain their strict identity/path checks. A retained prepared
+reading with the old object basis must be prepared afresh; consumers continue
+comparing the exact native protection reading rather than dropping child rows.
+
 An absent protection has no object identity. Inspection reports `presence:missing`,
 `identity:null`, the existing ancestor's supplied/canonical path and native
 identity, and the unresolved suffix. Its prospective canonical path participates
@@ -146,8 +164,8 @@ to create it. A symlink in its ancestor path is refused. Target or intermediate
 path appearance, ancestor replacement and type drift require fresh resolution
 before launch. This preserves Central's protection of source paths that have not
 been created in an assigned checkout without creating placeholder ground or
-discarding policy restrictions. Existing-object inspection retains its previous
-shape. Native path and write-boundary tests exercise this contract; an inspection
+discarding policy restrictions. Separately pinned existing-object inspection
+retains its previous shape. Native path and write-boundary tests exercise this contract; an inspection
 alone is not evidence that a model or task executed under it.
 
 Supported adapters are **unprivileged Linux Landlock ABI >= 3** and **macOS
