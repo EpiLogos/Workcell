@@ -2,7 +2,7 @@
 role: architecture
 standing: agent-inference
 scope: Workcell native operations and composed O:I consumer boundaries
-updated: 2026-09-30
+updated: 2026-10-01
 ---
 # Workcell architecture navigation
 
@@ -26,7 +26,8 @@ baseline, current implementation and observed result keep their own standing.
 | --- | --- | --- | --- |
 | Material operations | Demand → plan/place → observe → collect → release | `crates/workcell-core/src/prepared.rs`; `crates/workcell-runtime/src/run.rs` | Native material Run may carry an optional Factory canonical_run_ref; Factory-less material Run is first class. |
 | Durable material Run | RunLedger record / CAS update | `crates/workcell-runtime/src/run.rs` | runs/<slug>.json authoritative; runs.json derived; shared lock prevents observation overwriting release. |
-| Service instance lifecycle | Native service instances / reconciliation | `crates/workcell-runtime/src/instance_registry.rs`; `service.rs` | Instance identity/generation and service storage differ from AIKit session or gateway owner PID. |
+| Service material lifecycle | ServiceProvider resolve → observe → release; managed recovery | `crates/workcell-runtime/src/service.rs` | Caller owns logical identity. Managed provider owns child processes and in-memory allocation records; Drop reaps children. One-shot Preserve is refused; persistent Control Service can retain the provider. Recovery refuses changed declarations, live-unready children and PID-based takeover. |
+| Collapsed-local harness observations | InstanceRegistry load / scan / reconcile | `crates/workcell-runtime/src/instance_registry.rs` | `instances/registry.json` retains harness executable/first-seen identities and live/stale observations. PID and process-start marker are evidence, not canonical AIKit session identity or service allocation custody. Invalid/unreadable storage reports unavailability. |
 | Control / connectivity | Authenticated Control Service / provider fabric | `crates/workcell-control/src/service.rs`; `crates/workcell-runtime/src/external_service.rs` | Transport and credentials are material carriers, not the purpose or canonical participant identity. |
 
 ## Diagram and consumer relation
