@@ -38,7 +38,7 @@ fn run() -> Result<(Value, i32), Box<dyn std::error::Error>> {
     match args.first().map(String::as_str) {
         Some("capabilities") if args.len() == 1 => {
             let mut value = write_boundary_capabilities();
-            value["protocol_exec"] = json!({"operation":stdio_boundary::USAGE,"stdin_stdout":"inherited pipes or sockets only","provider_stderr":"inherited pipe/socket diagnostic channel; caller owns capture and limits","session_lifetime":"owned by calling protocol host","limits":"no live revocation; admission is checked before exec"});
+            value["protocol_exec"] = json!({"operation":stdio_boundary::USAGE,"stdin_stdout":"inherited pipes or sockets only","provider_stderr":"inherited only for pipe/socket diagnostic channel; otherwise discarded to null; caller owns capture and limits","session_lifetime":"owned by calling protocol host","limits":"no live revocation; admission is checked before exec"});
             return Ok((value, 0));
         }
         Some("--help" | "help") | None => {

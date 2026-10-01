@@ -167,12 +167,14 @@ roots cannot be removed or renamed by the worker, including nested roots.
 Paths are escaped as SBPL strings; non-UTF-8/control-character paths fail closed.
 The Mac launch marks inherited descriptors above stderr close-on-exec using
 bounded kernel descriptor enumeration; over 4096 descriptors refuses launch.
-Protocol exec accepts only pipe/socket stdin/stdout/stderr. Provider diagnostics
-retain their separate channel; the protocol owner supplies and drains its pipe
-or socket and owns capture limits. Workcell neither redirects diagnostics into
-protocol stdout nor adds a writable file descriptor. A regular-file stderr
-refuses provider execution, just as regular-file stdin or stdout does.
-Regular-file stdio is refused because a pre-opened descriptor bypasses path rules.
+Protocol exec accepts only pipe/socket stdin/stdout. Provider diagnostics retain
+their separate channel when caller stderr is a pipe or socket; the protocol owner
+supplies and drains that channel and owns capture limits. Other caller stderr
+handles retain the original null sink, including pre-opened regular files; they
+are never inherited by the provider. Workcell neither redirects diagnostics into
+protocol stdout nor adds a writable file descriptor. Regular-file stdin or stdout
+still refuses provider execution.
+Regular-file provider stdio is refused because a pre-opened descriptor bypasses path rules.
 All three standard descriptors are checked again after Command stdio remapping,
 immediately before exec, so a later caller override cannot introduce a file handle.
 Only pipes, sockets and the actual null device are accepted by the runtime.
