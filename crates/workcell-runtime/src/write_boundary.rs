@@ -292,7 +292,7 @@ impl PreparedWriteBoundary {
     pub fn validate_protocol_stdio(&self) -> Result<()> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            for fd in [0, 1, 2] {
+            for fd in [0, 1] {
                 let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
                 if unsafe { libc::fstat(fd, metadata.as_mut_ptr()) } != 0 {
                     return Err(WorkcellError::OperationFailed(format!(
@@ -303,7 +303,7 @@ impl PreparedWriteBoundary {
                 let kind = unsafe { metadata.assume_init() }.st_mode & libc::S_IFMT;
                 if kind != libc::S_IFIFO && kind != libc::S_IFSOCK {
                     return Err(WorkcellError::Unsupported(
-                        "protocol exec requires pipe/socket stdin, stdout and stderr, not inherited files"
+                        "protocol exec requires pipe/socket stdin and stdout, not inherited files"
                             .into(),
                     ));
                 }
@@ -314,6 +314,38 @@ impl PreparedWriteBoundary {
         Err(WorkcellError::Unsupported(
             "protocol write boundary unavailable on this platform".into(),
         ))
+    }
+    /// Preserve an optional owner-managed diagnostic channel. Other caller
+    /// stderr handles keep the original null sink, never a writable file grant.
+    /// The platform hook checks all stdio again after remapping before exec.
+    pub fn configure_protocol_stdio(&self, command: &mut Command) -> Result<()> {
+        use std::process::Stdio;
+        self.validate_protocol_stdio()?;
+        let diagnostic_channel = {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+                // An absent stderr is also the legacy null-sink case. Only a
+                // successful descriptor inspection can select inheritance.
+                let inspected = unsafe { libc::fstat(2, metadata.as_mut_ptr()) == 0 };
+                inspected
+                    && matches!(
+                        unsafe { metadata.assume_init() }.st_mode & libc::S_IFMT,
+                        libc::S_IFIFO | libc::S_IFSOCK
+                    )
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            false
+        };
+        command
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(if diagnostic_channel {
+                Stdio::inherit()
+            } else {
+                Stdio::null()
+            });
+        Ok(())
     }
     /// Construct the protected command before adding arguments, environment or
     /// cwd. On macOS this preserves even `env_clear` through the native wrapper;

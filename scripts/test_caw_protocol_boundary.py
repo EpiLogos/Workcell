@@ -94,20 +94,20 @@ raise RuntimeError('CONTROLLED_NATIVE_PROVIDER_FAILURE')
             diagnostics.append(chunk)
         self.assertEqual(b''.join(diagnostics), b'CONTROLLED_SOCKET_DIAGNOSTIC\n')
 
-    def test_regular_file_stderr_refuses_provider_execution(self):
+    def test_regular_file_stderr_is_untouched_while_provider_executes(self):
         diagnostic_file = self.root / 'preopened-stderr.txt'
-        marker = self.now / 'must-not-run.txt'
-        body = "import pathlib, sys; pathlib.Path(%r).write_text('FORBIDDEN_EXECUTION'); sys.stderr.write('FORBIDDEN_PROVIDER_DIAGNOSTIC')" % str(marker)
-        with diagnostic_file.open('w') as diagnostic:
-            result = subprocess.run(self.argv(body=body), input='', stdout=subprocess.PIPE,
-                                    stderr=diagnostic, text=True, timeout=10)
-        self.assertEqual(result.returncode, 2)
-        self.assertEqual(result.stdout, '')
-        self.assertFalse(marker.exists())
-        refusal = json.loads(diagnostic_file.read_text())
-        self.assertFalse(refusal['executed'])
-        self.assertIn('pipe/socket', refusal['error'])
-        self.assertNotIn('FORBIDDEN_PROVIDER_DIAGNOSTIC', diagnostic_file.read_text())
+        diagnostic_file.write_text('RETAINED_CALLER_DIAGNOSTIC_FILE')
+        marker = self.now / 'actual-execution.txt'
+        body = "import json, os, pathlib, sys; pathlib.Path(%r).write_text('ACTUAL_EXECUTION'); print(json.dumps({'pid': os.getpid(), 'protocol': 'ready'}), flush=True); sys.stderr.write('DISCARDED_PROVIDER_DIAGNOSTIC')" % str(marker)
+        with diagnostic_file.open('a') as diagnostic:
+            process = subprocess.Popen(self.argv(body=body), stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, stderr=diagnostic, text=True)
+            self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+            out, _ = process.communicate('', timeout=10)
+        self.assertEqual(process.returncode, 0)
+        self.assertEqual(json.loads(out), {'pid': process.pid, 'protocol': 'ready'})
+        self.assertEqual(marker.read_text(), 'ACTUAL_EXECUTION')
+        self.assertEqual(diagnostic_file.read_text(), 'RETAINED_CALLER_DIAGNOSTIC_FILE')
 
     def test_nonstdio_file_and_socket_handles_are_closed_before_provider_exec(self):
         inherited_file = self.root / 'inherited.txt'

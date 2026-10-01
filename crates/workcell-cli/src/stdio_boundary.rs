@@ -41,24 +41,18 @@ pub fn execute(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    boundary.validate_protocol_stdio()?;
     let mut command = boundary.command(&args[5], &args[2])?;
     command.args(&args[6..]);
+    boundary.configure_protocol_stdio(&mut command)?;
     protocol_exec(command)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn protocol_exec(mut command: Command) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::process::CommandExt;
-    use std::process::Stdio;
-    // All three inherited channels were checked as pipes/sockets, and the
-    // ruleset checks again after remapping. The caller owns the diagnostic
-    // reader; no writable file descriptor bypasses the material boundary.
-    // Other inherited handles close on exec. Stdout stays ONLY provider bytes.
-    command
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+    // The boundary selects only an inspected pipe/socket diagnostic channel,
+    // otherwise the legacy null sink. Its hook checks all stdio after remapping
+    // and closes other inherited handles. Stdout stays ONLY provider bytes.
     Err(command.exec().into())
 }
 
