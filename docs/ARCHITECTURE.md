@@ -1,5 +1,10 @@
 # Workcell architecture
 
+[Current native operation navigation](ARCHITECTURE-NAVIGATION.md) adds the
+material Run ledger, instance generations, service/control boundary and upgrade
+recovery route to this core/provider architecture. Material continuity remains
+distinct from Factory purpose and AIKit canonical session identity.
+
 Workcell answers one question: **given a provider-neutral material execution demand, what executable world can this Workcell materialise here?**
 
 ```text
