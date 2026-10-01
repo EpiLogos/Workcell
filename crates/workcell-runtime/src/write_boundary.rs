@@ -292,7 +292,7 @@ impl PreparedWriteBoundary {
     pub fn validate_protocol_stdio(&self) -> Result<()> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            for fd in [0, 1] {
+            for fd in [0, 1, 2] {
                 let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
                 if unsafe { libc::fstat(fd, metadata.as_mut_ptr()) } != 0 {
                     return Err(WorkcellError::OperationFailed(format!(
@@ -303,7 +303,7 @@ impl PreparedWriteBoundary {
                 let kind = unsafe { metadata.assume_init() }.st_mode & libc::S_IFMT;
                 if kind != libc::S_IFIFO && kind != libc::S_IFSOCK {
                     return Err(WorkcellError::Unsupported(
-                        "protocol exec requires pipe/socket stdin and stdout, not inherited files"
+                        "protocol exec requires pipe/socket stdin, stdout and stderr, not inherited files"
                             .into(),
                     ));
                 }
