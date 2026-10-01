@@ -61,6 +61,156 @@ class NativeProtocolBoundary(unittest.TestCase):
         return [self.binary, 'exec', str(self.path), revision,
                 self.preparation['requirements_digest'], '--', sys.executable, '-u', '-c', body]
 
+    def prepare_index(self, parent=None, missing=False):
+        parent = parent or self.root / 'relations'
+        parent.mkdir(exist_ok=True)
+        index = parent / 'index.json'
+        if not missing:
+            index.write_text('ORIGINAL_INDEX')
+        self.req['protected_paths'] = [str(parent), str(index)]
+        self.requirements.write_text(json.dumps(self.req))
+        result = subprocess.run([self.binary, 'inspect', str(self.requirements), 'revision:1'],
+                                capture_output=True, text=True, check=True, timeout=10)
+        self.preparation = json.loads(result.stdout)
+        self.path.write_text(json.dumps(self.preparation))
+        return parent, index
+
+    def replace_index(self, index):
+        replacement = index.with_name('replacement.json')
+        replacement.write_text('ACTUAL_NEW_INDEX')
+        # Keeping the old file open prevents inode reuse during the proof.
+        with index.open('rb') as original:
+            identity = os.fstat(original.fileno()).st_ino
+            os.replace(replacement, index)
+            self.assertNotEqual(index.stat().st_ino, identity)
+
+    def assert_admission_refused(self):
+        marker = self.now / 'must-not-execute'
+        body = 'import pathlib; pathlib.Path(%r).write_text("ESCAPED")' % str(marker)
+        result = subprocess.run(self.argv(body=body), input='', capture_output=True,
+                                text=True, timeout=10)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assertFalse(marker.exists())
+        return result
+
+    def test_directory_covered_atomic_index_replacement_keeps_parent_and_child_confined(self):
+        parent, index = self.prepare_index()
+        protected = self.preparation['protected_objects']
+        child = next(p for p in protected if p['path'] == str(index))
+        directory = next(p for p in protected if p['path'] == str(parent))
+        self.assertEqual(child['presence'], 'existing')
+        self.assertEqual(child['kind'], 'regular-file')
+        self.assertIsNone(child['identity'])
+        self.assertEqual(child['protection_basis'], {
+            'kind': 'protected-directory', 'path': str(parent), 'identity': directory['identity']})
+        partial = self.now / 'partial-bytes'
+        partial.write_bytes(b'RETAINED_PARTIAL')
+        self.replace_index(index)
+        inspected = subprocess.run([self.binary, 'inspect', str(self.requirements), 'revision:1'],
+                                   capture_output=True, text=True, check=True, timeout=10)
+        current = json.loads(inspected.stdout)
+        self.assertEqual(current['requirements'], self.preparation['requirements'])
+        self.assertEqual(current['requirements_digest'], self.preparation['requirements_digest'])
+        self.assertEqual(current['protected_objects'], protected)
+        child_body = r'''
+import json, os, pathlib, sys
+p = pathlib.Path(sys.argv[1]); source = pathlib.Path(sys.argv[2])
+with p.open('ab') as stream: stream.write(b'-CHILD')
+try: source.write_text('FORBIDDEN_CHILD_REWRITE')
+except PermissionError: denied = True
+else: denied = False
+print(json.dumps({'pid': os.getpid(), 'denied': denied}), flush=True)
+'''
+        body = r'''
+import json, os, pathlib, subprocess, sys
+p = pathlib.Path(%r)
+with p.open('ab') as stream: stream.write(b'-PARENT')
+child = subprocess.run([sys.executable, '-u', '-c', %r, str(p), %r],
+                       capture_output=True, text=True, timeout=5)
+assert child.returncode == 0, child.stderr
+print(json.dumps({'pid': os.getpid(), 'child': json.loads(child.stdout)}), flush=True)
+''' % (str(partial), child_body, str(index))
+        process = subprocess.Popen(self.argv(body=body), stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+        out, err = process.communicate('', timeout=10)
+        self.assertEqual(process.returncode, 0, err)
+        reply = json.loads(out)
+        self.assertEqual(reply['pid'], process.pid)
+        self.assertNotEqual(reply['child']['pid'], process.pid)
+        self.assertTrue(reply['child']['denied'])
+        self.assertEqual(partial.read_bytes(), b'RETAINED_PARTIAL-PARENT-CHILD')
+        self.assertEqual(index.read_text(), 'ACTUAL_NEW_INDEX')
+
+    def test_covered_child_symlink_escape_and_type_replacement_refuse(self):
+        for change in ('symlink', 'directory'):
+            with self.subTest(change=change):
+                parent, index = self.prepare_index(self.root / change)
+                index.unlink()
+                if change == 'symlink':
+                    target = self.now / 'permitted-target'
+                    target.write_text('RETAINED_TARGET')
+                    index.symlink_to(target)
+                else:
+                    index.mkdir()
+                self.assert_admission_refused()
+                if change == 'symlink':
+                    self.assertEqual(target.read_text(), 'RETAINED_TARGET')
+
+    def test_replaced_covered_directory_or_writable_seat_refuses(self):
+        for change in ('directory', 'seat'):
+            with self.subTest(change=change):
+                parent, index = self.prepare_index(self.root / change)
+                replaced = parent if change == 'directory' else self.now
+                replaced.rename(replaced.with_name(replaced.name + '-retained'))
+                replaced.mkdir()
+                if change == 'directory':
+                    index.write_text('REPLACEMENT_DIRECTORY_INDEX')
+                self.assert_admission_refused()
+                if change == 'seat':
+                    # Return the original aperture before the next subcase or cleanup.
+                    replaced.rmdir()
+                    replaced.with_name(replaced.name + '-retained').rename(replaced)
+
+    def test_overlapping_protected_parent_does_not_cover_child(self):
+        _, index = self.prepare_index(self.root)
+        child = next(p for p in self.preparation['protected_objects'] if p['path'] == str(index))
+        self.assertIsInstance(child['identity'], str)
+        self.assertNotIn('protection_basis', child)
+        self.replace_index(index)
+        self.assert_admission_refused()
+
+    def test_missing_child_appearance_requires_fresh_preparation(self):
+        _, index = self.prepare_index(missing=True)
+        child = next(p for p in self.preparation['protected_objects'] if p['path'] == str(index))
+        self.assertEqual(child['presence'], 'missing')
+        self.assertNotIn('protection_basis', child)
+        index.write_text('APPEARED_INDEX')
+        self.assert_admission_refused()
+
+    def test_existing_symbolic_and_hardlink_aliases_remain_identity_pinned(self):
+        for change in ('symlink', 'hardlink'):
+            with self.subTest(change=change):
+                parent, index = self.prepare_index(self.root / change)
+                target = parent / 'target.json'
+                index.rename(target)
+                if change == 'symlink':
+                    index.symlink_to(target)
+                else:
+                    os.link(target, index)
+                result = subprocess.run([self.binary, 'inspect', str(self.requirements), 'revision:1'],
+                                        capture_output=True, text=True, check=True, timeout=10)
+                self.preparation = json.loads(result.stdout)
+                self.path.write_text(json.dumps(self.preparation))
+                child = self.preparation['protected_objects'][1]
+                self.assertIsInstance(child['identity'], str)
+                self.assertNotIn('protection_basis', child)
+                replacement = parent / 'new-target.json'
+                replacement.write_text('REPLACED_ALIAS')
+                os.replace(replacement, target if change == 'symlink' else index)
+                self.assert_admission_refused()
+
     def test_failed_provider_retains_diagnostics_without_polluting_protocol_stdout(self):
         body = r'''
 import json, os
