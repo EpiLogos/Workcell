@@ -241,10 +241,8 @@ impl InstanceRegistry {
             }
             // Same identity, refreshed declaration fields in place.
             let mut updated = existing.clone();
-            for key in ["observed_at"] {
-                if let Some(value) = record.get(key) {
-                    updated[key] = value.clone();
-                }
+            if let Some(value) = record.get("observed_at") {
+                updated["observed_at"] = value.clone();
             }
             instances.insert(declared_ref.clone(), updated);
             self.store(&file)?;
