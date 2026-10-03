@@ -224,6 +224,75 @@ invented revision by comparing two caller-provided strings.
 Primary kernel contract and limitations:
 https://www.kernel.org/doc/html/latest/userspace-api/landlock.html
 
+### Draft Task runtime projection
+
+The additive one-shot `exec-runtime` path uses the same prepared write boundary:
+
+```text
+workcell-write-boundary exec-runtime REQUIREMENTS_OR_PREPARATION.json CURRENT_POLICY_REVISION EXPECTED_DIGEST PROJECTION.json EXPECTED_PROJECTION_DIGEST -- PROGRAM ARG...
+```
+
+Its owners are [RuntimeProjection](../crates/workcell-runtime/src/runtime_projection.rs),
+[`PreparedWriteBoundary::command_with_runtime_projection`](../crates/workcell-runtime/src/write_boundary.rs)
+and the existing [protocol exec adapter](../crates/workcell-cli/src/stdio_boundary.rs).
+The caller selects provider member names and roles; Workcell mechanically applies
+the material view. This is a draft extension, not another primitive, service,
+credential store, Session owner or permission system.
+
+The closed `workcell.runtime-projection/v1` request requires `schema`,
+`requested_input_root`, `input_root`, `runtime_root`, `immutable_members`,
+`mutable_directories`, `mutable_files` and `boundary_digest`. The request is a
+held, bounded single-link regular file checked against its supplied digest.
+`requested_input_root` is the actual selected lexical invocation route,
+qualified once against the caller's actual cwd if relative; legal aliases and
+parent spelling remain intact. `input_root` is its expected canonical held
+input directory. Neither path is a semantic Source or Session identity.
+
+Workcell checks that the requested route still resolves to the admitted held
+origin at four checkpoints: initial admission, before material setup, before
+namespace mounting, and final basis before provider execution. At the final
+checkpoint the named object is the held assembled view; original lower members
+are still checked through the original directory fd. Stable aliases are allowed.
+Retargeted, missing or nonordinary origins refuse. These are current checkpoints,
+not atomic exclusion of arbitrary external writers or recursive freezing of
+all input contents.
+
+The original home/auth/config input remains readonly and its selector environment
+is unchanged. Explicit immutable members are disjoint from mutable members.
+Only selected directories and files receive durable copy-on-write continuations
+backed by a strict descendant of the existing authorised Task writable aperture.
+Original lower history remains available; retained Task uppers provide same-Task
+material re-entry. Provider runtime UUIDs/material do not replace Agent, Agency,
+canonical Session or provider-thread identities. No immutable auth/config file
+is copied or made writable. Retained material modes are checked, never silently
+changed; unselected or incompatible writes remain actual refusals.
+
+The native Linux namespace/mount view is applied by the single-threaded one-shot
+launcher. Its namespace capabilities retire before the body, and only privately
+created selected aliases join the same Landlock rules. Kernel capability and
+material availability are separate from the caller's existing grant, fresh
+policy revision and digest. No new grant, global home write, auth-refresh
+permission, second supervisor or fallback provider is inferred. Unsupported
+platform/kernel conditions refuse before the body.
+
+`RuntimeProjectionFailure` retains actual IO phase, kind, errno and cause;
+`material_setup_started` distinguishes possible setup effects from body execution.
+A failure after setup is not rollback or authority to retry: terminate the
+one-shot launcher and retain evidence. Existing string-based owner errors do
+not recover previously erased IO details. The filesystem tests retain actual
+raw output and typed failure observations from the same `capture_bounded_process`
+owner; that capture is evidence, not a lifecycle or semantic completion authority.
+
+The draft's required `requested_input_root` field also changes public struct
+literal construction. Inspected callers migrate together; older missing-field
+requests refuse rather than guessing a route. External draft clients are
+uninspected and must supply their actual selected coordinate. The eight real
+Linux projection definitions, the paired existing 39 native capture/lifecycle
+definitions, and installed original-Session startup/re-entry remain **UNRUN at
+this Source freeze**. Actual source/image pins, supported native gates and the
+original owner replay are required. Controlled alias/history tests do not prove
+provider readiness, credential continuity or the exact final-checkpoint race.
+
 ## Relocation and usage
 
 Same-provider recovery retains subjects and records changed material identity.

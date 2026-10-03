@@ -18,6 +18,8 @@ use epilogos_workcell_core::{Result, WorkcellError};
 use epilogos_workcell_opensandbox::OpenSandboxConfig;
 use serde_json::Value;
 
+use crate::external_service::INSTANCE_SCHEMA;
+
 use crate::{
     ExternalManagedService, ExternalServiceAcquisition, ExternalServiceCommand, ManagedHostService,
     TcpEndpointProbe, OPENSANDBOX_PROVIDER_REF,
@@ -316,6 +318,11 @@ fn parse_service(entry: &Value) -> Result<DeclaredServices> {
 
     match lifetime {
         ServiceLifetime::ProviderProcessScoped => {
+            if object.contains_key("target_instance") {
+                return Err(WorkcellError::InvalidDemand(
+                    "target_instance applies only to target-owned services".into(),
+                ));
+            }
             let mut service =
                 ManagedHostService::new(&logical_ref, &endpoint, required_str(object, "program")?)?;
             for arg in string_list(object, "args")? {
@@ -342,6 +349,21 @@ fn parse_service(entry: &Value) -> Result<DeclaredServices> {
         ServiceLifetime::TargetOwned => {
             let status = parse_command(&logical_ref, "status", require_field(object, "status")?)?;
             let mut service = ExternalManagedService::new(&logical_ref, &endpoint, status)?;
+            if let Some(value) = object.get("target_instance") {
+                let contract = value.as_object().ok_or_else(|| {
+                    WorkcellError::InvalidDemand("target_instance must be a JSON object".into())
+                })?;
+                if required_str(contract, "schema")? != INSTANCE_SCHEMA {
+                    return Err(WorkcellError::InvalidDemand(
+                        "unsupported target_instance schema".into(),
+                    ));
+                }
+                service = service.with_target_instance(parse_command(
+                    &logical_ref,
+                    "target_instance.capture",
+                    require_field(contract, "capture")?,
+                )?);
+            }
             if let Some(value) = object.get("readiness") {
                 service = service.with_readiness(parse_command(&logical_ref, "readiness", value)?);
                 let timeout_ms = value.get("timeout_ms").and_then(Value::as_u64);
@@ -520,6 +542,17 @@ fn annotate(path: &Path, error: WorkcellError) -> WorkcellError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn target_instance_contract_requires_its_schema_and_target_owned_lifetime() {
+        for invalid in [
+            r#"{"services":[{"logical_ref":"service:x","endpoint":"http://127.0.0.1:1","lifetime":"target-owned","status":{"program":"controller"},"target_instance":{"capture":{"program":"controller"}}}]}"#,
+            r#"{"services":[{"logical_ref":"service:x","endpoint":"http://127.0.0.1:1","lifetime":"target-owned","status":{"program":"controller"},"target_instance":{"schema":"unknown/v1","capture":{"program":"controller"}}}]}"#,
+            r#"{"services":[{"logical_ref":"service:x","endpoint":"http://127.0.0.1:1","lifetime":"provider-process-scoped","program":"controller","target_instance":{"schema":"workcell.external-target-instance/v1","capture":{"program":"controller"}}}]}"#,
+        ] {
+            assert!(parse_service_declarations(invalid).is_err());
+        }
+    }
 
     #[test]
     fn managed_and_target_owned_services_parse_into_their_own_providers() {

@@ -414,6 +414,30 @@ impl PreparedWriteBoundary {
             });
         Ok(())
     }
+    /// Explicit native material projection. This changes the calling single-
+    /// threaded launcher's namespace, never an existing provider process. The
+    /// same protocol exec then retires privileges and applies this ruleset.
+    /// The caller must be a one-shot single-threaded launcher: terminate on
+    /// failure, because partial material/mount setup is not rolled back.
+    pub fn command_with_runtime_projection(
+        &self,
+        program: impl AsRef<std::ffi::OsStr>,
+        current_policy_revision: &str,
+        projection: &crate::RuntimeProjection,
+    ) -> std::result::Result<Command, crate::RuntimeProjectionFailure> {
+        self.revalidate(current_policy_revision).map_err(|e| crate::RuntimeProjectionFailure::owner("boundary-admission", e))?;
+        let applied = crate::runtime_projection::apply(projection, &self.requirements)?;
+        self.revalidate(current_policy_revision).map_err(|e| crate::RuntimeProjectionFailure::after_owner("boundary-revalidation", e))?;
+        #[cfg(target_os = "linux")]
+        {
+            let rules = platform::Ruleset::prepare_with_aliases(&self.paths, &applied.aliases)?;
+            let mut command = Command::new(program);
+            rules.configure(&mut command).map_err(|e| crate::RuntimeProjectionFailure::after_owner("boundary-configuration", e))?;
+            Ok(command)
+        }
+        #[cfg(not(target_os = "linux"))]
+        { let _ = (program, applied); Err(crate::RuntimeProjectionFailure::new("platform", std::io::Error::new(std::io::ErrorKind::Unsupported, "no native runtime projection provider"), false)) }
+    }
     /// Construct the protected command before adding arguments, environment or
     /// cwd. On macOS this preserves even `env_clear` through the native wrapper;
     /// Rust cannot recover that setting from an already configured Command.
@@ -583,6 +607,21 @@ mod platform {
                 fd: Arc::new(fd),
                 _paths: pinned,
             })
+        }
+        pub(super) fn prepare_with_aliases(
+            paths: &[MaterialPath], aliases: &[crate::runtime_projection::ProjectionAlias],
+        ) -> std::result::Result<Self, crate::RuntimeProjectionFailure> {
+            let mut rules = Self::prepare(paths).map_err(|e| crate::RuntimeProjectionFailure::after_owner("alias-ruleset", e))?;
+            // These descriptors can only come from the private applied native
+            // projection, not from public caller-supplied alias path grants.
+            for alias in aliases {
+                let rule = PathBeneath { allowed_access: if alias.directory { WRITES } else { (1 << 1) | (1 << 14) }, parent_fd: alias.file.as_raw_fd() };
+                if unsafe { libc::syscall(libc::SYS_landlock_add_rule, rules.fd.as_raw_fd(), 1u32, &rule as *const PathBeneath, 0u32) } < 0 {
+                    return Err(crate::RuntimeProjectionFailure::new("alias-ruleset", io::Error::last_os_error(), true));
+                }
+                rules._paths.push(Arc::clone(&alias.file));
+            }
+            Ok(rules)
         }
         pub(super) fn configure(&self, command: &mut Command) -> Result<()> {
             let fd = Arc::clone(&self.fd);
