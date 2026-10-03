@@ -503,7 +503,10 @@ fn missing_basis_returns_reconciliation_error_with_actual_immutable_start_intent
     assert_eq!(staged_metadata.nlink(), 1);
     let staged_bytes = fs::read(&staged).unwrap();
     let staged_value: Value = serde_json::from_slice(&staged_bytes).unwrap();
-    assert_eq!(staged_value["schema"], "workcell.external-target-instance/v1");
+    assert_eq!(
+        staged_value["schema"],
+        "workcell.external-target-instance/v1"
+    );
     assert_eq!(staged_value["generation"], held["generation"]);
     assert_eq!(staged_value["server"], held["server"]);
     let staged_digest = format!("{:x}", sha2::Sha256::digest(&staged_bytes));
