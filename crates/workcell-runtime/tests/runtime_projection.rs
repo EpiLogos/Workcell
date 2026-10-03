@@ -208,7 +208,9 @@ fn admitted_artifact_root() -> std::io::Result<PathBuf> {
             .iter()
             .any(|name| std::env::var_os(name).is_some())
     {
-        return Err(invalid("explicit replay has no actual owner context".into()));
+        return Err(invalid(
+            "explicit replay has no actual owner context".into(),
+        ));
     }
     let (repository, context_witness) = if let Some(context) = explicit_context {
         if admission == "hosted-runner" {
@@ -232,7 +234,9 @@ fn admitted_artifact_root() -> std::io::Result<PathBuf> {
             || !named.is_dir()
             || (initial.dev(), initial.ino()) != (named.dev(), named.ino())
         {
-            return Err(invalid("explicit replay owner affiliation is unavailable".into()));
+            return Err(invalid(
+                "explicit replay owner affiliation is unavailable".into(),
+            ));
         }
         (context, Some((held, initial)))
     } else {
@@ -391,12 +395,18 @@ fn admitted_artifact_root() -> std::io::Result<PathBuf> {
         }
         let expected_test_source = replay_digest_input("WORKCELL_TEST_REPLAY_TEST_SOURCE_SHA256")?;
         let expected_lock = replay_digest_input("WORKCELL_TEST_REPLAY_LOCK_SHA256")?;
-        if format!("{:x}", Sha256::digest(include_bytes!("runtime_projection.rs")))
-            != expected_test_source
-            || format!("{:x}", Sha256::digest(include_bytes!("../../../Cargo.lock")))
-                != expected_lock
+        if format!(
+            "{:x}",
+            Sha256::digest(include_bytes!("runtime_projection.rs"))
+        ) != expected_test_source
+            || format!(
+                "{:x}",
+                Sha256::digest(include_bytes!("../../../Cargo.lock"))
+            ) != expected_lock
         {
-            return Err(invalid("explicit replay compiled source/lock basis differs".into()));
+            return Err(invalid(
+                "explicit replay compiled source/lock basis differs".into(),
+            ));
         }
         let expected_test = replay_digest_input("WORKCELL_TEST_REPLAY_TEST_IMAGE_SHA256")?;
         let expected_owner = replay_digest_input("WORKCELL_TEST_REPLAY_OWNER_IMAGE_SHA256")?;
