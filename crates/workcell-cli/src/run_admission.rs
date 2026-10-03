@@ -605,8 +605,8 @@ impl RunAdmissionSource {
             &&left.modified()?==right.modified()?;
         #[cfg(unix)] {
             use std::os::unix::fs::MetadataExt;
-            return Ok(same&&left.dev()==right.dev()&&left.ino()==right.ino()
-                &&left.ctime()==right.ctime()&&left.ctime_nsec()==right.ctime_nsec());
+            Ok(same&&left.dev()==right.dev()&&left.ino()==right.ino()
+                &&left.ctime()==right.ctime()&&left.ctime_nsec()==right.ctime_nsec())
         }
         #[cfg(not(unix))] {Ok(same)}
     }
@@ -660,11 +660,11 @@ fn admit_run_agency(source: &Path, agency_ref: &str, revision: &str, state_root:
     let snapshot=RunAdmissionSource::read(source).map_err(|error|
         WorkcellError::OperationFailed(admission_source_io_detail("held read before native invocation",&error)))?;
     let bytes=&snapshot.bytes;
-    let request:Value=serde_json::from_slice(&bytes).map_err(|e|WorkcellError::InvalidDemand(e.to_string()))?;
+    let request:Value=serde_json::from_slice(bytes).map_err(|e|WorkcellError::InvalidDemand(e.to_string()))?;
     if request["schema"]!="actuation.agency-actualisation/v1" || request["differentiated_binding"]["agency_ref"]!=agency_ref {
         return Err(refuse("Agency request does not name the selected native Agency"));
     }
-    let mut inputs=admission_inputs::Inputs::create(state_root,&bytes)
+    let mut inputs=admission_inputs::Inputs::create(state_root,bytes)
         .map_err(|e|WorkcellError::OperationFailed(e.to_string()))?;
     let program=env::var_os("OI_ACTUATION_BIN").unwrap_or_else(||"actuation".into());
     let mut command=Command::new(program);command.args(["agency","actualise"]).arg(inputs.request()).arg("--json").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -700,7 +700,7 @@ fn admit_run_agency(source: &Path, agency_ref: &str, revision: &str, state_root:
         snapshot.verify_current(source).map_err(|error|
             WorkcellError::OperationFailed(admission_source_io_detail(
                 "current basis after validated native admission; no Run publication or retry inferred",&error)))?;
-        let digest=format!("blake3:{}",blake3::hash(&bytes).to_hex());
+        let digest=format!("blake3:{}",blake3::hash(bytes).to_hex());
         Ok(json!({"agency_ref":agency_ref,"agency_rev":revision,"source_ref":source,"source_digest":digest,
             "binding_revision":format!("actuation-receipt/{}",blake3::hash(&output.stdout).to_hex()),"minted_by":null,"admission":receipt}))
     })();
@@ -708,7 +708,7 @@ fn admit_run_agency(source: &Path, agency_ref: &str, revision: &str, state_root:
         Ok(receipt)=> {
             if let Err(primary)=inputs.remove_after_success() {
                 #[cfg(unix)] {
-                    let restoration=inputs.restore_request_after_cleanup_failure(&bytes);
+                    let restoration=inputs.restore_request_after_cleanup_failure(bytes);
                     let retained=inputs.retain_output(&output,"validated native Agency admission returned; caller input cleanup failed");
                     return Err(WorkcellError::OperationFailed(format!(
                         "native Agency admission returned and was validated (receipt digest blake3:{}), but input cleanup failed: kind={:?}, raw_os_error={:?}; request restoration kind={:?}, raw_os_error={:?}; {}; do not repeat admission or infer Run publication",
