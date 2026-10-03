@@ -228,8 +228,44 @@ pub fn write_boundary_capabilities() -> Value {
 pub struct PreparedWriteBoundary {
     requirements: WriteBoundaryRequirements,
     paths: Vec<MaterialPath>,
-    protected: Vec<MaterialPath>,
+    protected: Vec<ProtectedMaterial>,
     platform: platform::Ruleset,
+}
+
+#[derive(Clone, Debug)]
+enum ProtectedMaterial {
+    Object(MaterialPath),
+    DirectoryCoveredFile {
+        file: MaterialPath,
+        directory: MaterialPath,
+    },
+}
+impl ProtectedMaterial {
+    fn validate(&self) -> Result<()> {
+        match self {
+            Self::Object(path) => path.validate(),
+            Self::DirectoryCoveredFile { file, directory } => {
+                directory.validate()?;
+                file.validate_covered_file()
+            }
+        }
+    }
+    fn inspection(&self) -> Value {
+        match self {
+            Self::Object(path) => path.inspection(),
+            Self::DirectoryCoveredFile { file, directory } => json!({
+                "path": file.canonical,
+                "presence": "existing",
+                "kind": "regular-file",
+                "identity": Value::Null,
+                "protection_basis": {
+                    "kind": "protected-directory",
+                    "path": directory.canonical,
+                    "identity": directory.identity
+                }
+            }),
+        }
+    }
 }
 impl PreparedWriteBoundary {
     pub fn prepare(
@@ -258,11 +294,39 @@ impl PreparedWriteBoundary {
                 ));
             }
         }
+        // A protected ancestor may contain an explicitly writable subtree.
+        // Only a wholly disjoint directory can cover a redundant regular-file
+        // exclusion; neither the original requirements nor their digest change.
+        let mut protections = Vec::with_capacity(protected.len());
+        for path in &protected {
+            let directory = if path.is_direct_single_link_file()? {
+                protected
+                    .iter()
+                    .filter(|parent| {
+                        parent.is_direct_directory()
+                            && path.canonical.starts_with(&parent.canonical)
+                            && paths.iter().all(|allowed| {
+                                !allowed.canonical.starts_with(&parent.canonical)
+                                    && !parent.canonical.starts_with(&allowed.canonical)
+                            })
+                    })
+                    .max_by_key(|parent| parent.canonical.components().count())
+            } else {
+                None
+            };
+            protections.push(match directory {
+                Some(directory) => ProtectedMaterial::DirectoryCoveredFile {
+                    file: path.clone(),
+                    directory: directory.clone(),
+                },
+                None => ProtectedMaterial::Object(path.clone()),
+            });
+        }
         let platform = platform::Ruleset::prepare(&paths)?;
         Ok(Self {
             requirements,
             paths,
-            protected,
+            protected: protections,
             platform,
         })
     }
@@ -273,13 +337,16 @@ impl PreparedWriteBoundary {
             "requirements_digest": self.requirements.digest(), "requirements": self.requirements.as_json(),
             "capabilities": write_boundary_capabilities(),
             "objects": self.paths.iter().map(MaterialPath::inspection).collect::<Vec<_>>(),
-            "protected_objects": self.protected.iter().map(MaterialPath::inspection).collect::<Vec<_>>() }),
+            "protected_objects": self.protected.iter().map(ProtectedMaterial::inspection).collect::<Vec<_>>() }),
         )
     }
     pub fn revalidate(&self, current_policy_revision: &str) -> Result<()> {
         self.requirements.validate(current_policy_revision)?;
         platform::probe()?;
-        for path in self.paths.iter().chain(&self.protected) {
+        for path in &self.paths {
+            path.validate()?;
+        }
+        for path in &self.protected {
             path.validate()?;
         }
         Ok(())
@@ -314,6 +381,77 @@ impl PreparedWriteBoundary {
         Err(WorkcellError::Unsupported(
             "protocol write boundary unavailable on this platform".into(),
         ))
+    }
+    /// Preserve an optional owner-managed diagnostic channel. Other caller
+    /// stderr handles keep the original null sink, never a writable file grant.
+    /// The platform hook checks all stdio again after remapping before exec.
+    pub fn configure_protocol_stdio(&self, command: &mut Command) -> Result<()> {
+        use std::process::Stdio;
+        self.validate_protocol_stdio()?;
+        let diagnostic_channel = {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+                // An absent stderr is also the legacy null-sink case. Only a
+                // successful descriptor inspection can select inheritance.
+                let inspected = unsafe { libc::fstat(2, metadata.as_mut_ptr()) == 0 };
+                inspected
+                    && matches!(
+                        unsafe { metadata.assume_init() }.st_mode & libc::S_IFMT,
+                        libc::S_IFIFO | libc::S_IFSOCK
+                    )
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            false
+        };
+        command
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(if diagnostic_channel {
+                Stdio::inherit()
+            } else {
+                Stdio::null()
+            });
+        Ok(())
+    }
+    /// Explicit native material projection. This changes the calling single-
+    /// threaded launcher's namespace, never an existing provider process. The
+    /// same protocol exec then retires privileges and applies this ruleset.
+    /// The caller must be a one-shot single-threaded launcher: terminate on
+    /// failure, because partial material/mount setup is not rolled back.
+    pub fn command_with_runtime_projection(
+        &self,
+        program: impl AsRef<std::ffi::OsStr>,
+        current_policy_revision: &str,
+        projection: &crate::RuntimeProjection,
+    ) -> std::result::Result<Command, crate::RuntimeProjectionFailure> {
+        self.revalidate(current_policy_revision)
+            .map_err(|e| crate::RuntimeProjectionFailure::owner("boundary-admission", e))?;
+        let applied = crate::runtime_projection::apply(projection, &self.requirements)?;
+        self.revalidate(current_policy_revision).map_err(|e| {
+            crate::RuntimeProjectionFailure::after_owner("boundary-revalidation", e)
+        })?;
+        #[cfg(target_os = "linux")]
+        {
+            let rules = platform::Ruleset::prepare_with_aliases(&self.paths, &applied.aliases)?;
+            let mut command = Command::new(program);
+            rules.configure(&mut command).map_err(|e| {
+                crate::RuntimeProjectionFailure::after_owner("boundary-configuration", e)
+            })?;
+            Ok(command)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (program, applied);
+            Err(crate::RuntimeProjectionFailure::new(
+                "platform",
+                std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "no native runtime projection provider",
+                ),
+                false,
+            ))
+        }
     }
     /// Construct the protected command before adding arguments, environment or
     /// cwd. On macOS this preserves even `env_clear` through the native wrapper;
@@ -484,6 +622,43 @@ mod platform {
                 fd: Arc::new(fd),
                 _paths: pinned,
             })
+        }
+        pub(super) fn prepare_with_aliases(
+            paths: &[MaterialPath],
+            aliases: &[crate::runtime_projection::ProjectionAlias],
+        ) -> std::result::Result<Self, crate::RuntimeProjectionFailure> {
+            let mut rules = Self::prepare(paths)
+                .map_err(|e| crate::RuntimeProjectionFailure::after_owner("alias-ruleset", e))?;
+            // These descriptors can only come from the private applied native
+            // projection, not from public caller-supplied alias path grants.
+            for alias in aliases {
+                let rule = PathBeneath {
+                    allowed_access: if alias.directory {
+                        WRITES
+                    } else {
+                        (1 << 1) | (1 << 14)
+                    },
+                    parent_fd: alias.file.as_raw_fd(),
+                };
+                if unsafe {
+                    libc::syscall(
+                        libc::SYS_landlock_add_rule,
+                        rules.fd.as_raw_fd(),
+                        1u32,
+                        &rule as *const PathBeneath,
+                        0u32,
+                    )
+                } < 0
+                {
+                    return Err(crate::RuntimeProjectionFailure::new(
+                        "alias-ruleset",
+                        io::Error::last_os_error(),
+                        true,
+                    ));
+                }
+                rules._paths.push(Arc::clone(&alias.file));
+            }
+            Ok(rules)
         }
         pub(super) fn configure(&self, command: &mut Command) -> Result<()> {
             let fd = Arc::clone(&self.fd);

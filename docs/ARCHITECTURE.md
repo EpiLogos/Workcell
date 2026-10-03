@@ -128,15 +128,24 @@ exact native record. The ledger serializes writes and supports a scope's
 compare-and-swap against the actual record inspected, so concurrent release
 cannot be overwritten by scope preparation.
 
-`run scope --run SLUG --expected-demand-digest DIGEST --write-boundary FILE`
+`run scope --run SLUG --expected-demand-digest DIGEST --write-boundary FILE
+[--source-seat LOGICAL_REF]`
 prepares the supplied `workcell.write-boundary/v1` requirements verbatim. The
 policy ref, revision, authority, expiry, writable/protected paths and coverage
 belong to their existing owners. Workcell does not synthesize any of them. The
-selected run's exact worktree must appear in that boundary; a parent path is
+selected run's exact source directory must appear in that boundary; a parent path is
 not substituted and the owner never silently widens the request. Unsupported
 protection returns the explicit unavailable boundary; an execution consumer
 must refuse it. This operation reuses existing material and never creates a
-worktree.
+worktree. The source may be an owned Git workspace or an existing writable
+DirectoryStorage binding. With multiple eligible bindings, select the exact
+declared logical ref using `--source-seat`; without an explicit selection the
+single Git workspace remains the compatibility default. Native observation
+must still find the selected binding healthy at its retained path and inode.
+Ambiguity, replacement or a missing boundary refuses before scope publication.
+The retained `worktree_path` and `workspace_material_ref` fields keep their
+existing wire names: a directory-storage value records that native material,
+without inventing Git ancestry, an exclusive lease or live writer revocation.
 
 An Agency-bearing run is admitted by the actual Actuation
 `agency actualise` operation using bounded exact source bytes. The returned

@@ -595,20 +595,34 @@ impl CollapsedLocalWorkcell {
     /// provenance. The world's semantic and material identities are preserved;
     /// providers reconstruct their process-local records from the bindings.
     pub fn register_world(&mut self, world: MaterialisedExecutionWorld) -> Result<()> {
-        if !world.provenance.contains_key("superseded_by") {
-            for binding in &world.binding_graph.bindings {
-                if binding.provider_ref == *self.target_services.provider_ref()
-                    && binding.presence != BindingPresence::Released
-                {
-                    let _ = self
-                        .target_services
-                        .inner
-                        .borrow()
-                        .restore_allocation(&allocation_of(binding));
-                }
-            }
-        }
-        self.control.register_world(world)
+        let target_provider = self.target_services.provider_ref().clone();
+        let allocations = if world.provenance.contains_key("superseded_by") {
+            Vec::new()
+        } else {
+            world
+                .binding_graph
+                .bindings
+                .iter()
+                .filter(|binding| {
+                    binding.provider_ref == target_provider
+                        && binding.presence != BindingPresence::Released
+                })
+                .map(allocation_of)
+                .collect()
+        };
+        let prepared = self
+            .target_services
+            .inner
+            .borrow()
+            .prepare_allocation_restores(allocations)?;
+        // The native world owner validates and accepts the unchanged world
+        // first. Only then can its prepared provider records be committed.
+        self.control.register_world(world)?;
+        self.target_services
+            .inner
+            .borrow()
+            .commit_allocation_restores(prepared);
+        Ok(())
     }
 
     fn workspace_request(

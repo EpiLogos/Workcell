@@ -38,7 +38,9 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - name: Build locked native artifact
-        run: cargo build --locked --release --target '${{ matrix.target }}' --package epilogos-workcell-cli --bin workcell
+        env:
+          SUITE_BUILD_REVISION: ${{ github.sha }}
+        run: cargo build --locked --release --target '${{ matrix.target }}' --package epilogos-workcell-cli --bins
       - name: Package exact-main build artifact
         shell: bash
         run: |
@@ -49,9 +51,35 @@ jobs:
           version="$(node -p "require('./.oi/product.json').version")"
           name="workcell-${version}-${short_sha}-${{ matrix.target }}"
           mkdir -p "dist/$name"
-          cp "target/${{ matrix.target }}/release/workcell" "dist/$name/workcell"
+          test "$GITHUB_SHA" = "$(git rev-parse HEAD)"
+          # Ship the complete native package declaration, including the
+          # companions resolved beside workcell by the managed installer.
+          cargo metadata --locked --offline --no-deps --format-version 1 > "$RUNNER_TEMP/workcell-artifact-metadata.json"
+          node - "$RUNNER_TEMP/workcell-artifact-metadata.json" <<'NODE' > "$RUNNER_TEMP/workcell-artifact-binaries.txt"
+          const metadata = require(process.argv[2]);
+          const pkg = metadata.packages.find(pkg => pkg.name === 'epilogos-workcell-cli');
+          if (!pkg) throw new Error('native Workcell package is missing');
+          const binaries = pkg.targets.filter(target => target.kind.includes('bin')).map(target => target.name).sort();
+          const entry = require('./.oi/product.json').artifact.entry;
+          if (!binaries.includes(entry) || binaries.some(name => !/^[a-zA-Z0-9_-]+$/.test(name))) {
+            throw new Error('native binary declaration is invalid or lacks the product entry');
+          }
+          process.stdout.write(binaries.join('\n') + '\n');
+          NODE
+          while IFS= read -r binary; do
+            test -x "target/${{ matrix.target }}/release/$binary"
+            cp "target/${{ matrix.target }}/release/$binary" "dist/$name/$binary"
+          done < "$RUNNER_TEMP/workcell-artifact-binaries.txt"
           cp .oi/product.json "dist/$name/product.json"
           printf '%s\n' "$GITHUB_SHA" > "dist/$name/source-commit.txt"
+          (
+            cd "dist/$name"
+            while IFS= read -r binary; do
+              shasum -a 256 "$binary"
+            done < "$RUNNER_TEMP/workcell-artifact-binaries.txt"
+            shasum -a 256 product.json source-commit.txt
+          ) > "dist/$name/SHA256SUMS"
+          (cd "dist/$name" && shasum -a 256 -c SHA256SUMS)
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           shasum -a 256 "dist/$name.tar.gz" > "dist/$name.tar.gz.sha256"
       - uses: actions/attest@v4
