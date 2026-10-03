@@ -173,14 +173,36 @@ mod admission_inputs {
             if unsafe {libc::unlinkat(parent.as_raw_fd(),child.as_ptr(),0)}!=0 {return Err(io::Error::last_os_error());}
             parent.sync_all()
         }
-        pub fn lock(root:&fs::File) -> io::Result<fs::File> {
+        // A duplicated or fork-inherited description must not delay release
+        // after this allocation owner leaves the critical section. CLOEXEC
+        // alone closes a child description only once that child actually execs.
+        pub struct AllocationLock {
+            file: fs::File,
+            owner_pid: u32,
+        }
+        #[cfg(all(test,any(target_os="linux",target_os="macos")))]
+        impl AllocationLock {
+            // Expose only the real held descriptor duplication to this native
+            // regression; File has the same operation in the predecessor.
+            pub fn try_clone(&self) -> io::Result<fs::File> {self.file.try_clone()}
+        }
+        impl Drop for AllocationLock {
+            fn drop(&mut self) {
+                // An inherited guard must never unlock the parent's live owner.
+                if self.owner_pid!=std::process::id() {return;}
+                if unsafe {libc::flock(self.file.as_raw_fd(),libc::LOCK_UN)}!=0 {
+                    eprintln!("release admission allocation lock: {}",io::Error::last_os_error());
+                }
+            }
+        }
+        pub fn lock(root:&fs::File) -> io::Result<AllocationLock> {
             let name=name(".allocation-lock")?;
             let fd=unsafe {libc::openat(root.as_raw_fd(),name.as_ptr(),libc::O_RDWR|libc::O_CREAT|libc::O_NOFOLLOW|libc::O_CLOEXEC,0o600)};
             if fd<0 {return Err(io::Error::last_os_error());}
             let lock=unsafe {fs::File::from_raw_fd(fd)};
             privacy(&lock,false)?;
             if unsafe {libc::flock(lock.as_raw_fd(),libc::LOCK_EX|libc::LOCK_NB)}!=0 {return Err(io::Error::last_os_error());}
-            Ok(lock)
+            Ok(AllocationLock {file:lock,owner_pid:std::process::id()})
         }
     }
 
@@ -515,7 +537,25 @@ mod admission_inputs {
         }
         #[test]
         fn actual_capacity_refuses_new_command_input_without_overwriting_prior_files() {
-            let root=fixture("capacity");let mut inputs=Vec::new();
+            let root=fixture("capacity");
+            let directory=root.join("admission-inputs");fs::create_dir(&directory).unwrap();
+            fs::set_permissions(&directory,fs::Permissions::from_mode(0o700)).unwrap();
+            let held=private::open_directory(&directory).unwrap();
+            let owner=private::lock(&held).unwrap();
+            // Same real open-file-description relation as a descriptor inherited
+            // before a concurrent child exec. No fork timing or retry is needed.
+            let duplicate=owner.try_clone().unwrap();
+            let busy=match private::lock(&held) {Ok(_)=>panic!("live allocation owner was bypassed"),Err(error)=>error};
+            assert_eq!(busy.kind(),io::ErrorKind::WouldBlock);
+            assert_eq!(busy.raw_os_error(),Some(libc::EWOULDBLOCK));
+            drop(owner);
+            let successor=private::lock(&held).unwrap();
+            drop(duplicate);
+            let busy=match private::lock(&held) {Ok(_)=>panic!("old duplicate released successor ownership"),Err(error)=>error};
+            assert_eq!(busy.kind(),io::ErrorKind::WouldBlock);
+            assert_eq!(busy.raw_os_error(),Some(libc::EWOULDBLOCK));
+            drop(successor);
+            let mut inputs=Vec::new();
             for number in 0..INVOCATION_LIMIT {
                 let value=format!("actual independent input {number}");inputs.push(Inputs::create(&root,value.as_bytes()).unwrap());
             }
