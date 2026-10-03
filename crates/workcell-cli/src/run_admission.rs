@@ -884,7 +884,7 @@ mod source_io_tests {
         fn deny(path:&Path)->Self {
             let file=fs::File::open(path).unwrap();let metadata=file.metadata().unwrap();
             let guard=Self {file,mode:metadata.mode(),identity:(metadata.dev(),metadata.ino())};
-            guard.file.set_permissions(fs::Permissions::from_mode(0)).unwrap();guard
+            guard.file.set_permissions(fs::Permissions::from_mode(0o0)).unwrap();guard
         }
     }
     impl Drop for RestorePermissions {
