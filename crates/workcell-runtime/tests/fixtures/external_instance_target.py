@@ -341,10 +341,13 @@ def zombie_oracle():
 def emit_observation(path, basis, actual):
     if type(actual.get("native_healthy")) is not bool:
         raise ValueError("actual native read has no semantic health witness")
+    if type(actual.get("pending")) is not int or actual["pending"] < 0:
+        raise ValueError("actual native read has no admission count witness")
     print(json.dumps({"schema": OBSERVATION_SCHEMA, "basis_path": str(path),
                       "basis_sha256": digest(path), "generation": actual["generation"],
                       "config_sha256": actual["config_sha256"], "endpoint": actual["endpoint"],
-                      "server": actual["server"], "native_healthy": actual["native_healthy"]}))
+                      "server": actual["server"], "native_healthy": actual["native_healthy"],
+                      "pending": actual["pending"]}))
 
 
 def main(operation):

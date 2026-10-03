@@ -104,23 +104,28 @@ impl ExternalServiceCommand {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        crate::bounded_process::run_status_only(command, Duration::from_secs(10))
-            .map_err(|failure| {
+        crate::bounded_process::run_status_only(command, Duration::from_secs(10)).map_err(
+            |failure| {
                 let kind = if failure.timed_out() {
                     std::io::ErrorKind::TimedOut
                 } else if let Some(cause) = failure.native_cause() {
                     cause.kind()
                 } else {
                     match failure.kind() {
-                        crate::BoundedCaptureFailureKind::InvalidLimits => std::io::ErrorKind::InvalidInput,
-                        crate::BoundedCaptureFailureKind::UnsupportedPlatform => std::io::ErrorKind::Unsupported,
+                        crate::BoundedCaptureFailureKind::InvalidLimits => {
+                            std::io::ErrorKind::InvalidInput
+                        }
+                        crate::BoundedCaptureFailureKind::UnsupportedPlatform => {
+                            std::io::ErrorKind::Unsupported
+                        }
                         _ => std::io::ErrorKind::Other,
                     }
                 };
                 // The wrapper preserves the original typed failure/cause chain.
                 // Its own raw_os_error is not a reconstruction of that cause.
                 std::io::Error::new(kind, failure)
-            })
+            },
+        )
     }
 
     // Command arguments, environment and output may contain private data. None
@@ -1556,99 +1561,175 @@ mod instance_contract_compatibility {
     }
 }
 
-
-#[cfg(all(test,unix))]
+#[cfg(all(test, unix))]
 mod legacy_command_tests {
     use super::*;
-    use crate::bounded_process::status_test_support::{self as support,Fixture};
+    use crate::bounded_process::status_test_support::{self as support, Fixture};
     use crate::BoundedProcessFailure;
-    use std::{fs,time::Instant};
+    use std::{fs, time::Instant};
 
     #[test]
     fn actual_legacy_ten_second_deadline_uses_owned_finite_group_retirement() {
         let name="external_service::legacy_command_tests::actual_legacy_ten_second_deadline_uses_owned_finite_group_retirement";
-        if !support::isolated(name,Duration::from_secs(25)) {return;}
+        if !support::isolated(name, Duration::from_secs(25)) {
+            return;
+        }
         use std::os::unix::process::ExitStatusExt;
-        let fixture=Fixture::new("legacy-deadline");let script=fixture.script();
-        let command=ExternalServiceCommand::new("python3").unwrap().with_arg("-S")
+        let fixture = Fixture::new("legacy-deadline");
+        let script = fixture.script();
+        let command = ExternalServiceCommand::new("python3")
+            .unwrap()
+            .with_arg("-S")
             .with_arg(script.to_str().unwrap())
-            .with_env("WORKCELL_STATUS_FIXTURE_ROOT",fixture.root.to_str().unwrap()).unwrap()
-            .with_env("WORKCELL_STATUS_PARENT_STAY","1").unwrap();
-        let began=Instant::now();let error=command.run().unwrap_err();let elapsed=began.elapsed();
+            .with_env(
+                "WORKCELL_STATUS_FIXTURE_ROOT",
+                fixture.root.to_str().unwrap(),
+            )
+            .unwrap()
+            .with_env("WORKCELL_STATUS_PARENT_STAY", "1")
+            .unwrap();
+        let began = Instant::now();
+        let error = command.run().unwrap_err();
+        let elapsed = began.elapsed();
         assert!(elapsed>=Duration::from_secs(10)&&elapsed<Duration::from_secs(12),
             "actual legacy timeout elapsed {elapsed:?}; no claim of retirement outside the normal killable host gate");
-        assert_eq!(error.kind(),std::io::ErrorKind::TimedOut);
-        let failure=error.get_ref().and_then(|cause|cause.downcast_ref::<BoundedProcessFailure>())
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        let failure = error
+            .get_ref()
+            .and_then(|cause| cause.downcast_ref::<BoundedProcessFailure>())
             .expect("outer io must retain the original typed Child owner failure");
-        assert_eq!(failure.kind(),crate::BoundedCaptureFailureKind::DeadlineElapsed);
-        assert!(failure.timed_out());assert_eq!(failure.status().unwrap().signal(),Some(libc::SIGKILL));
-        assert!(failure.stdout().is_empty()&&failure.stderr().is_empty()&&!failure.output_complete());
-        let facts=failure.observation();assert_eq!(facts["output_capture_requested"],false);
-        assert_eq!(facts["stdout_eof"],false);assert_eq!(facts["stderr_eof"],false);
-        assert_eq!(facts["termination_request_accepted"],true);assert_eq!(facts["reaped_by_owner"],true);
-        let parent=fixture.document("parent.json",Instant::now()+Duration::from_secs(2));
-        let writer=fixture.document("writer.json",Instant::now()+Duration::from_secs(2));
-        assert_eq!(parent["child"],writer["pid"]);assert_eq!(parent["pid"],writer["ppid"]);
-        assert_eq!(parent["pid"],writer["pgid"]);
-        let direct=support::wait_absent(parent["pid"].as_i64().unwrap() as libc::pid_t,&fixture.root,
-            Instant::now()+Duration::from_secs(3),false);
+        assert_eq!(
+            failure.kind(),
+            crate::BoundedCaptureFailureKind::DeadlineElapsed
+        );
+        assert!(failure.timed_out());
+        assert_eq!(failure.status().unwrap().signal(), Some(libc::SIGKILL));
+        assert!(
+            failure.stdout().is_empty()
+                && failure.stderr().is_empty()
+                && !failure.output_complete()
+        );
+        let facts = failure.observation();
+        assert_eq!(facts["output_capture_requested"], false);
+        assert_eq!(facts["stdout_eof"], false);
+        assert_eq!(facts["stderr_eof"], false);
+        assert_eq!(facts["termination_request_accepted"], true);
+        assert_eq!(facts["reaped_by_owner"], true);
+        let parent = fixture.document("parent.json", Instant::now() + Duration::from_secs(2));
+        let writer = fixture.document("writer.json", Instant::now() + Duration::from_secs(2));
+        assert_eq!(parent["child"], writer["pid"]);
+        assert_eq!(parent["pid"], writer["ppid"]);
+        assert_eq!(parent["pid"], writer["pgid"]);
+        let direct = support::wait_absent(
+            parent["pid"].as_i64().unwrap() as libc::pid_t,
+            &fixture.root,
+            Instant::now() + Duration::from_secs(3),
+            false,
+        );
         assert!(direct.is_none());
-        let adopted=support::wait_absent(writer["pid"].as_i64().unwrap() as libc::pid_t,&fixture.root,
-            Instant::now()+Duration::from_secs(3),true);
-        #[cfg(target_os="linux")]
-        assert!(adopted.is_some_and(|status|libc::WIFSIGNALED(status)&&libc::WTERMSIG(status)==libc::SIGKILL));
-        #[cfg(not(target_os="linux"))]
-        let _=adopted;
-        assert!(!fixture.root.join("writer-result.json").exists(),"actual killed writer is not a successful late payload");
-        fs::write(fixture.root.join("legacy-owner-failure.json"),serde_json::to_vec(&facts).unwrap()).unwrap();
+        let adopted = support::wait_absent(
+            writer["pid"].as_i64().unwrap() as libc::pid_t,
+            &fixture.root,
+            Instant::now() + Duration::from_secs(3),
+            true,
+        );
+        #[cfg(target_os = "linux")]
+        assert!(adopted.is_some_and(
+            |status| libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGKILL
+        ));
+        #[cfg(not(target_os = "linux"))]
+        let _ = adopted;
+        assert!(
+            !fixture.root.join("writer-result.json").exists(),
+            "actual killed writer is not a successful late payload"
+        );
+        fs::write(
+            fixture.root.join("legacy-owner-failure.json"),
+            serde_json::to_vec(&facts).unwrap(),
+        )
+        .unwrap();
         fixture.finish();
     }
 
     #[test]
     fn actual_missing_program_keeps_typed_io_cause_and_nonzero_keeps_status() {
-        let fixture=Fixture::new("legacy-missing");
-        let missing=fixture.root.join("nonexistent-native-program");assert!(!missing.exists());
-        let command=ExternalServiceCommand::new(missing.to_str().unwrap()).unwrap()
-            .with_arg("private-missing-argument").with_env("PRIVATE_VALUE","private-missing-environment").unwrap();
-        let error=command.run().unwrap_err();assert_eq!(error.kind(),std::io::ErrorKind::NotFound);
+        let fixture = Fixture::new("legacy-missing");
+        let missing = fixture.root.join("nonexistent-native-program");
+        assert!(!missing.exists());
+        let command = ExternalServiceCommand::new(missing.to_str().unwrap())
+            .unwrap()
+            .with_arg("private-missing-argument")
+            .with_env("PRIVATE_VALUE", "private-missing-environment")
+            .unwrap();
+        let error = command.run().unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
         // The outer io wrapper has no invented OS errno; the actual error stays
         // in the retained typed owner and its Error::source chain.
         assert!(error.raw_os_error().is_none());
-        let failure=error.get_ref().and_then(|cause|cause.downcast_ref::<BoundedProcessFailure>()).unwrap();
-        assert_eq!(failure.kind(),crate::BoundedCaptureFailureKind::SpawnFailed);
-        let native=failure.native_cause().unwrap();assert_eq!(native.kind(),std::io::ErrorKind::NotFound);
-        assert_eq!(native.raw_os_error(),Some(libc::ENOENT));
-        let source=std::error::Error::source(failure).unwrap().downcast_ref::<std::io::Error>().unwrap();
-        assert_eq!(source.kind(),native.kind());assert_eq!(source.raw_os_error(),native.raw_os_error());
-        assert!(failure.status().is_none()&&!failure.spawned()&&failure.spawn_attempted());
-        assert_eq!(failure.observation()["output_capture_requested"],false);
-        let displayed=error.to_string();let debug=format!("{failure:?}");
-        for private in ["private-missing-argument","private-missing-environment"] {
-            assert!(!displayed.contains(private)&&!debug.contains(private));
+        let failure = error
+            .get_ref()
+            .and_then(|cause| cause.downcast_ref::<BoundedProcessFailure>())
+            .unwrap();
+        assert_eq!(
+            failure.kind(),
+            crate::BoundedCaptureFailureKind::SpawnFailed
+        );
+        let native = failure.native_cause().unwrap();
+        assert_eq!(native.kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(native.raw_os_error(), Some(libc::ENOENT));
+        let source = std::error::Error::source(failure)
+            .unwrap()
+            .downcast_ref::<std::io::Error>()
+            .unwrap();
+        assert_eq!(source.kind(), native.kind());
+        assert_eq!(source.raw_os_error(), native.raw_os_error());
+        assert!(failure.status().is_none() && !failure.spawned() && failure.spawn_attempted());
+        assert_eq!(failure.observation()["output_capture_requested"], false);
+        let displayed = error.to_string();
+        let debug = format!("{failure:?}");
+        for private in ["private-missing-argument", "private-missing-environment"] {
+            assert!(!displayed.contains(private) && !debug.contains(private));
         }
-        let nonzero=ExternalServiceCommand::new("python3").unwrap().with_arg("-S").with_arg("-c")
-            .with_arg("import os;os.write(1,b'private-output');os.write(2,b'private-error');os._exit(7)")
-            .run().unwrap();
-        assert_eq!(nonzero.code(),Some(7));
-        fs::write(fixture.root.join("missing-program-facts.json"),serde_json::to_vec(&failure.observation()).unwrap()).unwrap();
+        let nonzero = ExternalServiceCommand::new("python3")
+            .unwrap()
+            .with_arg("-S")
+            .with_arg("-c")
+            .with_arg(
+                "import os;os.write(1,b'private-output');os.write(2,b'private-error');os._exit(7)",
+            )
+            .run()
+            .unwrap();
+        assert_eq!(nonzero.code(), Some(7));
+        fs::write(
+            fixture.root.join("missing-program-facts.json"),
+            serde_json::to_vec(&failure.observation()).unwrap(),
+        )
+        .unwrap();
         fixture.finish();
     }
 
     #[test]
     fn actual_legacy_probe_required_action_and_optional_none_keep_their_contract() {
-        let fixture=Fixture::new("legacy-optional");
-        let healthy=ExternalServiceCommand::new("/usr/bin/true").unwrap();
-        let failed=ExternalServiceCommand::new("/usr/bin/false").unwrap();
-        let absent=ExternalServiceCommand::new(fixture.root.join("missing").to_str().unwrap()).unwrap();
-        assert_eq!(run_probe(&healthy),HealthState::Healthy);
-        assert_eq!(run_probe(&failed),HealthState::Unavailable);
-        assert_eq!(run_probe(&absent),HealthState::Unavailable);
-        assert!(run_required(&healthy,"actual status-only operation").is_ok());
-        assert!(matches!(run_required(&failed,"actual status-only operation"),Err(WorkcellError::OperationFailed(_))));
-        assert!(matches!(run_required(&absent,"actual status-only operation"),Err(WorkcellError::Unavailable(_))));
+        let fixture = Fixture::new("legacy-optional");
+        let healthy = ExternalServiceCommand::new("/usr/bin/true").unwrap();
+        let failed = ExternalServiceCommand::new("/usr/bin/false").unwrap();
+        let absent =
+            ExternalServiceCommand::new(fixture.root.join("missing").to_str().unwrap()).unwrap();
+        assert_eq!(run_probe(&healthy), HealthState::Healthy);
+        assert_eq!(run_probe(&failed), HealthState::Unavailable);
+        assert_eq!(run_probe(&absent), HealthState::Unavailable);
+        assert!(run_required(&healthy, "actual status-only operation").is_ok());
+        assert!(matches!(
+            run_required(&failed, "actual status-only operation"),
+            Err(WorkcellError::OperationFailed(_))
+        ));
+        assert!(matches!(
+            run_required(&absent, "actual status-only operation"),
+            Err(WorkcellError::Unavailable(_))
+        ));
         // A real declared None provider drives an owned listener. Gates are
         // control inputs only; health/lifetime come from actual TCP and Child facts.
-        let script=fixture.root.join("optional-listener.py");
+        let script = fixture.root.join("optional-listener.py");
         fs::write(&script,r#"import json,os,pathlib,socket,sys,time
 root=pathlib.Path(sys.argv[2]);port=int(sys.argv[3]);operation=sys.argv[1]
 def record(name,value):
@@ -1701,68 +1782,178 @@ if operation=='stop':
     sys.exit(1 if probe('status') else 0)
 raise RuntimeError('unrecognised owned fixture operation')
 "#).unwrap();
-        let mut daemon=Command::new("python3");
-        daemon.arg("-S").arg(&script).arg("serve").arg(&fixture.root).arg("0")
-            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child=support::OwnedChild::spawn(daemon,&fixture.root);let actual_pid=child.id();
-        let server=fixture.document("server.json",Instant::now()+Duration::from_secs(2));
-        assert_eq!(server["pid"],actual_pid);assert_eq!(server["pgid"],actual_pid);
-        let port=u16::try_from(server["port"].as_u64().expect("actual bound listener port must be an unsigned integer"))
-            .expect("actual bound listener port must fit u16");
-        assert_ne!(port,0,"bootstrap zero is not a service endpoint");
-        let occupied=std::net::TcpListener::bind(("127.0.0.1",port))
+        let mut daemon = Command::new("python3");
+        daemon
+            .arg("-S")
+            .arg(&script)
+            .arg("serve")
+            .arg(&fixture.root)
+            .arg("0")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = support::OwnedChild::spawn(daemon, &fixture.root);
+        let actual_pid = child.id();
+        let server = fixture.document("server.json", Instant::now() + Duration::from_secs(2));
+        assert_eq!(server["pid"], actual_pid);
+        assert_eq!(server["pgid"], actual_pid);
+        let port = u16::try_from(
+            server["port"]
+                .as_u64()
+                .expect("actual bound listener port must be an unsigned integer"),
+        )
+        .expect("actual bound listener port must fit u16");
+        assert_ne!(port, 0, "bootstrap zero is not a service endpoint");
+        let occupied = std::net::TcpListener::bind(("127.0.0.1", port))
             .expect_err("same real child must still hold its published listener before start");
-        assert_eq!(occupied.kind(),std::io::ErrorKind::AddrInUse);
-        let command=|operation:&str| ExternalServiceCommand::new("python3").unwrap().with_arg("-S")
-            .with_arg(script.to_str().unwrap()).with_arg(operation).with_arg(fixture.root.to_str().unwrap()).with_arg(port.to_string());
-        let service=ExternalManagedService::new("service:null-command",format!("http://127.0.0.1:{port}"),command("status")).unwrap()
-            .with_start(command("start")).with_stop(command("stop")).with_readiness(command("ready"))
-            .with_readiness_timing(2_000,20);
-        assert!(service.target_instance.is_none());assert_eq!(service.acquisition,ExternalServiceAcquisition::ObserveExisting);
-        let request=|label:&str| ServiceMaterialRequest {
-            demand_ref:epilogos_workcell_core::DemandRef::new(format!("demand:{label}")).unwrap(),
-            connection:epilogos_workcell_core::LogicalConnectionRequirement::new("service:null-command").unwrap(),
-            persistence:None,retention:RetentionExpectation::Release,
+        assert_eq!(occupied.kind(), std::io::ErrorKind::AddrInUse);
+        let command = |operation: &str| {
+            ExternalServiceCommand::new("python3")
+                .unwrap()
+                .with_arg("-S")
+                .with_arg(script.to_str().unwrap())
+                .with_arg(operation)
+                .with_arg(fixture.root.to_str().unwrap())
+                .with_arg(port.to_string())
         };
-        let mut observed=ExternalManagedServiceProvider::new(ProviderRef::new("provider:observed-native-command").unwrap(),[service.clone()]).unwrap();
-        let offers=observed.offers().unwrap();assert_eq!(offers.len(),1);
-        assert_eq!(offers[0].health,HealthState::Unavailable);assert_eq!(offers[0].availability,Availability::Unavailable);
-        assert!(matches!(observed.resolve_service(&request("unavailable-observation")),Err(WorkcellError::Unavailable(_))));
-        assert!(!fixture.root.join("start").exists());assert!(!fixture.root.join("stop").exists());
-        let ensured=service.with_acquisition(ExternalServiceAcquisition::EnsureRunning);
-        let mut owner=ExternalManagedServiceProvider::new(ProviderRef::new("provider:ensured-native-command").unwrap(),[ensured]).unwrap();
-        let offers=owner.offers().unwrap();assert_eq!(offers.len(),1);assert_eq!(offers[0].availability,Availability::Degraded);
-        let allocation=owner.resolve_service(&request("owned-listener")).unwrap();
-        assert_eq!(allocation.health,HealthState::Healthy);assert_eq!(allocation.properties["started_by_provider"],"true");
+        let service = ExternalManagedService::new(
+            "service:null-command",
+            format!("http://127.0.0.1:{port}"),
+            command("status"),
+        )
+        .unwrap()
+        .with_start(command("start"))
+        .with_stop(command("stop"))
+        .with_readiness(command("ready"))
+        .with_readiness_timing(2_000, 20);
+        assert!(service.target_instance.is_none());
+        assert_eq!(
+            service.acquisition,
+            ExternalServiceAcquisition::ObserveExisting
+        );
+        let request = |label: &str| ServiceMaterialRequest {
+            demand_ref: epilogos_workcell_core::DemandRef::new(format!("demand:{label}")).unwrap(),
+            connection: epilogos_workcell_core::LogicalConnectionRequirement::new(
+                "service:null-command",
+            )
+            .unwrap(),
+            persistence: None,
+            retention: RetentionExpectation::Release,
+        };
+        let mut observed = ExternalManagedServiceProvider::new(
+            ProviderRef::new("provider:observed-native-command").unwrap(),
+            [service.clone()],
+        )
+        .unwrap();
+        let offers = observed.offers().unwrap();
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].health, HealthState::Unavailable);
+        assert_eq!(offers[0].availability, Availability::Unavailable);
+        assert!(matches!(
+            observed.resolve_service(&request("unavailable-observation")),
+            Err(WorkcellError::Unavailable(_))
+        ));
+        assert!(!fixture.root.join("start").exists());
+        assert!(!fixture.root.join("stop").exists());
+        let ensured = service.with_acquisition(ExternalServiceAcquisition::EnsureRunning);
+        let mut owner = ExternalManagedServiceProvider::new(
+            ProviderRef::new("provider:ensured-native-command").unwrap(),
+            [ensured],
+        )
+        .unwrap();
+        let offers = owner.offers().unwrap();
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].availability, Availability::Degraded);
+        let allocation = owner.resolve_service(&request("owned-listener")).unwrap();
+        assert_eq!(allocation.health, HealthState::Healthy);
+        assert_eq!(allocation.properties["started_by_provider"], "true");
         assert!(!allocation.properties.contains_key("target_instance_basis"));
-        assert_eq!(owner.observe_service(&allocation).unwrap().health,HealthState::Healthy);
-        let repeated=owner.resolve_service(&request("owned-listener")).unwrap();
-        assert_eq!(repeated,allocation);assert_eq!(repeated.properties["started_by_provider"],"true");
-        let commands=fs::read_to_string(fixture.root.join("actual-commands.log")).unwrap();
-        assert_eq!(commands.lines().filter(|line| *line=="start").count(),1);
-        assert!(commands.lines().any(|line| line=="ready"));
-        let observer=observed.resolve_service(&request("existing-observer")).unwrap();
-        assert_eq!(observer.properties["started_by_provider"],"false");
-        assert_eq!(observed.observe_service(&observer).unwrap().health,HealthState::Healthy);
-        assert!(!observed.release_service(&observer,&RetentionExpectation::Release).unwrap().changed);
+        assert_eq!(
+            owner.observe_service(&allocation).unwrap().health,
+            HealthState::Healthy
+        );
+        let repeated = owner.resolve_service(&request("owned-listener")).unwrap();
+        assert_eq!(repeated, allocation);
+        assert_eq!(repeated.properties["started_by_provider"], "true");
+        let commands = fs::read_to_string(fixture.root.join("actual-commands.log")).unwrap();
+        assert_eq!(commands.lines().filter(|line| *line == "start").count(), 1);
+        assert!(commands.lines().any(|line| line == "ready"));
+        let observer = observed
+            .resolve_service(&request("existing-observer"))
+            .unwrap();
+        assert_eq!(observer.properties["started_by_provider"], "false");
+        assert_eq!(
+            observed.observe_service(&observer).unwrap().health,
+            HealthState::Healthy
+        );
+        assert!(
+            !observed
+                .release_service(&observer, &RetentionExpectation::Release)
+                .unwrap()
+                .changed
+        );
         assert!(!fixture.root.join("stop").exists());
-        assert_eq!(owner.observe_service(&allocation).unwrap().health,HealthState::Healthy);
-        let dependent=owner.resolve_service(&request("dependent-listener")).unwrap();
-        assert_eq!(dependent.properties["started_by_provider"],"false");
-        assert!(matches!(owner.release_service(&allocation,&RetentionExpectation::Release),Err(WorkcellError::OperationFailed(_))));
+        assert_eq!(
+            owner.observe_service(&allocation).unwrap().health,
+            HealthState::Healthy
+        );
+        let dependent = owner
+            .resolve_service(&request("dependent-listener"))
+            .unwrap();
+        assert_eq!(dependent.properties["started_by_provider"], "false");
+        assert!(matches!(
+            owner.release_service(&allocation, &RetentionExpectation::Release),
+            Err(WorkcellError::OperationFailed(_))
+        ));
         assert!(!fixture.root.join("stop").exists());
-        assert_eq!(owner.observe_service(&allocation).unwrap().health,HealthState::Healthy);
-        assert!(!owner.release_service(&dependent,&RetentionExpectation::Release).unwrap().changed);
-        assert!(owner.release_service(&allocation,&RetentionExpectation::Release).unwrap().changed);
-        let retired=fixture.document("server-retired.json",Instant::now()+Duration::from_secs(2));
-        assert_eq!(retired["pid"],actual_pid);assert_eq!(retired["stopped"],true);assert_eq!(retired["released"],false);
-        let output=child.complete(Duration::from_secs(2)).unwrap();
-        assert!(output.status.success()&&!output.timed_out&&output.output_complete&&!output.output_truncated);
-        assert!(support::wait_absent(actual_pid as libc::pid_t,&fixture.root,Instant::now()+Duration::from_secs(2),false).is_none());
-        assert_eq!(run_probe(&command("status")),HealthState::Unavailable);
-        assert_eq!(fs::read_to_string(fixture.root.join("actual-commands.log")).unwrap().lines().filter(|line| *line=="stop").count(),1);
-        fs::write(fixture.root.join("optional-daemon.stdout"),&output.stdout).unwrap();
-        fs::write(fixture.root.join("optional-daemon.stderr"),&output.stderr).unwrap();
+        assert_eq!(
+            owner.observe_service(&allocation).unwrap().health,
+            HealthState::Healthy
+        );
+        assert!(
+            !owner
+                .release_service(&dependent, &RetentionExpectation::Release)
+                .unwrap()
+                .changed
+        );
+        assert!(
+            owner
+                .release_service(&allocation, &RetentionExpectation::Release)
+                .unwrap()
+                .changed
+        );
+        let retired = fixture.document(
+            "server-retired.json",
+            Instant::now() + Duration::from_secs(2),
+        );
+        assert_eq!(retired["pid"], actual_pid);
+        assert_eq!(retired["stopped"], true);
+        assert_eq!(retired["released"], false);
+        let output = child.complete(Duration::from_secs(2)).unwrap();
+        assert!(
+            output.status.success()
+                && !output.timed_out
+                && output.output_complete
+                && !output.output_truncated
+        );
+        assert!(support::wait_absent(
+            actual_pid as libc::pid_t,
+            &fixture.root,
+            Instant::now() + Duration::from_secs(2),
+            false
+        )
+        .is_none());
+        assert_eq!(run_probe(&command("status")), HealthState::Unavailable);
+        assert_eq!(
+            fs::read_to_string(fixture.root.join("actual-commands.log"))
+                .unwrap()
+                .lines()
+                .filter(|line| *line == "stop")
+                .count(),
+            1
+        );
+        fs::write(fixture.root.join("optional-daemon.stdout"), &output.stdout).unwrap();
+        fs::write(fixture.root.join("optional-daemon.stderr"), &output.stderr).unwrap();
         // None preserves legacy command ownership. These actual process and
         // endpoint facts do not mint a strict Some target-native instance witness.
         fixture.finish();
