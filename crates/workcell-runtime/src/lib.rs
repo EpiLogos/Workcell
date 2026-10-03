@@ -1,3 +1,5 @@
+mod runtime_projection;
+pub use runtime_projection::{RuntimeProjection, RuntimeProjectionFailure, RUNTIME_PROJECTION_SCHEMA};
 mod write_boundary;
 pub use write_boundary::{
     write_boundary_capabilities, PreparedWriteBoundary, WriteBoundaryRequirements,
@@ -102,4 +104,4 @@ pub use service_declaration::{
 };
 
 mod bounded_process;
-pub use bounded_process::{run_bounded_process, BoundedProcessOutput};
+pub use bounded_process::{capture_bounded_process, run_bounded_process, BoundedCaptureFailureKind, BoundedProcessFailure, BoundedProcessOutput};

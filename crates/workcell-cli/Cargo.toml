@@ -33,6 +33,7 @@ epilogos-workcell-wire = { path = "../workcell-wire" }
 blake3 = "1"
 serde_json = "1"
 sha2 = "0.10"
+libc = "0.2"
 
 [dev-dependencies]
 jsonschema = { version = "0.56.0", default-features = false }

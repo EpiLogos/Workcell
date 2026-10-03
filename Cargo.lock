@@ -429,6 +429,7 @@ dependencies = [
  "epilogos-workcell-secret-service",
  "epilogos-workcell-wire",
  "jsonschema",
+ "libc",
  "serde_json",
  "sha2",
 ]
