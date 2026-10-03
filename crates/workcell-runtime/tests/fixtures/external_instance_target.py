@@ -207,6 +207,13 @@ def known_unbound_basis():
 def serve(generation, config):
     with (ROOT / "instance.lock").open("a+b") as lifetime:
         fcntl.flock(lifetime, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        basis = {"schema": SCHEMA, "generation": generation, "endpoint": ENDPOINT,
+                 "config_sha256": config, "server": identity(os.getpid()),
+                 "private_native_key": secrets.token_hex(32)}
+        staged_basis = directory(generation) / ".basis.writing"
+        # Capture must see either no basis or the complete original basis.
+        # Exclusive staging and no-overwrite linking preserve prior evidence.
+        write_once(staged_basis, basis)
         barrier = os.environ.get("TEST_BASIS_BARRIER")
         if barrier:
             release = ROOT / barrier
@@ -219,10 +226,8 @@ def serve(generation, config):
             while not release.exists():
                 time.sleep(.01)
         time.sleep(float(os.environ.get("TEST_BASIS_DELAY", "0")))
-        basis = {"schema": SCHEMA, "generation": generation, "endpoint": ENDPOINT,
-                 "config_sha256": config, "server": identity(os.getpid()),
-                 "private_native_key": secrets.token_hex(32)}
-        write_once(basis_path(generation), basis)
+        os.link(staged_basis, basis_path(generation))
+        staged_basis.unlink()
         gate = threading.Lock()
         pending = 0
         accepting = True

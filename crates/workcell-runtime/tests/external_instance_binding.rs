@@ -479,6 +479,7 @@ fn missing_basis_returns_reconciliation_error_with_actual_immutable_start_intent
     assert!(error.to_string().contains("intent_sha256"));
     assert!(error.to_string().contains("effects uncertain"));
     assert!(!error.to_string().contains("cleanup succeeded"));
+    assert!(error.to_string().contains("\"native_type\":\"NotReady\""));
     let generation = fs::read_to_string(target.root.join("current")).unwrap();
     let directory = target.root.join(&generation);
     let intent = directory.join("intent.json");
@@ -495,6 +496,55 @@ fn missing_basis_returns_reconciliation_error_with_actual_immutable_start_intent
         intent.is_file(),
         "the actual target retains the start intent, not a consumer-minted allocation"
     );
+    use std::os::unix::fs::MetadataExt;
+    let staged = directory.join(".basis.writing");
+    let staged_metadata = fs::symlink_metadata(&staged).unwrap();
+    assert!(staged_metadata.file_type().is_file());
+    assert_eq!(staged_metadata.nlink(), 1);
+    let staged_bytes = fs::read(&staged).unwrap();
+    let staged_value: Value = serde_json::from_slice(&staged_bytes).unwrap();
+    assert_eq!(staged_value["schema"], "workcell.external-target-instance/v1");
+    assert_eq!(staged_value["generation"], held["generation"]);
+    assert_eq!(staged_value["server"], held["server"]);
+    let staged_digest = format!("{:x}", sha2::Sha256::digest(&staged_bytes));
+    // Release only this fixture's actual publication barrier. No reply or
+    // process identity is substituted; the native owner publishes its basis.
+    fs::write(
+        target.root.join("basis-publication-release"),
+        b"owned test release",
+    )
+    .unwrap();
+    let published = directory.join("basis.json");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !published.exists() || staged.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "complete native basis publication must finish"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    let published_metadata = fs::symlink_metadata(&published).unwrap();
+    assert!(published_metadata.file_type().is_file());
+    assert_eq!(published_metadata.nlink(), 1);
+    assert_eq!(published_metadata.dev(), staged_metadata.dev());
+    assert_eq!(published_metadata.ino(), staged_metadata.ino());
+    assert!(
+        fs::read(&published).unwrap() == staged_bytes,
+        "published native basis retains the staged bytes"
+    );
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(fs::read(&published).unwrap())),
+        staged_digest
+    );
+    let mut observed_basis = staged_value;
+    observed_basis["basis_path"] = Value::String(published.display().to_string());
+    observed_basis["basis_sha256"] = Value::String(staged_digest);
+    let identity_reply = target.native("identity", &observed_basis);
+    assert!(identity_reply.status.success());
+    let identity: Value = serde_json::from_slice(&identity_reply.stdout).unwrap();
+    assert_eq!(identity["generation"], observed_basis["generation"]);
+    assert_eq!(identity["server"], observed_basis["server"]);
+    assert_eq!(identity["same_process"], true);
 }
 
 #[test]
