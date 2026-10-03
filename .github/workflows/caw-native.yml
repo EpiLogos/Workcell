@@ -94,6 +94,14 @@ jobs:
             printf '%s\n' "$status" > "$RUNTIME_GATE_EVIDENCE/$label.exit"
             return "$status"
           }
+          # This compile label is the actual current tested Source, not a relocated
+          # build path or native material-owner identity. Original CompilerArtifact,
+          # source/lock and held before/after image receipts remain mandatory.
+          record_command replay-source-head txt git rev-parse HEAD
+          record_command replay-source-status txt git status --porcelain=v1 --untracked-files=no
+          test "$(cat evidence/source-commit.txt)" = "$(cat "$RUNTIME_GATE_EVIDENCE/replay-source-head.txt")"
+          test ! -s "$RUNTIME_GATE_EVIDENCE/replay-source-status.txt"
+          export WORKCELL_TEST_COMPILED_SOURCE_REF="$(cat evidence/source-commit.txt)"
           record_command compiler-owner jsonl timeout --kill-after=5s 5m cargo build --locked -p epilogos-workcell-cli --bins --message-format=json
           record_command compiler-test jsonl timeout --kill-after=5s 5m cargo test --locked -p epilogos-workcell-runtime --test runtime_projection --no-run --message-format=json
           cat > "$RUNTIME_GATE_EVIDENCE/audit.py" <<'PY'
