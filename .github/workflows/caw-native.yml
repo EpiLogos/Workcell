@@ -615,9 +615,9 @@ jobs:
           test "$(grep -c ': test$' evidence/legacy-command-list.txt)" -eq 3
           cargo test --locked -p epilogos-workcell-runtime --lib external_service::legacy_command_tests -- --test-threads=1 2>&1 | tee evidence/legacy-command-tests.txt
           grep -F '3 passed; 0 failed; 0 ignored;' evidence/legacy-command-tests.txt
-          cargo test --locked -p epilogos-workcell-cli --bin workcell run_admission::source_io_tests -- --list 2>&1 | tee evidence/source-io-list.txt
+          cargo test --locked -p epilogos-workcell-cli --bin workcell combined::local_cli::source_io_tests -- --list 2>&1 | tee evidence/source-io-list.txt
           test "$(grep -c ': test$' evidence/source-io-list.txt)" -eq 3
-          cargo test --locked -p epilogos-workcell-cli --bin workcell run_admission::source_io_tests -- --test-threads=1 2>&1 | tee evidence/source-io-tests.txt
+          cargo test --locked -p epilogos-workcell-cli --bin workcell combined::local_cli::source_io_tests -- --test-threads=1 2>&1 | tee evidence/source-io-tests.txt
           grep -F '3 passed; 0 failed; 0 ignored;' evidence/source-io-tests.txt
       - name: Reobserve actual native39 Source and test image custody
         if: always()
