@@ -372,9 +372,9 @@ impl ExternalManagedServiceProvider {
             {
                 return Err(WorkcellError::ReconciliationFailed("world contains an external receipt conflicting with existing or earlier binding identity; no restore committed".into()));
             }
-            if record.instance_basis.is_some() {
+            if let Some(instance_basis) = &record.instance_basis {
                 let observed = self.observe_record(&allocation, &record)?;
-                if original_instance_retired(&observed, record.instance_basis.as_ref().unwrap()) {
+                if original_instance_retired(&observed, instance_basis) {
                     retired.insert(allocation.material_ref, record);
                     continue;
                 }

@@ -116,7 +116,7 @@ cargo test --locked -p epilogos-workcell-runtime --lib external_service::legacy_
 test "$(grep -c ': test$' "$WORKCELL_TEST_ARTIFACT_ROOT/legacy-command-list.txt")" -eq 3
 cargo test --locked -p epilogos-workcell-runtime --lib external_service::legacy_command_tests -- --test-threads=1 2>&1 | tee "$WORKCELL_TEST_ARTIFACT_ROOT/legacy-command-tests.txt"
 grep -F '3 passed; 0 failed; 0 ignored;' "$WORKCELL_TEST_ARTIFACT_ROOT/legacy-command-tests.txt"
-cargo test --locked -p epilogos-workcell-cli --bin workcell run_admission::source_io_tests -- --list 2>&1 | tee "$WORKCELL_TEST_ARTIFACT_ROOT/source-io-list.txt"
+cargo test --locked -p epilogos-workcell-cli --bin workcell combined::local_cli::source_io_tests -- --list 2>&1 | tee "$WORKCELL_TEST_ARTIFACT_ROOT/source-io-list.txt"
 test "$(grep -c ': test$' "$WORKCELL_TEST_ARTIFACT_ROOT/source-io-list.txt")" -eq 3
-cargo test --locked -p epilogos-workcell-cli --bin workcell run_admission::source_io_tests -- --test-threads=1 2>&1 | tee "$WORKCELL_TEST_ARTIFACT_ROOT/source-io-tests.txt"
+cargo test --locked -p epilogos-workcell-cli --bin workcell combined::local_cli::source_io_tests -- --test-threads=1 2>&1 | tee "$WORKCELL_TEST_ARTIFACT_ROOT/source-io-tests.txt"
 grep -F '3 passed; 0 failed; 0 ignored;' "$WORKCELL_TEST_ARTIFACT_ROOT/source-io-tests.txt"

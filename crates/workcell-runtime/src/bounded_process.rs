@@ -300,19 +300,22 @@ pub fn run_bounded_process(
     capture_bounded_process(command, timeout, output_limit).or_else(|failure| {
         // Preserve the existing known-status timeout DTO. A missing status or
         // native capture/cleanup error never manufactures one for compatibility.
-        if failure.inner.kind == BoundedCaptureFailureKind::DeadlineElapsed
-            && failure.inner.cleanup_cause.is_none()
-            && failure.inner.capture_cause.is_none()
-            && failure.inner.status.is_some()
-        {
-            return Ok(BoundedProcessOutput {
-                status: failure.inner.status.unwrap(),
-                timed_out: true,
-                stdout: failure.inner.stdout,
-                stderr: failure.inner.stderr,
-                output_truncated: failure.inner.output_truncated,
-                output_complete: failure.inner.stdout_eof && failure.inner.stderr_eof,
-            });
+        match failure.inner.status {
+            Some(status)
+                if failure.inner.kind == BoundedCaptureFailureKind::DeadlineElapsed
+                    && failure.inner.cleanup_cause.is_none()
+                    && failure.inner.capture_cause.is_none() =>
+            {
+                return Ok(BoundedProcessOutput {
+                    status,
+                    timed_out: true,
+                    stdout: failure.inner.stdout,
+                    stderr: failure.inner.stderr,
+                    output_truncated: failure.inner.output_truncated,
+                    output_complete: failure.inner.stdout_eof && failure.inner.stderr_eof,
+                });
+            }
+            _ => {}
         }
         let message = failure.to_string();
         Err(match failure.inner.kind {
@@ -1182,7 +1185,7 @@ mod tests {
         let fixture = WriterFixture::new();
         let mut command = fixture.command(false);
         command.process_group(0);
-        let mut child = command.spawn().unwrap();
+        let child = command.spawn().unwrap();
         let direct_pid = child.id() as libc::pid_t;
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         let mut native_status = 0;
