@@ -160,8 +160,11 @@ impl Target {
         // Release only this fixture's publication aperture, including failed
         // assertions, before exact native basis/identity teardown. It never
         // substitutes a native reply or changes target control authority.
-        fs::write(self.root.join("basis-publication-release"), b"owned teardown release")
-            .map_err(|_| "cannot release owned publication barrier; retained native intent")?;
+        fs::write(
+            self.root.join("basis-publication-release"),
+            b"owned teardown release",
+        )
+        .map_err(|_| "cannot release owned publication barrier; retained native intent")?;
         let deadline = Instant::now() + Duration::from_secs(8);
         loop {
             let mut unqualified_start = false;
@@ -479,9 +482,13 @@ fn missing_basis_returns_reconciliation_error_with_actual_immutable_start_intent
     let generation = fs::read_to_string(target.root.join("current")).unwrap();
     let directory = target.root.join(&generation);
     let intent = directory.join("intent.json");
-    assert!(!directory.join("basis.json").exists(),
-        "actual publication stays barred until observed refusal and teardown release");
-    let held: Value = serde_json::from_slice(&fs::read(directory.join("publication-held.json")).unwrap()).unwrap();
+    assert!(
+        !directory.join("basis.json").exists(),
+        "actual publication stays barred until observed refusal and teardown release"
+    );
+    let held: Value =
+        serde_json::from_slice(&fs::read(directory.join("publication-held.json")).unwrap())
+            .unwrap();
     assert_eq!(held["generation"].as_str(), Some(generation.as_str()));
     assert!(!target.root.join("basis-publication-release").exists());
     assert!(
@@ -845,16 +852,22 @@ fn actual_current_successor_witness_cannot_qualify_old_receipt_or_mutate_success
     );
 }
 
-
 #[test]
 fn actual_start_envelope_then_nonzero_exit_retains_status_and_public_intent_without_allocation() {
     let target = Target::new("start-envelope-nonzero");
-    let service = target.service().with_start(target.command("start")
-        .with_env("TEST_START_EXIT_AFTER_ENVELOPE", "1").unwrap());
+    let service = target.service().with_start(
+        target
+            .command("start")
+            .with_env("TEST_START_EXIT_AFTER_ENVELOPE", "1")
+            .unwrap(),
+    );
     let mut provider = target.provider(service);
     let error = provider.resolve_service(&request("owner")).unwrap_err();
     let diagnostic = error.to_string();
-    assert!(diagnostic.contains("native exit exit status: 23;"), "{diagnostic}");
+    assert!(
+        diagnostic.contains("native exit exit status: 23;"),
+        "{diagnostic}"
+    );
     assert!(diagnostic.contains("secondary native cause qualification failure:"));
     assert!(diagnostic.contains("public start intent observation (not authority):"));
     assert!(diagnostic.contains("effects uncertain"));
@@ -867,35 +880,57 @@ fn actual_start_envelope_then_nonzero_exit_retains_status_and_public_intent_with
     assert!(directory.join("launcher.json").is_file());
     assert!(diagnostic.contains(intent.to_str().unwrap()));
     assert!(diagnostic.contains(&format!("{:x}", sha2::Sha256::digest(&intent_bytes))));
-    fs::write(target.root.join("native-nonzero-refusal.json"),
+    fs::write(
+        target.root.join("native-nonzero-refusal.json"),
         serde_json::to_vec(&serde_json::json!({"actual_exit_code":23,
             "refusal":diagnostic,"allocation_admitted":false,
-            "automatic_retry":false})).unwrap()).unwrap();
+            "automatic_retry":false}))
+        .unwrap(),
+    )
+    .unwrap();
 }
 
 #[test]
-fn actual_stop_envelope_then_nonzero_exit_retains_status_and_original_basis_without_cleanup_success() {
+fn actual_stop_envelope_then_nonzero_exit_retains_status_and_original_basis_without_cleanup_success(
+) {
     let target = Target::new("stop-envelope-nonzero");
-    let service = target.service().with_stop(target.command("stop")
-        .with_env("TEST_STOP_EXIT_AFTER_ENVELOPE", "1").unwrap());
+    let service = target.service().with_stop(
+        target
+            .command("stop")
+            .with_env("TEST_STOP_EXIT_AFTER_ENVELOPE", "1")
+            .unwrap(),
+    );
     let mut provider = target.provider(service);
     let allocation = provider.resolve_service(&request("owner")).unwrap();
     let original = basis(&allocation);
     let original_bytes = fs::read(original["basis_path"].as_str().unwrap()).unwrap();
-    let error = provider.release_service(&allocation, &RetentionExpectation::Release).unwrap_err();
+    let error = provider
+        .release_service(&allocation, &RetentionExpectation::Release)
+        .unwrap_err();
     let diagnostic = error.to_string();
-    assert!(diagnostic.contains("native exit exit status: 24;"), "{diagnostic}");
+    assert!(
+        diagnostic.contains("native exit exit status: 24;"),
+        "{diagnostic}"
+    );
     assert!(diagnostic.contains("secondary native cause qualification failure:"));
     assert!(diagnostic.contains("original instance basis retained:"));
     assert!(diagnostic.contains(original["basis_path"].as_str().unwrap()));
     assert!(diagnostic.contains(original["basis_sha256"].as_str().unwrap()));
     assert!(diagnostic.contains("effects uncertain"));
-    assert_eq!(fs::read(original["basis_path"].as_str().unwrap()).unwrap(), original_bytes);
-    let physical: Value = serde_json::from_slice(&target.native("identity", &original).stdout).unwrap();
+    assert_eq!(
+        fs::read(original["basis_path"].as_str().unwrap()).unwrap(),
+        original_bytes
+    );
+    let physical: Value =
+        serde_json::from_slice(&target.native("identity", &original).stdout).unwrap();
     assert_eq!(physical["same_process"], false);
     assert!(std::net::TcpStream::connect(("127.0.0.1", target.port)).is_err());
-    fs::write(target.root.join("native-nonzero-refusal.json"),
+    fs::write(
+        target.root.join("native-nonzero-refusal.json"),
         serde_json::to_vec(&serde_json::json!({"actual_exit_code":24,
             "refusal":diagnostic,"original_basis":original,
-            "cleanup_acknowledged":false,"automatic_retry":false})).unwrap()).unwrap();
+            "cleanup_acknowledged":false,"automatic_retry":false}))
+        .unwrap(),
+    )
+    .unwrap();
 }

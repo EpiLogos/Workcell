@@ -1,6 +1,8 @@
 //! Protocol-preserving entry into the existing material write boundary.
 //! This replaces this launcher, not the protocol host or its session identity.
-use epilogos_workcell_runtime::{PreparedWriteBoundary, RuntimeProjection, WriteBoundaryRequirements};
+use epilogos_workcell_runtime::{
+    PreparedWriteBoundary, RuntimeProjection, WriteBoundaryRequirements,
+};
 use serde_json::Value;
 use std::{fs, process::Command};
 
@@ -45,22 +47,33 @@ pub fn execute(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    if runtime { boundary.validate_protocol_stdio()?; }
+    if runtime {
+        boundary.validate_protocol_stdio()?;
+    }
     let mut command = if runtime {
         let projection = RuntimeProjection::read(std::path::Path::new(&args[4]), &args[5])?;
         boundary.command_with_runtime_projection(&args[delimiter + 1], &args[2], &projection)?
-    } else { boundary.command(&args[delimiter + 1], &args[2])? };
+    } else {
+        boundary.command(&args[delimiter + 1], &args[2])?
+    };
     command.args(&args[delimiter + 2..]);
     if runtime {
-        boundary.configure_protocol_stdio(&mut command)
+        boundary
+            .configure_protocol_stdio(&mut command)
             .map_err(epilogos_workcell_runtime::RuntimeProjectionFailure::after_boundary_error)?;
-    } else { boundary.configure_protocol_stdio(&mut command)?; }
+    } else {
+        boundary.configure_protocol_stdio(&mut command)?;
+    }
     if runtime {
         protocol_exec(command).map_err(|error| match error.downcast::<std::io::Error>() {
-            Ok(cause) => Box::new(epilogos_workcell_runtime::RuntimeProjectionFailure::after_exec_error(*cause)) as Box<dyn std::error::Error>,
+            Ok(cause) => Box::new(
+                epilogos_workcell_runtime::RuntimeProjectionFailure::after_exec_error(*cause),
+            ) as Box<dyn std::error::Error>,
             Err(error) => error,
         })
-    } else { protocol_exec(command) }
+    } else {
+        protocol_exec(command)
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

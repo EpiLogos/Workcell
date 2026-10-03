@@ -10,10 +10,15 @@ mod stdio_boundary;
 
 fn main() {
     let args = env::args().skip(1).collect::<Vec<_>>();
-    if matches!(args.first().map(String::as_str), Some("exec" | "exec-runtime")) {
+    if matches!(
+        args.first().map(String::as_str),
+        Some("exec" | "exec-runtime")
+    ) {
         if let Err(error) = stdio_boundary::execute(&args) {
             let mut result = json!({"schema":"workcell.write-boundary-result/v1","ok":false,"error":error.to_string(),"executed":false});
-            if let Some(projection) = error.downcast_ref::<epilogos_workcell_runtime::RuntimeProjectionFailure>() {
+            if let Some(projection) =
+                error.downcast_ref::<epilogos_workcell_runtime::RuntimeProjectionFailure>()
+            {
                 result["runtime_projection"] = projection.as_json();
             }
             eprintln!("{result}");
