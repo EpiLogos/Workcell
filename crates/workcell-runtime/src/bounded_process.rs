@@ -1335,6 +1335,8 @@ mod tests {
 #[cfg(all(test, unix))]
 pub(crate) mod status_test_support {
     use super::*;
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::MetadataExt;
     use std::{
         cell::Cell,
         fs,
@@ -1345,7 +1347,133 @@ pub(crate) mod status_test_support {
     static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     // The coordinator selects an existing owner source and placement. These
     // transient inputs qualify test artifacts; they create no product authority.
+    // Optional replay qualifies disposable fixture placement with the actual
+    // current owner and compiled image basis. It creates no native authority.
     pub(crate) fn admitted_artifact_root() -> std::io::Result<PathBuf> {
+        admitted_artifact_root_with_replay(None)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn admitted_artifact_root_for_replay(
+        compiled_source: Option<&str>,
+        test_source: &[u8],
+        lock: &[u8],
+    ) -> std::io::Result<PathBuf> {
+        admitted_artifact_root_with_replay(Some((compiled_source, test_source, lock)))
+    }
+
+    fn replay_digest_input(name: &str) -> std::io::Result<String> {
+        let invalid = || {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "explicit replay requires the exact admitted source/image digest",
+            )
+        };
+        let value = std::env::var(name).map_err(|_| invalid())?;
+        if value.len() != 64 || !value.bytes().all(|value| value.is_ascii_hexdigit()) {
+            return Err(invalid());
+        }
+        Ok(value)
+    }
+
+    fn replay_image(
+        path: &Path,
+        context: &Path,
+        expected: &str,
+        actual_self: bool,
+        deadline: std::time::Instant,
+    ) -> std::io::Result<()> {
+        use std::io::Read;
+        use std::os::unix::fs::OpenOptionsExt;
+        let invalid = || {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "explicit replay image does not match the admitted compiled owner basis",
+            )
+        };
+        if !path.is_absolute() || !path.starts_with(context) || path.canonicalize()? != path {
+            return Err(invalid());
+        }
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(path)?;
+        let initial = file.metadata()?;
+        let identity = |metadata: &fs::Metadata| {
+            (
+                metadata.dev(),
+                metadata.ino(),
+                metadata.len(),
+                metadata.mode(),
+                metadata.nlink(),
+                metadata.uid(),
+                metadata.mtime(),
+                metadata.mtime_nsec(),
+                metadata.ctime(),
+                metadata.ctime_nsec(),
+            )
+        };
+        let named = fs::symlink_metadata(path)?;
+        const LIMIT: u64 = 1_073_741_824;
+        if !initial.is_file()
+            || !named.is_file()
+            || initial.mode() & 0o111 == 0
+            || initial.uid() != unsafe { libc::geteuid() }
+            || initial.len() > LIMIT
+            || identity(&initial) != identity(&named)
+        {
+            return Err(invalid());
+        }
+        let is_actual_self = || -> std::io::Result<bool> {
+            let actual = fs::metadata("/proc/self/exe")?;
+            Ok((actual.dev(), actual.ino()) == (initial.dev(), initial.ino()))
+        };
+        if actual_self && !is_actual_self()? {
+            return Err(invalid());
+        }
+        let mut digest = Sha256::new();
+        let mut buffer = [0_u8; 65_536];
+        let mut observed = 0_u64;
+        loop {
+            if std::time::Instant::now() >= deadline {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "explicit replay image observation deadline elapsed",
+                ));
+            }
+            let count = file.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            observed += count as u64;
+            if observed > LIMIT {
+                return Err(invalid());
+            }
+            digest.update(&buffer[..count]);
+        }
+        let named = fs::symlink_metadata(path)?;
+        if std::time::Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "explicit replay image observation deadline elapsed",
+            ));
+        }
+        if !named.is_file()
+            || identity(&initial) != identity(&file.metadata()?)
+            || identity(&initial) != identity(&named)
+            || observed != initial.len()
+            || path.canonicalize()? != path
+            || format!("{:x}", digest.finalize()) != expected
+            || (actual_self && !is_actual_self()?)
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+
+    fn admitted_artifact_root_with_replay(
+        replay_basis: Option<(Option<&str>, &[u8], &[u8])>,
+    ) -> std::io::Result<PathBuf> {
         use std::io::Read;
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
         let invalid = |message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message);
@@ -1409,17 +1537,65 @@ pub(crate) mod status_test_support {
             || source.canonicalize()? != source
         {
             return Err(invalid(
-                "artifact owner source changed or is not the selected canonical regular source"
-                    .into(),
+                "artifact owner source changed or is not the selected canonical regular source".into(),
             ));
         }
         let text = std::str::from_utf8(&bytes)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-        let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(Path::parent)
-            .ok_or_else(|| invalid("missing compiled product repository".into()))?
-            .canonicalize()?;
+        let explicit_context = std::env::var_os("WORKCELL_TEST_CONTEXT_ROOT");
+        const REPLAY_INPUTS: [&str; 5] = [
+            "WORKCELL_TEST_REPLAY_SOURCE_REF",
+            "WORKCELL_TEST_REPLAY_TEST_SOURCE_SHA256",
+            "WORKCELL_TEST_REPLAY_LOCK_SHA256",
+            "WORKCELL_TEST_REPLAY_TEST_IMAGE_SHA256",
+            "WORKCELL_TEST_REPLAY_OWNER_IMAGE_SHA256",
+        ];
+        if explicit_context.is_none()
+            && REPLAY_INPUTS
+                .iter()
+                .any(|name| std::env::var_os(name).is_some())
+        {
+            return Err(invalid(
+                "explicit replay has no actual owner context".into(),
+            ));
+        }
+        let (repository, context_witness) = if let Some(context) = explicit_context {
+            if admission == "hosted-runner" {
+                return Err(invalid(
+                    "hosted staging cannot substitute an explicit replay owner context".into(),
+                ));
+            }
+            let context = PathBuf::from(context);
+            if !context.is_absolute() || context.canonicalize()? != context {
+                return Err(invalid(
+                    "explicit replay context must be an existing canonical absolute owner".into(),
+                ));
+            }
+            let held = fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+                .open(&context)?;
+            let initial = held.metadata()?;
+            let named = fs::symlink_metadata(&context)?;
+            if !initial.is_dir()
+                || !named.is_dir()
+                || (initial.dev(), initial.ino()) != (named.dev(), named.ino())
+            {
+                return Err(invalid(
+                    "explicit replay owner affiliation is unavailable".into(),
+                ));
+            }
+            (context, Some((held, initial)))
+        } else {
+            (
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .and_then(Path::parent)
+                    .ok_or_else(|| invalid("missing compiled product repository".into()))?
+                    .canonicalize()?,
+                None,
+            )
+        };
         let mut central_context = None;
         for ancestor in repository.ancestors() {
             match fs::metadata(ancestor.join("Control/user/native-action-authority.json")) {
@@ -1455,13 +1631,16 @@ pub(crate) mod status_test_support {
                     .join("Control/agents/now/clearings")
                     .join(id)
                     .join("now.json");
-                let source_ref = format!(
-                    "central:source:control:root:Control/agents/now/clearings/{id}/now.json"
-                );
+                let source_ref =
+                    format!("central:source:control:root:Control/agents/now/clearings/{id}/now.json");
+                if context_witness.is_some() && repository != central {
+                    return Err(invalid(
+                        "explicit replay context is not the selected actual clearing World".into(),
+                    ));
+                }
                 if central_context.as_deref() != Some(central) {
                     return Err(invalid(
-                        "clearing source is outside the actual compiled Central working context"
-                            .into(),
+                        "clearing source is outside the actual compiled Central working context".into(),
                     ));
                 }
                 if source != expected
@@ -1477,7 +1656,10 @@ pub(crate) mod status_test_support {
                         .as_array()
                         .is_some_and(|values| !values.is_empty())
                 {
-                    return Err(invalid("selected owner source does not establish the actual root clearing allocation".into()));
+                    return Err(invalid(
+                        "selected owner source does not establish the actual root clearing allocation"
+                            .into(),
+                    ));
                 }
                 if !base.starts_with(clearing.join("T").canonicalize()?) {
                     return Err(invalid(
@@ -1492,15 +1674,26 @@ pub(crate) mod status_test_support {
                     .parent()
                     .and_then(Path::parent)
                     .ok_or_else(|| invalid("missing declared product owner".into()))?;
-                let id = record["project_id"].as_str().ok_or_else(|| {
-                    invalid("declared product has no native project identity".into())
-                })?;
+                let id = record["project_id"]
+                    .as_str()
+                    .ok_or_else(|| invalid("declared product has no native project identity".into()))?;
                 let actual_product_context = match &central_context {
                     Some(central) => project.parent() == Some(central.join("Work").as_path()),
                     None => project == repository,
                 };
+                if context_witness.is_some()
+                    && project != repository
+                    && central_context.as_deref() != Some(repository.as_path())
+                {
+                    return Err(invalid(
+                        "explicit context is not its actual Project or World".into(),
+                    ));
+                }
                 if !actual_product_context {
-                    return Err(invalid("product scratch source is outside the actual compiled product owner context".into()));
+                    return Err(invalid(
+                        "product scratch source is outside the actual compiled product owner context"
+                            .into(),
+                    ));
                 }
                 if record["schema"] != "central.project/v1"
                     || id.is_empty()
@@ -1510,8 +1703,7 @@ pub(crate) mod status_test_support {
                     || !base.starts_with(project.join("ProjectCentral/now/tmp").canonicalize()?)
                 {
                     return Err(invalid(
-                        "artifact root does not match the selected actual product scratch owner"
-                            .into(),
+                        "artifact root does not match the selected actual product scratch owner".into(),
                     ));
                 }
                 // This is authored product scratch, not proof of a Run allocation.
@@ -1534,6 +1726,69 @@ pub(crate) mod status_test_support {
                 // CI staging is not a native Project, World, Run or NOW identity.
             }
             _ => return Err(invalid("unrecognised artifact admission kind".into())),
+        }
+        if let Some((held, context_initial)) = context_witness {
+            let expected_source = std::env::var("WORKCELL_TEST_REPLAY_SOURCE_REF")
+                .map_err(|_| invalid("explicit replay source association is absent".into()))?;
+            let (compiled_source, test_source, lock) = replay_basis
+                .ok_or_else(|| invalid("this fixture has no compiled replay basis".into()))?;
+            let compiled_source = compiled_source
+                .ok_or_else(|| invalid("image lacks compiled source association".into()))?;
+            if expected_source.len() != 40
+                || !expected_source
+                    .bytes()
+                    .all(|value| value.is_ascii_hexdigit())
+                || expected_source != compiled_source
+            {
+                return Err(invalid("explicit replay source association differs".into()));
+            }
+            let expected_test_source = replay_digest_input("WORKCELL_TEST_REPLAY_TEST_SOURCE_SHA256")?;
+            let expected_lock = replay_digest_input("WORKCELL_TEST_REPLAY_LOCK_SHA256")?;
+            if format!(
+                "{:x}",
+                Sha256::digest(test_source)
+            ) != expected_test_source
+                || format!(
+                    "{:x}",
+                    Sha256::digest(lock)
+                ) != expected_lock
+            {
+                return Err(invalid(
+                    "explicit replay compiled source/lock basis differs".into(),
+                ));
+            }
+            let expected_test = replay_digest_input("WORKCELL_TEST_REPLAY_TEST_IMAGE_SHA256")?;
+            let expected_owner = replay_digest_input("WORKCELL_TEST_REPLAY_OWNER_IMAGE_SHA256")?;
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            replay_image(
+                &std::env::current_exe()?,
+                &repository,
+                &expected_test,
+                true,
+                deadline,
+            )?;
+            let owner = PathBuf::from(input("WORKCELL_RUNTIME_PROJECTION_BIN")?);
+            replay_image(&owner, &repository, &expected_owner, false, deadline)?;
+            // Image observation may take time. Requalify the SAME held owner source
+            // before any fixture allocation; changed/missing source never falls back.
+            let owner_named = fs::symlink_metadata(&source)?;
+            if !owner_named.is_file()
+                || owner_named.nlink() != 1
+                || identity(&initial) != identity(&file.metadata()?)
+                || identity(&initial) != identity(&owner_named)
+                || source.canonicalize()? != source
+            {
+                return Err(invalid("actual replay owner source changed".into()));
+            }
+            let named = fs::symlink_metadata(&repository)?;
+            let current = held.metadata()?;
+            if !named.is_dir()
+                || (context_initial.dev(), context_initial.ino()) != (named.dev(), named.ino())
+                || (context_initial.dev(), context_initial.ino()) != (current.dev(), current.ino())
+                || repository.canonicalize()? != repository
+            {
+                return Err(invalid("explicit replay owner affiliation changed".into()));
+            }
         }
         Ok(base)
     }
