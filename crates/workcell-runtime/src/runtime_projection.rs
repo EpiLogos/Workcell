@@ -1842,6 +1842,10 @@ mod linux {
                     }
                 };
                 fs::write(root.join("preheld-outcome.json"), old_reading.to_string()).unwrap();
+                // Hold the original member before our overlay changes its visible route.
+                // Closing source identity remains checked through the original directory fd.
+                let source_member =
+                    open_at(&input, std::ffi::OsStr::new("unchanged"), false).unwrap();
                 let mut operation = None;
                 let input_mount = input.mount_handle(&mut operation).unwrap();
                 let skeleton_mount = skeleton.mount_handle(&mut operation).unwrap();
@@ -1875,8 +1879,6 @@ mod linux {
                     fs::read(input.path.join("unchanged")).unwrap(),
                     b"CONTROLLED_INPUT_UNCHANGED"
                 );
-                let source_member =
-                    open_at(&input, std::ffi::OsStr::new("unchanged"), false).unwrap();
                 let original_file = fs::metadata(input.fd_path().join("unchanged")).unwrap();
                 assert_eq!(
                     (source_member.dev, source_member.ino),
