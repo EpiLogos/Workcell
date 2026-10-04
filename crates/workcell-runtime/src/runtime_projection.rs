@@ -1447,7 +1447,7 @@ mod linux {
                     raw_write_all(checkpoint_fd, b"private-mounts\n")?;
                     if libc::mount(
                         std::ptr::null(),
-                        b"/\0".as_ptr().cast(),
+                        c"/".as_ptr(),
                         std::ptr::null(),
                         libc::MS_REC | libc::MS_PRIVATE,
                         std::ptr::null(),
