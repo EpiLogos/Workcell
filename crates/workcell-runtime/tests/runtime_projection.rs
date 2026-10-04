@@ -602,7 +602,11 @@ def refuse(name,fn):
 refuse('auth',lambda:(h/'auth.txt').write_text('changed'))
 refuse('config',lambda:(h/'config.txt').write_text('changed'))
 refuse('new-input',lambda:(h/'unknown-input').write_text('changed'))
-refuse('skeleton',lambda:next((t/'native-runtime').glob('view-*/readonly-members')).joinpath('auth.txt').write_text('changed'))
+skeletons=list((t/'native-runtime').glob(f'view-{os.getpid()}-*/readonly-members'))
+assert len(skeletons)==1, 'current native runtime view must be unique'
+skeleton=skeletons[0]
+refuse('skeleton',lambda:(skeleton/'auth.txt').write_text('changed'))
+assert (h/'auth.txt').read_text()=='CONTROLLED_INPUT_NOT_A_CREDENTIAL'
 assert (h/'sessions/history.jsonl').read_text().startswith('controlled-old-history\n')
 with (h/'sessions/history.jsonl').open('a') as s: s.write('controlled-continuation\n')
 (h/'log/native.log').write_text('actual native material');(h/'tmp/native.tmp').write_text('actual tmp material')
@@ -614,7 +618,7 @@ status=Path('/proc/self/status').read_text()
 for line in status.splitlines():
     if line.startswith(('CapEff:','CapPrm:','CapAmb:','CapBnd:')):assert int(line.split()[1],16)==0
 assert os.getuid()==int(os.environ['EXPECTED_NATIVE_UID'])
-print(json.dumps({'denied':denied,'history_lines':len((h/'sessions/history.jsonl').read_text().splitlines()),'runtime_id':p.read_text()}))
+print(json.dumps({'denied':denied,'history_lines':len((h/'sessions/history.jsonl').read_text().splitlines()),'runtime_id':p.read_text(),'readonly_view':str(skeleton)}))
 "#;
     // Exact uid is nonsecret material context, not a fabricated Session.
     // Supply it in the real script rather than mutate process-wide test env.
@@ -636,6 +640,13 @@ print(json.dumps({'denied':denied,'history_lines':len((h/'sessions/history.jsonl
             .join("task/native-runtime/files/installation_id/upper/installation_id"),
     )
     .unwrap();
+    // The previous launch's private mounts ended with its native process.
+    // Retained Task bytes must not become the next launch's immutable input.
+    fs::write(
+        Path::new(first["readonly_view"].as_str().unwrap()).join("auth.txt"),
+        b"STALE_RUNTIME_VIEW_NOT_SOURCE",
+    )
+    .unwrap();
     let second = f.execute("reentry", &script);
     assert!(
         second.status.success(),
@@ -644,6 +655,7 @@ print(json.dumps({'denied':denied,'history_lines':len((h/'sessions/history.jsonl
     );
     let second: Value = serde_json::from_slice(&second.stdout).unwrap();
     assert_eq!(second["history_lines"], 3);
+    assert_ne!(second["readonly_view"], first["readonly_view"]);
     assert_eq!(second["runtime_id"], first["runtime_id"]);
     assert_eq!(
         fs::read(

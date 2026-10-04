@@ -11,6 +11,7 @@
 use std::{
     collections::BTreeMap,
     fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -87,28 +88,76 @@ pub fn default_service_declaration_path(state_root: impl AsRef<Path>) -> PathBuf
     state_root.as_ref().join(SERVICE_DECLARATION_FILE)
 }
 
-/// Read a declaration file. A missing file is an error; callers that treat the
-/// conventional path as optional check for existence first.
+/// Read a declaration file. Missing material is an error; regular symlink and
+/// hardlink aliases retain their ordinary read-only behavior.
 pub fn read_service_declarations(path: impl AsRef<Path>) -> Result<DeclaredServices> {
-    let path = path.as_ref();
-    let raw = fs::read_to_string(path).map_err(|error| {
-        WorkcellError::NotFound(format!(
-            "read service declaration `{}`: {error}",
-            path.display()
-        ))
-    })?;
-    parse_service_declarations(&raw).map_err(|error| annotate(path, error))
+    read_declaration_material(path.as_ref(), false)
 }
 
-/// Read the conventional `<state-root>/services.json` when it exists.
+/// Read the conventional `<state-root>/services.json`. Only an actual initial
+/// NotFound means no declaration; other IO failures and nonregular material
+/// refuse the composition rather than declaring an empty service set.
 pub fn read_state_root_service_declarations(
     state_root: impl AsRef<Path>,
 ) -> Result<DeclaredServices> {
     let path = default_service_declaration_path(state_root);
-    if path.is_file() {
-        read_service_declarations(path)
+    read_declaration_material(&path, true)
+}
+
+fn read_declaration_material(path: &Path, optional: bool) -> Result<DeclaredServices> {
+    let initial = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if optional && error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(DeclaredServices::default())
+        }
+        Err(error) => return Err(declaration_io(path, "inspect", error)),
+    };
+    if !initial.is_file() {
+        return Err(nonregular_declaration(path));
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // A replacement FIFO must not block this read-only open. The same
+        // held file is checked below; stable regular aliases remain allowed.
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|error| declaration_io(path, "open", error))?;
+    let held = file
+        .metadata()
+        .map_err(|error| declaration_io(path, "inspect held file", error))?;
+    if !held.is_file() {
+        return Err(nonregular_declaration(path));
+    }
+    let mut raw = String::new();
+    file.read_to_string(&mut raw)
+        .map_err(|error| declaration_io(path, "read", error))?;
+    parse_service_declarations(&raw).map_err(|error| annotate(path, error))
+}
+
+fn nonregular_declaration(path: &Path) -> WorkcellError {
+    WorkcellError::InvalidDemand(format!(
+        "service declaration `{}` must be a regular file",
+        path.display()
+    ))
+}
+
+fn declaration_io(path: &Path, operation: &str, error: std::io::Error) -> WorkcellError {
+    let detail = format!(
+        "{operation} service declaration `{}`: {error}; io_kind={:?}; raw_os_error={:?}",
+        path.display(),
+        error.kind(),
+        error.raw_os_error()
+    );
+    if error.kind() == std::io::ErrorKind::NotFound {
+        WorkcellError::NotFound(detail)
     } else {
-        Ok(DeclaredServices::default())
+        WorkcellError::Unavailable(detail)
     }
 }
 
@@ -680,5 +729,294 @@ mod tests {
             error.to_string().contains("unknown kind"),
             "unexpected error: {error}"
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod native_file_tests {
+    use super::*;
+    use crate::bounded_process::status_test_support::{self as support, Fixture};
+    use crate::{CollapsedLocalConfig, CollapsedLocalWorkcell};
+    use epilogos_workcell_core::WorkcellRef;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{symlink, FileTypeExt, PermissionsExt};
+    use std::time::Duration;
+
+    fn declaration(marker: &Path) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "schema": SERVICE_DECLARATION_SCHEMA,
+            "services": [{
+                "logical_ref": "service:actual-file-read",
+                "endpoint": "http://127.0.0.1:1",
+                "lifetime": "target-owned",
+                "status": {
+                    "program": "/bin/sh",
+                    "args": ["-c", "printf executed > \"$1\"", "status", marker]
+                }
+            }]
+        }))
+        .unwrap()
+    }
+
+    fn assert_actual_io(error: WorkcellError, observed: &std::io::Error) {
+        match error {
+            WorkcellError::Unavailable(detail) => {
+                assert!(detail.contains(&format!("io_kind={:?}", observed.kind())));
+                assert!(detail.contains(&format!(
+                    "raw_os_error={:?}",
+                    observed.raw_os_error()
+                )));
+                assert!(detail.contains(&observed.to_string()));
+            }
+            other => panic!("actual non-NotFound IO was misclassified: {other}"),
+        }
+    }
+
+    #[test]
+    fn actual_optional_service_file_absence_is_empty_and_explicit_absence_is_notfound() {
+        let fixture = Fixture::new("declaration-absence");
+        let path = default_service_declaration_path(&fixture.root);
+        assert!(!path.exists());
+        assert!(read_state_root_service_declarations(&fixture.root)
+            .unwrap()
+            .is_empty());
+        assert!(matches!(
+            read_service_declarations(&path),
+            Err(WorkcellError::NotFound(_))
+        ));
+        assert!(!path.exists());
+        fixture.finish();
+    }
+
+    #[test]
+    fn actual_regular_declaration_and_stable_alias_preserve_same_services() {
+        let fixture = Fixture::new("declaration-aliases");
+        let marker = fixture.root.join("must-not-execute");
+        let body = declaration(&marker);
+        let path = default_service_declaration_path(&fixture.root);
+        fs::write(&path, &body).unwrap();
+        let hardlink = fixture.root.join("hardlink.json");
+        let alias = fixture.root.join("alias.json");
+        fs::hard_link(&path, &hardlink).unwrap();
+        symlink(&path, &alias).unwrap();
+        let expected = read_state_root_service_declarations(&fixture.root).unwrap();
+        assert_eq!(expected.len(), 1);
+        assert!(expected.managed.is_empty() && expected.execution.is_empty());
+        assert_eq!(
+            expected.target_owned[0].logical_ref,
+            "service:actual-file-read"
+        );
+        assert_eq!(expected.target_owned[0].endpoint, "http://127.0.0.1:1");
+        for selected in [&path, &hardlink, &alias] {
+            let actual = read_service_declarations(selected).unwrap();
+            assert_eq!(actual.len(), 1);
+            assert_eq!(actual.target_owned, expected.target_owned);
+            assert_eq!(fs::read(selected).unwrap(), body);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let non_utf8 = fixture
+                .root
+                .join(std::ffi::OsStr::from_bytes(b"declaration-\xff.json"));
+            fs::hard_link(&path, &non_utf8).unwrap();
+            let actual = read_service_declarations(&non_utf8).unwrap();
+            assert_eq!(actual.len(), 1);
+            assert_eq!(actual.target_owned, expected.target_owned);
+            assert_eq!(fs::read(&non_utf8).unwrap(), body);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::unix::fs::MetadataExt;
+
+            let non_utf8 = fixture
+                .root
+                .join(std::ffi::OsStr::from_bytes(b"declaration-\xff.json"));
+            let before = fs::metadata(&path).unwrap();
+            let refused = fs::hard_link(&path, &non_utf8).unwrap_err();
+            let name_created = fs::read_dir(&fixture.root).unwrap().any(|entry| {
+                entry.unwrap().file_name().as_bytes()
+                    == non_utf8.file_name().unwrap().as_bytes()
+            });
+            let after = fs::metadata(&path).unwrap();
+            fs::write(
+                fixture.root.join("non-utf8-name-refusal.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "io_kind": format!("{:?}", refused.kind()),
+                    "raw_os_error": refused.raw_os_error(),
+                    "name_created": name_created,
+                    "source_before": [before.dev(), before.ino(), before.nlink()],
+                    "source_after": [after.dev(), after.ino(), after.nlink()]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(refused.raw_os_error(), Some(libc::EILSEQ));
+            assert!(!name_created);
+            assert_eq!(
+                (before.dev(), before.ino(), before.nlink()),
+                (after.dev(), after.ino(), after.nlink())
+            );
+            assert_eq!(fs::read(&path).unwrap(), body);
+        }
+        assert!(
+            !marker.exists(),
+            "reading declarations must not execute a command"
+        );
+        fixture.finish();
+    }
+
+    #[test]
+    fn actual_directory_declaration_is_refused_in_both_read_modes() {
+        let fixture = Fixture::new("declaration-directory");
+        let path = default_service_declaration_path(&fixture.root);
+        fs::create_dir(&path).unwrap();
+        assert!(matches!(
+            read_service_declarations(&path),
+            Err(WorkcellError::InvalidDemand(_))
+        ));
+        assert!(matches!(
+            read_state_root_service_declarations(&fixture.root),
+            Err(WorkcellError::InvalidDemand(_))
+        ));
+        assert!(fs::metadata(&path).unwrap().is_dir());
+        assert_eq!(fs::read_dir(&path).unwrap().count(), 0);
+        fixture.finish();
+    }
+
+    #[test]
+    fn actual_fifo_declaration_is_refused_without_waiting_for_a_writer() {
+        if !support::isolated(
+            "service_declaration::native_file_tests::actual_fifo_declaration_is_refused_without_waiting_for_a_writer",
+            Duration::from_secs(5),
+        ) {
+            return;
+        }
+        let fixture = Fixture::new("declaration-fifo");
+        let path = default_service_declaration_path(&fixture.root);
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        assert!(fs::metadata(&path).unwrap().file_type().is_fifo());
+        assert!(matches!(
+            read_service_declarations(&path),
+            Err(WorkcellError::InvalidDemand(_))
+        ));
+        assert!(matches!(
+            read_state_root_service_declarations(&fixture.root),
+            Err(WorkcellError::InvalidDemand(_))
+        ));
+        assert!(fs::metadata(&path).unwrap().file_type().is_fifo());
+        fixture.finish();
+    }
+
+    #[test]
+    fn actual_nondirectory_parent_is_unavailable_not_optional_absence() {
+        let fixture = Fixture::new("declaration-enotdir");
+        let parent = fixture.root.join("regular-parent");
+        let body = b"actual regular parent remains unchanged";
+        fs::write(&parent, body).unwrap();
+        let path = default_service_declaration_path(&parent);
+        let observed = fs::metadata(&path).unwrap_err();
+        assert_eq!(observed.raw_os_error(), Some(libc::ENOTDIR));
+        assert_ne!(observed.kind(), std::io::ErrorKind::NotFound);
+        assert_actual_io(read_service_declarations(&path).unwrap_err(), &observed);
+        assert_actual_io(
+            read_state_root_service_declarations(&parent).unwrap_err(),
+            &observed,
+        );
+        assert_eq!(fs::read(&parent).unwrap(), body);
+        fixture.finish();
+    }
+
+    #[test]
+    fn actual_denied_declaration_preserves_actual_permission_failure() {
+        assert_ne!(
+            unsafe { libc::geteuid() },
+            0,
+            "real permission refusal requires the supported nonroot test host"
+        );
+        let fixture = Fixture::new("declaration-eacces");
+        let path = default_service_declaration_path(&fixture.root);
+        let body = declaration(&fixture.root.join("must-not-execute"));
+        fs::write(&path, &body).unwrap();
+        struct RestorePermissions {
+            path: PathBuf,
+            original: fs::Permissions,
+        }
+        impl Drop for RestorePermissions {
+            fn drop(&mut self) {
+                fs::set_permissions(&self.path, self.original.clone())
+                    .expect("restore actual owned permission fixture");
+            }
+        }
+        let restore = RestorePermissions {
+            path: path.clone(),
+            original: fs::metadata(&path).unwrap().permissions(),
+        };
+        fs::set_permissions(&path, fs::Permissions::from_mode(0)).unwrap();
+        let observed = fs::read_to_string(&path).unwrap_err();
+        assert_eq!(observed.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(observed.raw_os_error().is_some());
+        assert_actual_io(read_service_declarations(&path).unwrap_err(), &observed);
+        assert_actual_io(
+            read_state_root_service_declarations(&fixture.root).unwrap_err(),
+            &observed,
+        );
+        drop(restore);
+        assert_eq!(fs::read(&path).unwrap(), body);
+        fixture.finish();
+    }
+
+    #[test]
+    fn actual_invalid_utf8_read_is_not_relabelled_missing() {
+        let fixture = Fixture::new("declaration-invalid-utf8");
+        let path = default_service_declaration_path(&fixture.root);
+        let body = b"{\xff}";
+        fs::write(&path, body).unwrap();
+        let observed = fs::read_to_string(&path).unwrap_err();
+        assert_eq!(observed.kind(), std::io::ErrorKind::InvalidData);
+        assert_actual_io(read_service_declarations(&path).unwrap_err(), &observed);
+        assert_actual_io(
+            read_state_root_service_declarations(&fixture.root).unwrap_err(),
+            &observed,
+        );
+        assert_eq!(fs::read(&path).unwrap(), body);
+        fixture.finish();
+    }
+
+    #[test]
+    fn actual_local_composition_does_not_erase_inaccessible_declaration() {
+        let fixture = Fixture::new("declaration-local-composition");
+        let state = fixture.root.join("state");
+        fs::create_dir(&state).unwrap();
+        let path = default_service_declaration_path(&state);
+        fs::create_dir(&path).unwrap();
+        let config = || {
+            CollapsedLocalConfig::new(
+                WorkcellRef::new("workcell:actual-declaration-read").unwrap(),
+                &state,
+            )
+        };
+        assert!(matches!(
+            CollapsedLocalWorkcell::new(config()),
+            Err(WorkcellError::InvalidDemand(_))
+        ));
+        assert!(matches!(
+            CollapsedLocalWorkcell::new(config().with_service_declaration_file(&path)),
+            Err(WorkcellError::InvalidDemand(_))
+        ));
+        assert!(fs::metadata(&path).unwrap().is_dir());
+        let reduced =
+            CollapsedLocalWorkcell::new(config().without_service_declarations()).unwrap();
+        drop(reduced);
+        let absent = fixture.root.join("absent-state");
+        let ordinary = CollapsedLocalWorkcell::new(CollapsedLocalConfig::new(
+            WorkcellRef::new("workcell:actual-absent-declaration").unwrap(),
+            &absent,
+        ))
+        .unwrap();
+        drop(ordinary);
+        assert!(!default_service_declaration_path(&absent).exists());
+        assert!(fs::metadata(&path).unwrap().is_dir());
+        fixture.finish();
     }
 }
