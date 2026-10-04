@@ -762,10 +762,7 @@ mod native_file_tests {
         match error {
             WorkcellError::Unavailable(detail) => {
                 assert!(detail.contains(&format!("io_kind={:?}", observed.kind())));
-                assert!(detail.contains(&format!(
-                    "raw_os_error={:?}",
-                    observed.raw_os_error()
-                )));
+                assert!(detail.contains(&format!("raw_os_error={:?}", observed.raw_os_error())));
                 assert!(detail.contains(&observed.to_string()));
             }
             other => panic!("actual non-NotFound IO was misclassified: {other}"),
@@ -834,8 +831,7 @@ mod native_file_tests {
             let before = fs::metadata(&path).unwrap();
             let refused = fs::hard_link(&path, &non_utf8).unwrap_err();
             let name_created = fs::read_dir(&fixture.root).unwrap().any(|entry| {
-                entry.unwrap().file_name().as_bytes()
-                    == non_utf8.file_name().unwrap().as_bytes()
+                entry.unwrap().file_name().as_bytes() == non_utf8.file_name().unwrap().as_bytes()
             });
             let after = fs::metadata(&path).unwrap();
             fs::write(
@@ -1005,8 +1001,7 @@ mod native_file_tests {
             Err(WorkcellError::InvalidDemand(_))
         ));
         assert!(fs::metadata(&path).unwrap().is_dir());
-        let reduced =
-            CollapsedLocalWorkcell::new(config().without_service_declarations()).unwrap();
+        let reduced = CollapsedLocalWorkcell::new(config().without_service_declarations()).unwrap();
         drop(reduced);
         let absent = fixture.root.join("absent-state");
         let ordinary = CollapsedLocalWorkcell::new(CollapsedLocalConfig::new(
