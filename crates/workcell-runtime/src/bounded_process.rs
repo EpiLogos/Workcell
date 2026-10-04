@@ -1642,7 +1642,9 @@ pub(crate) mod status_test_support {
                         "explicit replay context is not the selected actual clearing World".into(),
                     ));
                 }
-                if central_context.as_deref() != Some(central) {
+                // An explicit replay already holds the exact native clearing World
+                // above; private grant files do not establish portable World identity.
+                if context_witness.is_none() && central_context.as_deref() != Some(central) {
                     return Err(invalid(
                         "clearing source is outside the actual compiled Central working context"
                             .into(),
