@@ -1537,7 +1537,8 @@ pub(crate) mod status_test_support {
             || source.canonicalize()? != source
         {
             return Err(invalid(
-                "artifact owner source changed or is not the selected canonical regular source".into(),
+                "artifact owner source changed or is not the selected canonical regular source"
+                    .into(),
             ));
         }
         let text = std::str::from_utf8(&bytes)
@@ -1573,7 +1574,9 @@ pub(crate) mod status_test_support {
             }
             let held = fs::OpenOptions::new()
                 .read(true)
-                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+                .custom_flags(
+                    libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+                )
                 .open(&context)?;
             let initial = held.metadata()?;
             let named = fs::symlink_metadata(&context)?;
@@ -1631,8 +1634,9 @@ pub(crate) mod status_test_support {
                     .join("Control/agents/now/clearings")
                     .join(id)
                     .join("now.json");
-                let source_ref =
-                    format!("central:source:control:root:Control/agents/now/clearings/{id}/now.json");
+                let source_ref = format!(
+                    "central:source:control:root:Control/agents/now/clearings/{id}/now.json"
+                );
                 if context_witness.is_some() && repository != central {
                     return Err(invalid(
                         "explicit replay context is not the selected actual clearing World".into(),
@@ -1640,7 +1644,8 @@ pub(crate) mod status_test_support {
                 }
                 if central_context.as_deref() != Some(central) {
                     return Err(invalid(
-                        "clearing source is outside the actual compiled Central working context".into(),
+                        "clearing source is outside the actual compiled Central working context"
+                            .into(),
                     ));
                 }
                 if source != expected
@@ -1674,9 +1679,9 @@ pub(crate) mod status_test_support {
                     .parent()
                     .and_then(Path::parent)
                     .ok_or_else(|| invalid("missing declared product owner".into()))?;
-                let id = record["project_id"]
-                    .as_str()
-                    .ok_or_else(|| invalid("declared product has no native project identity".into()))?;
+                let id = record["project_id"].as_str().ok_or_else(|| {
+                    invalid("declared product has no native project identity".into())
+                })?;
                 let actual_product_context = match &central_context {
                     Some(central) => project.parent() == Some(central.join("Work").as_path()),
                     None => project == repository,
@@ -1703,7 +1708,8 @@ pub(crate) mod status_test_support {
                     || !base.starts_with(project.join("ProjectCentral/now/tmp").canonicalize()?)
                 {
                     return Err(invalid(
-                        "artifact root does not match the selected actual product scratch owner".into(),
+                        "artifact root does not match the selected actual product scratch owner"
+                            .into(),
                     ));
                 }
                 // This is authored product scratch, not proof of a Run allocation.
@@ -1742,16 +1748,11 @@ pub(crate) mod status_test_support {
             {
                 return Err(invalid("explicit replay source association differs".into()));
             }
-            let expected_test_source = replay_digest_input("WORKCELL_TEST_REPLAY_TEST_SOURCE_SHA256")?;
+            let expected_test_source =
+                replay_digest_input("WORKCELL_TEST_REPLAY_TEST_SOURCE_SHA256")?;
             let expected_lock = replay_digest_input("WORKCELL_TEST_REPLAY_LOCK_SHA256")?;
-            if format!(
-                "{:x}",
-                Sha256::digest(test_source)
-            ) != expected_test_source
-                || format!(
-                    "{:x}",
-                    Sha256::digest(lock)
-                ) != expected_lock
+            if format!("{:x}", Sha256::digest(test_source)) != expected_test_source
+                || format!("{:x}", Sha256::digest(lock)) != expected_lock
             {
                 return Err(invalid(
                     "explicit replay compiled source/lock basis differs".into(),

@@ -1288,18 +1288,41 @@ mod linux {
             inheritable: u32,
         }
         fn cap_data() -> io::Result<[CapData; 2]> {
-            let mut header = CapHeader { version: 0x2008_0522, pid: 0 };
-            let mut data = [CapData { effective: 0, permitted: 0, inheritable: 0 }; 2];
-            if unsafe { libc::syscall(libc::SYS_capget, &mut header as *mut CapHeader, data.as_mut_ptr()) } != 0 {
+            let mut header = CapHeader {
+                version: 0x2008_0522,
+                pid: 0,
+            };
+            let mut data = [CapData {
+                effective: 0,
+                permitted: 0,
+                inheritable: 0,
+            }; 2];
+            if unsafe {
+                libc::syscall(
+                    libc::SYS_capget,
+                    &mut header as *mut CapHeader,
+                    data.as_mut_ptr(),
+                )
+            } != 0
+            {
                 return Err(io::Error::last_os_error());
             }
             Ok(data)
         }
         fn file_basis(info: &fs::Metadata) -> [u64; 11] {
-            [info.dev(), info.ino(), info.mode() as u64, info.nlink(),
-                info.uid() as u64, info.gid() as u64, info.len(),
-                info.mtime() as u64, info.mtime_nsec() as u64,
-                info.ctime() as u64, info.ctime_nsec() as u64]
+            [
+                info.dev(),
+                info.ino(),
+                info.mode() as u64,
+                info.nlink(),
+                info.uid() as u64,
+                info.gid() as u64,
+                info.len(),
+                info.mtime() as u64,
+                info.mtime_nsec() as u64,
+                info.ctime() as u64,
+                info.ctime_nsec() as u64,
+            ]
         }
         // Only native write/open/close calls and fixed, precomputed memory are
         // used by these helpers after fork. Preserve the first actual errno.
@@ -1326,16 +1349,23 @@ mod linux {
             }
             let written = raw_write_all(fd, bytes);
             let close_result = unsafe { libc::close(fd) };
-            let close_cause = if close_result != 0 { Some(io::Error::last_os_error()) } else { None };
+            let close_cause = if close_result != 0 {
+                Some(io::Error::last_os_error())
+            } else {
+                None
+            };
             written?;
             if let Some(cause) = close_cause {
                 return Err(cause);
             }
             Ok(())
         }
-        fn namespace_command(root: &Path, case: &str, child: &str, members: &[&str])
-            -> io::Result<(Command, Vec<File>)>
-        {
+        fn namespace_command(
+            root: &Path,
+            case: &str,
+            child: &str,
+            members: &[&str],
+        ) -> io::Result<(Command, Vec<File>)> {
             use std::os::unix::process::CommandExt;
             let uid = unsafe { libc::geteuid() };
             let gid = unsafe { libc::getegid() };
@@ -1349,11 +1379,13 @@ mod linux {
             let [user_namespace, mount_namespace] = namespaces;
             let original_namespaces = [user_namespace?, mount_namespace?];
             let image_path = std::env::current_exe()?.canonicalize()?;
-            let image = fs::OpenOptions::new().read(true)
+            let image = fs::OpenOptions::new()
+                .read(true)
                 .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
                 .open(&image_path)?;
             let image_info = image.metadata()?;
-            if !image_info.is_file() || image_info.len() == 0
+            if !image_info.is_file()
+                || image_info.len() == 0
                 || file_basis(&image_info) != file_basis(&fs::symlink_metadata(&image_path)?)
             {
                 return Err(io::ErrorKind::InvalidInput.into());
@@ -1370,13 +1402,23 @@ mod linux {
             let image_record = json!({"fd":image.as_raw_fd(),"path":image_path,
                 "basis":file_basis(&image_info)});
             held.push(image);
-            let descriptors: Vec<_> = held.iter().map(|file| {
-                let fd = file.as_raw_fd();
-                let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-                if flags < 0 { Err(io::Error::last_os_error()) } else { Ok((fd, flags)) }
-            }).collect::<io::Result<_>>()?;
-            let checkpoint = fs::OpenOptions::new().write(true).create_new(true)
-                .mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            let descriptors: Vec<_> = held
+                .iter()
+                .map(|file| {
+                    let fd = file.as_raw_fd();
+                    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+                    if flags < 0 {
+                        Err(io::Error::last_os_error())
+                    } else {
+                        Ok((fd, flags))
+                    }
+                })
+                .collect::<io::Result<_>>()?;
+            let checkpoint = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
                 .open(root.join("namespace-setup.steps"))?;
             let checkpoint_fd = checkpoint.as_raw_fd();
             held.push(checkpoint);
@@ -1385,7 +1427,9 @@ mod linux {
             fs::write(root.join("namespace-child-basis.json"), basis.to_string())?;
             let mut command = Command::new(&image_path);
             command.args([case, "--exact", "--ignored", "--nocapture"]);
-            command.env(child, root).env(NAMESPACE_BASIS, basis.to_string());
+            command
+                .env(child, root)
+                .env(NAMESPACE_BASIS, basis.to_string());
             // Command's pre-exec runs before the new image starts libtest and
             // creates its workers. Do not use Rust fs/format/locks here.
             unsafe {
@@ -1401,8 +1445,13 @@ mod linux {
                     raw_write_all(checkpoint_fd, b"gid-map\n")?;
                     raw_map(b"/proc/self/gid_map\0", &gid_map)?;
                     raw_write_all(checkpoint_fd, b"private-mounts\n")?;
-                    if libc::mount(std::ptr::null(), b"/\0".as_ptr().cast(),
-                        std::ptr::null(), libc::MS_REC | libc::MS_PRIVATE, std::ptr::null()) != 0
+                    if libc::mount(
+                        std::ptr::null(),
+                        b"/\0".as_ptr().cast(),
+                        std::ptr::null(),
+                        libc::MS_REC | libc::MS_PRIVATE,
+                        std::ptr::null(),
+                    ) != 0
                     {
                         return Err(io::Error::last_os_error());
                     }
@@ -1414,9 +1463,14 @@ mod linux {
                     // Add no permitted capability. Keep only this already
                     // permitted private-namespace capability across exact exec.
                     data[0].inheritable |= SYS_ADMIN_BIT;
-                    let header = CapHeader { version: 0x2008_0522, pid: 0 };
+                    let header = CapHeader {
+                        version: 0x2008_0522,
+                        pid: 0,
+                    };
                     raw_write_all(checkpoint_fd, b"namespace-capability-inheritable\n")?;
-                    if libc::syscall(libc::SYS_capset, &header as *const CapHeader, data.as_ptr()) != 0 {
+                    if libc::syscall(libc::SYS_capset, &header as *const CapHeader, data.as_ptr())
+                        != 0
+                    {
                         return Err(io::Error::last_os_error());
                     }
                     raw_write_all(checkpoint_fd, b"namespace-capability-ambient\n")?;
@@ -1437,68 +1491,124 @@ mod linux {
         }
         fn namespace_child(root: &Path, expected_members: &[&str]) -> Vec<Held> {
             let basis: Value = serde_json::from_str(
-                &std::env::var(NAMESPACE_BASIS).expect("actual parent namespace handoff required")
-            ).unwrap();
+                &std::env::var(NAMESPACE_BASIS).expect("actual parent namespace handoff required"),
+            )
+            .unwrap();
             assert_eq!(basis["schema"], "workcell.kernel-child-basis/v1");
-            assert_eq!(basis["uid"].as_u64(), Some(unsafe { libc::geteuid() } as u64));
-            assert_eq!(basis["gid"].as_u64(), Some(unsafe { libc::getegid() } as u64));
-            for (index, path) in ["/proc/self/ns/user", "/proc/self/ns/mnt"].iter().enumerate() {
+            assert_eq!(
+                basis["uid"].as_u64(),
+                Some(unsafe { libc::geteuid() } as u64)
+            );
+            assert_eq!(
+                basis["gid"].as_u64(),
+                Some(unsafe { libc::getegid() } as u64)
+            );
+            for (index, path) in ["/proc/self/ns/user", "/proc/self/ns/mnt"]
+                .iter()
+                .enumerate()
+            {
                 let info = fs::metadata(path).unwrap();
-                assert_ne!(json!([info.dev(),info.ino()]), basis["original_namespaces"][index],
-                    "actual child namespace must differ from original parent namespace");
+                assert_ne!(
+                    json!([info.dev(), info.ino()]),
+                    basis["original_namespaces"][index],
+                    "actual child namespace must differ from original parent namespace"
+                );
             }
             use std::io::Read;
             for (path, key) in [("/proc/self/uid_map", "uid"), ("/proc/self/gid_map", "gid")] {
                 let mut raw = String::new();
-                fs::File::open(path).unwrap().take(4097).read_to_string(&mut raw).unwrap();
+                fs::File::open(path)
+                    .unwrap()
+                    .take(4097)
+                    .read_to_string(&mut raw)
+                    .unwrap();
                 assert!(raw.len() <= 4096, "actual namespace map must be bounded");
-                let rows: Vec<_> = raw.split_whitespace().map(|part| part.parse::<u64>().unwrap()).collect();
+                let rows: Vec<_> = raw
+                    .split_whitespace()
+                    .map(|part| part.parse::<u64>().unwrap())
+                    .collect();
                 let id = basis[key].as_u64().unwrap();
-                assert_eq!(rows, vec![id, id, 1], "actual namespace maps must retain original uid/gid");
+                assert_eq!(
+                    rows,
+                    vec![id, id, 1],
+                    "actual namespace maps must retain original uid/gid"
+                );
             }
             let caps = cap_data().expect("actual post-exec capabilities must be readable");
             assert_ne!(caps[0].effective & SYS_ADMIN_BIT, 0);
             assert_ne!(caps[0].permitted & SYS_ADMIN_BIT, 0);
             assert_ne!(caps[0].inheritable & SYS_ADMIN_BIT, 0);
-            assert_eq!(unsafe { libc::prctl(47, 1, 21, 0, 0) }, 1,
-                "actual ambient private-namespace capability must survive exact exec");
+            assert_eq!(
+                unsafe { libc::prctl(47, 1, 21, 0, 0) },
+                1,
+                "actual ambient private-namespace capability must survive exact exec"
+            );
             let image_fd = i32::try_from(basis["image"]["fd"].as_i64().unwrap()).unwrap();
             assert!(image_fd > 2);
             let image = unsafe { File::from_raw_fd(image_fd) };
             let original_image_basis = &basis["image"]["basis"];
-            assert_eq!(json!(file_basis(&image.metadata().unwrap())), *original_image_basis);
-            assert_eq!(json!(file_basis(&fs::metadata("/proc/self/exe").unwrap())), *original_image_basis);
+            assert_eq!(
+                json!(file_basis(&image.metadata().unwrap())),
+                *original_image_basis
+            );
+            assert_eq!(
+                json!(file_basis(&fs::metadata("/proc/self/exe").unwrap())),
+                *original_image_basis
+            );
             let image_path = PathBuf::from(basis["image"]["path"].as_str().unwrap());
             assert_eq!(std::env::current_exe().unwrap(), image_path);
-            assert_eq!(json!(file_basis(&fs::symlink_metadata(&image_path).unwrap())), *original_image_basis);
+            assert_eq!(
+                json!(file_basis(&fs::symlink_metadata(&image_path).unwrap())),
+                *original_image_basis
+            );
             let records = basis["members"].as_array().unwrap();
             assert_eq!(records.len(), expected_members.len());
             let mut seen = std::collections::BTreeSet::new();
             seen.insert(image_fd);
-            let objects = records.iter().zip(expected_members).map(|(record, member)| {
-                assert_eq!(record["member"].as_str(), Some(*member));
-                let fd = i32::try_from(record["fd"].as_i64().unwrap()).unwrap();
-                assert!(fd > 2 && seen.insert(fd), "actual inherited handles must be distinct");
-                let file = unsafe { File::from_raw_fd(fd) };
-                let info = file.metadata().unwrap();
-                assert!(info.is_dir());
-                assert_eq!(json!(file_basis(&info)), record["basis"]);
-                let path = root.join(member);
-                assert_eq!(fs::canonicalize(&path).unwrap(), path);
-                assert_eq!(json!(file_basis(&fs::symlink_metadata(&path).unwrap())), record["basis"]);
-                let held = Held { path, file, dev:info.dev(), ino:info.ino() };
-                held.check_requested(&root.join(member)).unwrap();
-                held
-            }).collect();
+            let objects = records
+                .iter()
+                .zip(expected_members)
+                .map(|(record, member)| {
+                    assert_eq!(record["member"].as_str(), Some(*member));
+                    let fd = i32::try_from(record["fd"].as_i64().unwrap()).unwrap();
+                    assert!(
+                        fd > 2 && seen.insert(fd),
+                        "actual inherited handles must be distinct"
+                    );
+                    let file = unsafe { File::from_raw_fd(fd) };
+                    let info = file.metadata().unwrap();
+                    assert!(info.is_dir());
+                    assert_eq!(json!(file_basis(&info)), record["basis"]);
+                    let path = root.join(member);
+                    assert_eq!(fs::canonicalize(&path).unwrap(), path);
+                    assert_eq!(
+                        json!(file_basis(&fs::symlink_metadata(&path).unwrap())),
+                        record["basis"]
+                    );
+                    let held = Held {
+                        path,
+                        file,
+                        dev: info.dev(),
+                        ino: info.ino(),
+                    };
+                    held.check_requested(&root.join(member)).unwrap();
+                    held
+                })
+                .collect();
             assert_eq!(fs::read(root.join("namespace-setup.steps")).unwrap(),
                 b"unshare-user-mount\nsetgroups-deny\nuid-map\ngid-map\nprivate-mounts\nnamespace-capability-get\nnamespace-capability-inheritable\nnamespace-capability-ambient\noriginal-handles-across-exec\nnamespace-exec-ready\n");
-            fs::write(root.join("namespace-child-observation.json"), json!({
-                "schema":"workcell.kernel-child-observation/v1",
-                "actual_private_user_and_mount_namespaces":true,
-                "actual_post_exec_sys_admin_permitted_effective_inheritable_ambient":true,
-                "actual_inherited_original_handles_requalified":true,
-                "provider_executed":false
-            }).to_string()).unwrap();
+            fs::write(
+                root.join("namespace-child-observation.json"),
+                json!({
+                    "schema":"workcell.kernel-child-observation/v1",
+                    "actual_private_user_and_mount_namespaces":true,
+                    "actual_post_exec_sys_admin_permitted_effective_inheritable_ambient":true,
+                    "actual_inherited_original_handles_requalified":true,
+                    "provider_executed":false
+                })
+                .to_string(),
+            )
+            .unwrap();
             objects
         }
 
@@ -1715,8 +1825,7 @@ mod linux {
             );
             if let Some(root) = std::env::var_os(CHILD_POSITIVE) {
                 let root = PathBuf::from(root);
-                let mut original_objects =
-                    namespace_child(&root, &["input", "skeleton", "empty"]);
+                let mut original_objects = namespace_child(&root, &["input", "skeleton", "empty"]);
                 let input = original_objects.remove(0);
                 let skeleton = original_objects.remove(0);
                 let empty = original_objects.remove(0);
@@ -1794,8 +1903,12 @@ mod linux {
             }
             fs::write(root.join("input/unchanged"), b"CONTROLLED_INPUT_UNCHANGED").unwrap();
             let (command, _namespace_owner) = namespace_command(
-                &root, POSITIVE, CHILD_POSITIVE, &["input", "skeleton", "empty"],
-            ).unwrap();
+                &root,
+                POSITIVE,
+                CHILD_POSITIVE,
+                &["input", "skeleton", "empty"],
+            )
+            .unwrap();
             let captured = capture_case(command, &root);
             fs::write(root.join("child.stdout"), &captured.stdout).unwrap();
             fs::write(root.join("child.stderr"), &captured.stderr).unwrap();
