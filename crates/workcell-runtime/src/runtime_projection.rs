@@ -34,6 +34,7 @@ pub struct RuntimeProjectionFailure {
     phase: &'static str,
     cause: io::Error,
     material_setup_started: bool,
+    operation: Option<&'static str>,
 }
 impl RuntimeProjectionFailure {
     pub(crate) fn new(phase: &'static str, cause: io::Error, material_setup_started: bool) -> Self {
@@ -41,7 +42,13 @@ impl RuntimeProjectionFailure {
             phase,
             cause,
             material_setup_started,
+            operation: None,
         }
+    }
+    #[cfg(target_os = "linux")]
+    fn with_operation(mut self, operation: Option<&'static str>) -> Self {
+        self.operation = operation;
+        self
     }
     pub(crate) fn owner(
         phase: &'static str,
@@ -62,12 +69,16 @@ impl RuntimeProjectionFailure {
         Self::new("provider-exec", cause, true)
     }
     pub fn as_json(&self) -> Value {
-        json!({"schema":"workcell.runtime-projection-failure/v1", "phase":self.phase,
+        let mut reading = json!({"schema":"workcell.runtime-projection-failure/v1", "phase":self.phase,
             "executed":false, "material_setup_started":self.material_setup_started,
             "material_effect":"setup may be partial; no rollback or automatic retry",
             "cause":{"kind":format!("{:?}",self.cause.kind()),
                 "raw_os_error":self.cause.raw_os_error(),"message":self.cause.to_string()},
-            "automatic_retry":false})
+            "automatic_retry":false});
+        if let Some(operation) = self.operation {
+            reading["operation"] = json!(operation);
+        }
+        reading
     }
 }
 impl fmt::Display for RuntimeProjectionFailure {
@@ -329,15 +340,33 @@ mod linux {
     }
     impl Held {
         fn open(path: &Path, directory: bool) -> io::Result<Self> {
+            Self::open_observed(
+                path,
+                directory,
+                &mut None,
+                ["open", "fstat", "form", "canonicalize", "route"],
+            )
+        }
+        // The same held reader; the optional label records the entered operation,
+        // never an inferred errno meaning or a pathname/authority.
+        fn open_observed(
+            path: &Path,
+            directory: bool,
+            operation: &mut Option<&'static str>,
+            operations: [&'static str; 5],
+        ) -> io::Result<Self> {
             let flags = libc::O_NOFOLLOW
                 | libc::O_NONBLOCK
                 | libc::O_CLOEXEC
                 | if directory { libc::O_DIRECTORY } else { 0 };
+            *operation = Some(operations[0]);
             let file = fs::OpenOptions::new()
                 .read(true)
                 .custom_flags(flags)
                 .open(path)?;
+            *operation = Some(operations[1]);
             let m = file.metadata()?;
+            *operation = Some(operations[2]);
             if if directory {
                 !m.is_dir()
             } else {
@@ -348,7 +377,10 @@ mod linux {
                     "wrong projection object form",
                 ));
             }
-            if fs::canonicalize(path)? != path {
+            *operation = Some(operations[3]);
+            let canonical = fs::canonicalize(path)?;
+            *operation = Some(operations[4]);
+            if canonical != path {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "projection path redirected",
@@ -360,6 +392,62 @@ mod linux {
                 dev: m.dev(),
                 ino: m.ino(),
             })
+        }
+        // File descriptors remember their mount namespace. Preserve the original
+        // reader and admit a same-object descriptor in the namespace that will
+        // mount it; a pathname reopen alone is never an identity witness.
+        fn mount_handle(&self, operation: &mut Option<&'static str>) -> io::Result<Self> {
+            let basis = |m: &fs::Metadata| {
+                (
+                    m.dev(),
+                    m.ino(),
+                    m.mode(),
+                    m.nlink(),
+                    m.uid(),
+                    m.gid(),
+                    m.len(),
+                    m.mtime(),
+                    m.mtime_nsec(),
+                    m.ctime(),
+                    m.ctime_nsec(),
+                )
+            };
+            *operation = Some("readonly-input.reaffiliate.named-before");
+            self.check()?;
+            *operation = Some("readonly-input.reaffiliate.held-before");
+            let original = self.file.metadata()?;
+            let current = Self::open_observed(
+                &self.path,
+                original.is_dir(),
+                operation,
+                [
+                    "readonly-input.reaffiliate.open",
+                    "readonly-input.reaffiliate.fstat",
+                    "readonly-input.reaffiliate.form",
+                    "readonly-input.reaffiliate.canonicalize",
+                    "readonly-input.reaffiliate.route",
+                ],
+            )?;
+            *operation = Some("readonly-input.reaffiliate.original-after");
+            let original_after = self.file.metadata()?;
+            *operation = Some("readonly-input.reaffiliate.current-after");
+            let current_after = current.file.metadata()?;
+            *operation = Some("readonly-input.reaffiliate.named-after");
+            let named = fs::symlink_metadata(&self.path)?;
+            *operation = Some("readonly-input.reaffiliate.identity");
+            if basis(&original) != basis(&original_after)
+                || basis(&original) != basis(&current_after)
+                || basis(&original) != basis(&named)
+                || current.dev != self.dev
+                || current.ino != self.ino
+                || named.file_type().is_symlink()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "mount object changed during namespace reaffiliation",
+                ));
+            }
+            Ok(current)
         }
         fn check(&self) -> io::Result<()> {
             let m = fs::symlink_metadata(&self.path)?;
@@ -598,7 +686,16 @@ mod linux {
         Ok(())
     }
     fn readonly_bind(h: &Held) -> io::Result<()> {
+        readonly_bind_observed(h, &mut None, ["bind", "remount"])
+    }
+    fn readonly_bind_observed(
+        h: &Held,
+        operation: &mut Option<&'static str>,
+        operations: [&'static str; 2],
+    ) -> io::Result<()> {
+        *operation = Some(operations[0]);
         mount(Some(&h.fd_path()), &h.path, None, libc::MS_BIND, None)?;
+        *operation = Some(operations[1]);
         mount(
             None,
             &h.path,
@@ -686,6 +783,7 @@ mod linux {
     ) -> Result<AppliedProjection, RuntimeProjectionFailure> {
         let mut phase = "origin-admission";
         let mut started = false;
+        let mut operation = None;
         let result = (|| -> io::Result<AppliedProjection> {
             let input = Held::open(&p.input_root, true)?;
             input.check_requested(&p.requested_input_root)?;
@@ -879,13 +977,58 @@ mod linux {
             phase = "namespace";
             enter_namespace()?;
             phase = "readonly-input";
-            readonly_bind(&placeholders)?;
-            readonly_bind(&empty)?;
+            operation = Some("readonly-input.requested-route");
+            input.check_requested(&p.requested_input_root)?;
+            let input_mount = input.mount_handle(&mut operation)?;
+            let placeholders_mount = placeholders.mount_handle(&mut operation)?;
+            let empty_mount = empty.mount_handle(&mut operation)?;
+            let mut mount_lowers = Vec::with_capacity(lowers.len());
+            for lower in &lowers {
+                mount_lowers.push(
+                    lower
+                        .as_ref()
+                        .map(|held| held.mount_handle(&mut operation))
+                        .transpose()?,
+                );
+            }
+            let mut mount_views = Vec::with_capacity(views.len());
+            for (_, upper, work) in &views {
+                mount_views.push((
+                    upper.mount_handle(&mut operation)?,
+                    work.mount_handle(&mut operation)?,
+                ));
+            }
+            let mut mount_file_views = Vec::with_capacity(file_views.len());
+            for (_, upper, work, target) in &file_views {
+                mount_file_views.push((
+                    upper.mount_handle(&mut operation)?,
+                    work.mount_handle(&mut operation)?,
+                    target.mount_handle(&mut operation)?,
+                ));
+            }
+            operation = Some("readonly-input.requested-route-after");
+            input.check_requested(&p.requested_input_root)?;
+            anchor.check()?;
+            root.check()?;
+            readonly_bind_observed(
+                &placeholders_mount,
+                &mut operation,
+                [
+                    "readonly-input.skeleton.bind",
+                    "readonly-input.skeleton.remount",
+                ],
+            )?;
+            readonly_bind_observed(
+                &empty_mount,
+                &mut operation,
+                ["readonly-input.empty.bind", "readonly-input.empty.remount"],
+            )?;
             let options = format!(
                 "lowerdir={}:{},userxattr,redirect_dir=nofollow",
-                placeholders.fd_path().display(),
-                input.fd_path().display()
+                placeholders_mount.fd_path().display(),
+                input_mount.fd_path().display()
             );
+            operation = Some("readonly-input.overlay.mount");
             mount(
                 Some(Path::new("overlay")),
                 &input.path,
@@ -893,14 +1036,26 @@ mod linux {
                 libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV,
                 Some(&options),
             )?;
-            let view = Held::open(&input.path, true)?;
+            let view = Held::open_observed(
+                &input.path,
+                true,
+                &mut operation,
+                [
+                    "readonly-input.view.open",
+                    "readonly-input.view.fstat",
+                    "readonly-input.view.form",
+                    "readonly-input.view.canonicalize",
+                    "readonly-input.view.route",
+                ],
+            )?;
+            operation = None;
             let mut aliases = Vec::new();
             phase = "mutable-directory-view";
             for (index, member) in p.mutable_directories.iter().enumerate() {
-                let (_, upper, work) = &views[index];
+                let (upper, work) = &mount_views[index];
                 upper.check()?;
                 work.check()?;
-                let lower = lowers[index].as_ref().unwrap_or(&empty);
+                let lower = mount_lowers[index].as_ref().unwrap_or(&empty_mount);
                 let options = format!(
                     "lowerdir={},upperdir={},workdir={},userxattr,redirect_dir=nofollow",
                     lower.fd_path().display(),
@@ -923,13 +1078,13 @@ mod linux {
             }
             phase = "mutable-file-view";
             for (index, member) in p.mutable_files.iter().enumerate() {
-                let (_, upper, work, target) = &file_views[index];
+                let (upper, work, target) = &mount_file_views[index];
                 upper.check()?;
                 work.check()?;
                 target.check()?;
                 let options = format!(
                     "lowerdir={},upperdir={},workdir={},userxattr,redirect_dir=nofollow",
-                    input.fd_path().display(),
+                    input_mount.fd_path().display(),
                     upper.fd_path().display(),
                     work.fd_path().display()
                 );
@@ -1013,6 +1168,20 @@ mod linux {
                 view.file,
                 control.file,
             ]);
+            // Keep original reader handles and same-object mount handles alive
+            // through the existing AppliedProjection/exec lifecycle.
+            held.extend([
+                input_mount.file,
+                placeholders_mount.file,
+                empty_mount.file,
+            ]);
+            held.extend(mount_lowers.into_iter().flatten().map(|h| h.file));
+            for (upper, work) in mount_views {
+                held.extend([upper.file, work.file]);
+            }
+            for (upper, work, target) in mount_file_views {
+                held.extend([upper.file, work.file, target.file]);
+            }
             held.extend(immutable.into_iter().flatten().map(|h| h.file));
             for lower in lowers.into_iter().flatten() {
                 held.push(lower.file);
@@ -1031,7 +1200,297 @@ mod linux {
                 _held: held,
             })
         })();
-        result.map_err(|e| RuntimeProjectionFailure::new(phase, e, started))
+        result.map_err(|e| {
+            RuntimeProjectionFailure::new(phase, e, started).with_operation(operation)
+        })
+    }
+
+    #[cfg(test)]
+    mod observation_tests {
+        use super::*;
+        use std::{error::Error, process::Command, time::Duration};
+
+        const CHILD: &str = "WORKCELL_READONLY_OBSERVATION_CHILD";
+        const VIEW_OPERATIONS: [&str; 5] = [
+            "readonly-input.view.open",
+            "readonly-input.view.fstat",
+            "readonly-input.view.form",
+            "readonly-input.view.canonicalize",
+            "readonly-input.view.route",
+        ];
+        const CASE: &str = "runtime_projection::linux::observation_tests::actual_readonly_bind_suboperation_retains_original_kernel_refusal";
+
+        fn fixture() -> PathBuf {
+            let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../ProjectCentral/now/tmp");
+            fs::create_dir_all(&base).unwrap();
+            let base = base.canonicalize().unwrap();
+            let root = base.join(format!(
+                "readonly-operation-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir(&root).unwrap();
+            // Retain actual controlled filesystem material; no sweeping failed
+            // or old fixtures and no claim of native Project/Task authority.
+            root
+        }
+
+        fn capture_case(command: Command, root: &Path) -> crate::BoundedProcessOutput {
+            match crate::capture_bounded_process(command, Duration::from_secs(10), 65_536) {
+                Ok(output) => output,
+                Err(failure) => {
+                    fs::write(root.join("child.stdout"), failure.stdout()).unwrap();
+                    fs::write(root.join("child.stderr"), failure.stderr()).unwrap();
+                    fs::write(root.join("child-capture-failure.json"), failure.observation().to_string()).unwrap();
+                    panic!("same native finite capture failed; actual evidence retained");
+                }
+            }
+        }
+
+        fn assert_native_cause(failure: &RuntimeProjectionFailure, errno: i32) {
+            let source = failure.source().unwrap().downcast_ref::<io::Error>().unwrap();
+            assert!(std::ptr::eq(source, &failure.cause));
+            assert_eq!(source.raw_os_error(), Some(errno));
+            assert_eq!(failure.as_json()["cause"]["raw_os_error"], errno);
+            assert_eq!(failure.as_json()["executed"], false);
+            assert_eq!(failure.as_json()["automatic_retry"], false);
+            assert_eq!(failure.as_json()["material_setup_started"], true);
+        }
+
+        #[test]
+        fn actual_missing_view_observation_retains_original_io_and_legacy_json() {
+            let root = fixture();
+            let mut operation = None;
+            let cause = Held::open_observed(&root.join("absent"), true, &mut operation, VIEW_OPERATIONS)
+                .err()
+                .expect("actual absent directory must refuse");
+            let failure = RuntimeProjectionFailure::new("readonly-input", cause, true)
+                .with_operation(operation);
+            assert_native_cause(&failure, libc::ENOENT);
+            let reading = failure.as_json();
+            assert_eq!(reading["phase"], "readonly-input");
+            assert_eq!(reading["operation"], "readonly-input.view.open");
+            assert!(!reading.to_string().contains(root.to_str().unwrap()));
+            let legacy_cause = fs::File::open(root.join("legacy-absent")).unwrap_err();
+            let legacy = RuntimeProjectionFailure::new("readonly-input", legacy_cause, true);
+            assert_native_cause(&legacy, libc::ENOENT);
+            assert!(legacy.as_json().get("operation").is_none());
+            assert!(legacy.to_string().starts_with("runtime projection readonly-input: "));
+            fs::write(root.join("failure.json"), reading.to_string()).unwrap();
+        }
+
+        #[test]
+        fn actual_view_observation_retains_form_and_alias_refusal() {
+            let root = fixture();
+            let directory = root.join("input");
+            fs::create_dir(&directory).unwrap();
+            fs::write(directory.join("unchanged"), b"CONTROLLED_INPUT_UNCHANGED").unwrap();
+            let mut operation = None;
+            let admitted = Held::open_observed(&directory, true, &mut operation, VIEW_OPERATIONS).unwrap();
+            admitted.check_requested(&directory).unwrap();
+            let metadata = fs::metadata(&directory).unwrap();
+            assert_eq!((admitted.dev, admitted.ino), (metadata.dev(), metadata.ino()));
+            assert_eq!(operation, Some("readonly-input.view.route"));
+            let alias = root.join("alias");
+            std::os::unix::fs::symlink(&directory, &alias).unwrap();
+            let flags = libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_DIRECTORY;
+            let direct = fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(flags)
+                .open(&alias)
+                .unwrap_err();
+            let errno = direct.raw_os_error().expect("genuine native nofollow refusal");
+            let cause = Held::open_observed(&alias, true, &mut operation, VIEW_OPERATIONS)
+                .err()
+                .expect("final alias must refuse");
+            let failure = RuntimeProjectionFailure::new("readonly-input", cause, true)
+                .with_operation(operation);
+            assert_native_cause(&failure, errno);
+            assert_eq!(failure.cause.kind(), direct.kind());
+            assert_eq!(failure.as_json()["operation"], "readonly-input.view.open");
+            let fifo = root.join("fifo");
+            let native = c(&fifo).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(native.as_ptr(), 0o600) }, 0);
+            let cause = Held::open_observed(&fifo, false, &mut operation, VIEW_OPERATIONS)
+                .err()
+                .expect("actual fifo must refuse without blocking");
+            let failure = RuntimeProjectionFailure::new("readonly-input", cause, true)
+                .with_operation(operation);
+            assert_eq!(failure.cause.kind(), io::ErrorKind::InvalidInput);
+            assert_eq!(failure.cause.raw_os_error(), None);
+            assert_eq!(failure.as_json()["operation"], "readonly-input.view.form");
+            assert_eq!(fs::read(directory.join("unchanged")).unwrap(), b"CONTROLLED_INPUT_UNCHANGED");
+            admitted.check_requested(&directory).unwrap();
+            let current = admitted.mount_handle(&mut operation).unwrap();
+            assert_eq!((current.dev, current.ino), (admitted.dev, admitted.ino));
+            let retained = root.join("retained-original");
+            fs::rename(&directory, &retained).unwrap();
+            fs::create_dir(&directory).unwrap();
+            let replacement = admitted.mount_handle(&mut operation)
+                .err()
+                .expect("replacement must not reaffiliate to another object");
+            assert_eq!(replacement.kind(), io::ErrorKind::InvalidInput);
+            assert_eq!(operation, Some("readonly-input.reaffiliate.named-before"));
+            fs::remove_dir(&directory).unwrap();
+            std::os::unix::fs::symlink(&retained, &directory).unwrap();
+            assert_eq!(admitted.mount_handle(&mut operation).err().unwrap().kind(), io::ErrorKind::InvalidInput);
+            fs::remove_file(&directory).unwrap();
+            fs::rename(&retained, &directory).unwrap();
+            admitted.check_requested(&directory).unwrap();
+            assert_eq!(fs::read(directory.join("unchanged")).unwrap(), b"CONTROLLED_INPUT_UNCHANGED");
+            fs::write(root.join("form-refusal.json"), failure.as_json().to_string()).unwrap();
+        }
+
+        #[test]
+        #[ignore = "requires real nonroot Linux user/mount namespace, no availability-to-success skip"]
+        fn actual_readonly_bind_suboperation_retains_original_kernel_refusal() {
+            assert_ne!(unsafe { libc::geteuid() }, 0, "actual unprivileged prerequisite");
+            if let Some(root) = std::env::var_os(CHILD) {
+                let root = PathBuf::from(root);
+                enter_namespace().expect("actual namespace prerequisite must succeed");
+                let target = root.join("input");
+                // Open in this actual mount namespace to isolate genuine target
+                // absence, rather than a pre-unshare descriptor compatibility.
+                let held = Held::open(&target, true).unwrap();
+                fs::rename(&target, root.join("retained-input")).unwrap();
+                let mut operation = None;
+                let cause = readonly_bind_observed(
+                    &held,
+                    &mut operation,
+                    [
+                        "readonly-input.skeleton.bind",
+                        "readonly-input.skeleton.remount",
+                    ],
+                )
+                .expect_err("actual absent mount target must refuse");
+                let failure = RuntimeProjectionFailure::new("readonly-input", cause, true)
+                    .with_operation(operation);
+                assert_native_cause(&failure, libc::ENOENT);
+                assert_eq!(failure.as_json()["operation"], "readonly-input.skeleton.bind");
+                assert_eq!(fs::read(root.join("retained-input/unchanged")).unwrap(), b"CONTROLLED_INPUT_UNCHANGED");
+                fs::write(root.join("kernel-refusal.json"), failure.as_json().to_string()).unwrap();
+                return;
+            }
+            let root = fixture();
+            fs::create_dir(root.join("input")).unwrap();
+            fs::write(root.join("input/unchanged"), b"CONTROLLED_INPUT_UNCHANGED").unwrap();
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command.args([CASE, "--exact", "--ignored", "--nocapture"]);
+            command.env(CHILD, &root);
+            let captured = capture_case(command, &root);
+            fs::write(root.join("child.stdout"), &captured.stdout).unwrap();
+            fs::write(root.join("child.stderr"), &captured.stderr).unwrap();
+            fs::write(root.join("child-outcome.json"), json!({
+                "status":captured.status.code(),"timed_out":captured.timed_out,
+                "output_complete":captured.output_complete,
+                "output_truncated":captured.output_truncated
+            }).to_string()).unwrap();
+            assert!(!captured.timed_out && captured.output_complete && !captured.output_truncated);
+            assert!(captured.status.success(), "genuine namespace/mount assertions must execute");
+            let reading: Value = serde_json::from_slice(&fs::read(root.join("kernel-refusal.json")).unwrap()).unwrap();
+            assert_eq!(reading["phase"], "readonly-input");
+            assert_eq!(reading["operation"], "readonly-input.skeleton.bind");
+            assert_eq!(reading["cause"]["raw_os_error"], libc::ENOENT);
+            assert_eq!(reading["executed"], false);
+            assert_eq!(fs::read(root.join("retained-input/unchanged")).unwrap(), b"CONTROLLED_INPUT_UNCHANGED");
+        }
+
+        #[test]
+        #[ignore = "requires real nonroot Linux namespace/readonly overlay; unsupported is a failure"]
+        fn actual_current_namespace_mount_handles_preserve_original_input() {
+            const CHILD_POSITIVE: &str = "WORKCELL_NAMESPACE_MOUNT_CHILD";
+            const POSITIVE: &str = "runtime_projection::linux::observation_tests::actual_current_namespace_mount_handles_preserve_original_input";
+            assert_ne!(unsafe { libc::geteuid() }, 0, "actual unprivileged prerequisite");
+            if let Some(root) = std::env::var_os(CHILD_POSITIVE) {
+                let root = PathBuf::from(root);
+                let input = Held::open(&root.join("input"), true).unwrap();
+                let skeleton = Held::open(&root.join("skeleton"), true).unwrap();
+                let empty = Held::open(&root.join("empty"), true).unwrap();
+                enter_namespace().expect("actual namespace prerequisite must succeed");
+                // Retain the real former-namespace outcome, without requiring
+                // every supported kernel to reproduce Linux 7.2.3's old refusal.
+                let old = readonly_bind(&skeleton);
+                let old_reading = match old {
+                    Ok(()) => json!({"ok":true,"operation":"preheld-bind-and-remount"}),
+                    Err(cause) => {
+                        assert_eq!(cause.raw_os_error(), Some(libc::EINVAL));
+                        json!({"ok":false,"operation":"preheld-bind-and-remount",
+                            "cause":{"kind":format!("{:?}",cause.kind()),
+                            "raw_os_error":cause.raw_os_error(),"message":cause.to_string()}})
+                    }
+                };
+                fs::write(root.join("preheld-outcome.json"), old_reading.to_string()).unwrap();
+                let mut operation = None;
+                let input_mount = input.mount_handle(&mut operation).unwrap();
+                let skeleton_mount = skeleton.mount_handle(&mut operation).unwrap();
+                let empty_mount = empty.mount_handle(&mut operation).unwrap();
+                for (original, current) in [
+                    (&input, &input_mount),
+                    (&skeleton, &skeleton_mount),
+                    (&empty, &empty_mount),
+                ] {
+                    assert_eq!((original.dev, original.ino), (current.dev, current.ino));
+                }
+                readonly_bind(&skeleton_mount).unwrap();
+                readonly_bind(&empty_mount).unwrap();
+                let options = format!(
+                    "lowerdir={}:{},userxattr,redirect_dir=nofollow",
+                    skeleton_mount.fd_path().display(),
+                    input_mount.fd_path().display()
+                );
+                mount(
+                    Some(Path::new("overlay")),
+                    &input.path,
+                    Some("overlay"),
+                    libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV,
+                    Some(&options),
+                ).unwrap();
+                let refusal = fs::write(input.path.join("unchanged"), b"MUST_NOT_WRITE")
+                    .expect_err("genuine readonly view must deny the actual write");
+                assert_eq!(refusal.raw_os_error(), Some(libc::EROFS));
+                assert_eq!(fs::read(input.path.join("unchanged")).unwrap(), b"CONTROLLED_INPUT_UNCHANGED");
+                let source_member = open_at(&input, std::ffi::OsStr::new("unchanged"), false).unwrap();
+                let original_file = fs::metadata(input.fd_path().join("unchanged")).unwrap();
+                assert_eq!((source_member.dev, source_member.ino), (original_file.dev(), original_file.ino()));
+                named_basis(&input, "unchanged", Some(&source_member)).unwrap();
+                fs::write(root.join("current-namespace-outcome.json"), json!({
+                    "ok":true,"namespace_descriptor_identity_equal":true,
+                    "readonly_bind_and_overlay_completed":true,
+                    "actual_write_errno":refusal.raw_os_error(),
+                    "original_input_unchanged":true,
+                    "provider_executed":false
+                }).to_string()).unwrap();
+                return;
+            }
+            let root = fixture();
+            for name in ["input", "skeleton", "empty"] {
+                fs::create_dir(root.join(name)).unwrap();
+            }
+            fs::write(root.join("input/unchanged"), b"CONTROLLED_INPUT_UNCHANGED").unwrap();
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command.args([POSITIVE, "--exact", "--ignored", "--nocapture"]);
+            command.env(CHILD_POSITIVE, &root);
+            let captured = capture_case(command, &root);
+            fs::write(root.join("child.stdout"), &captured.stdout).unwrap();
+            fs::write(root.join("child.stderr"), &captured.stderr).unwrap();
+            fs::write(root.join("child-outcome.json"), json!({
+                "status":captured.status.code(),"timed_out":captured.timed_out,
+                "output_complete":captured.output_complete,
+                "output_truncated":captured.output_truncated
+            }).to_string()).unwrap();
+            assert!(!captured.timed_out && captured.output_complete && !captured.output_truncated);
+            assert!(captured.status.success(), "actual bind/overlay/readonly invariants must execute");
+            let reading: Value = serde_json::from_slice(&fs::read(root.join("current-namespace-outcome.json")).unwrap()).unwrap();
+            assert_eq!(reading["ok"], true);
+            assert_eq!(reading["readonly_bind_and_overlay_completed"], true);
+            assert_eq!(reading["actual_write_errno"], libc::EROFS);
+            assert_eq!(reading["provider_executed"], false);
+            assert_eq!(fs::read(root.join("input/unchanged")).unwrap(), b"CONTROLLED_INPUT_UNCHANGED");
+        }
     }
 }
 
