@@ -1234,7 +1234,11 @@ mod linux {
             root
         }
 
-        fn capture_case(command: Command, root: &Path) -> crate::BoundedProcessOutput {
+        fn capture_case(mut command: Command, root: &Path) -> crate::BoundedProcessOutput {
+            command
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
             match crate::capture_bounded_process(command, Duration::from_secs(10), 65_536) {
                 Ok(output) => output,
                 Err(failure) => {
