@@ -1170,11 +1170,7 @@ mod linux {
             ]);
             // Keep original reader handles and same-object mount handles alive
             // through the existing AppliedProjection/exec lifecycle.
-            held.extend([
-                input_mount.file,
-                placeholders_mount.file,
-                empty_mount.file,
-            ]);
+            held.extend([input_mount.file, placeholders_mount.file, empty_mount.file]);
             held.extend(mount_lowers.into_iter().flatten().map(|h| h.file));
             for (upper, work) in mount_views {
                 held.extend([upper.file, work.file]);
@@ -1200,9 +1196,8 @@ mod linux {
                 _held: held,
             })
         })();
-        result.map_err(|e| {
-            RuntimeProjectionFailure::new(phase, e, started).with_operation(operation)
-        })
+        result
+            .map_err(|e| RuntimeProjectionFailure::new(phase, e, started).with_operation(operation))
     }
 
     #[cfg(test)]
@@ -1221,8 +1216,8 @@ mod linux {
         const CASE: &str = "runtime_projection::linux::observation_tests::actual_readonly_bind_suboperation_retains_original_kernel_refusal";
 
         fn fixture() -> PathBuf {
-            let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../ProjectCentral/now/tmp");
+            let base =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ProjectCentral/now/tmp");
             fs::create_dir_all(&base).unwrap();
             let base = base.canonicalize().unwrap();
             let root = base.join(format!(
@@ -1245,14 +1240,22 @@ mod linux {
                 Err(failure) => {
                     fs::write(root.join("child.stdout"), failure.stdout()).unwrap();
                     fs::write(root.join("child.stderr"), failure.stderr()).unwrap();
-                    fs::write(root.join("child-capture-failure.json"), failure.observation().to_string()).unwrap();
+                    fs::write(
+                        root.join("child-capture-failure.json"),
+                        failure.observation().to_string(),
+                    )
+                    .unwrap();
                     panic!("same native finite capture failed; actual evidence retained");
                 }
             }
         }
 
         fn assert_native_cause(failure: &RuntimeProjectionFailure, errno: i32) {
-            let source = failure.source().unwrap().downcast_ref::<io::Error>().unwrap();
+            let source = failure
+                .source()
+                .unwrap()
+                .downcast_ref::<io::Error>()
+                .unwrap();
             assert!(std::ptr::eq(source, &failure.cause));
             assert_eq!(source.raw_os_error(), Some(errno));
             assert_eq!(failure.as_json()["cause"]["raw_os_error"], errno);
@@ -1265,9 +1268,10 @@ mod linux {
         fn actual_missing_view_observation_retains_original_io_and_legacy_json() {
             let root = fixture();
             let mut operation = None;
-            let cause = Held::open_observed(&root.join("absent"), true, &mut operation, VIEW_OPERATIONS)
-                .err()
-                .expect("actual absent directory must refuse");
+            let cause =
+                Held::open_observed(&root.join("absent"), true, &mut operation, VIEW_OPERATIONS)
+                    .err()
+                    .expect("actual absent directory must refuse");
             let failure = RuntimeProjectionFailure::new("readonly-input", cause, true)
                 .with_operation(operation);
             assert_native_cause(&failure, libc::ENOENT);
@@ -1279,7 +1283,9 @@ mod linux {
             let legacy = RuntimeProjectionFailure::new("readonly-input", legacy_cause, true);
             assert_native_cause(&legacy, libc::ENOENT);
             assert!(legacy.as_json().get("operation").is_none());
-            assert!(legacy.to_string().starts_with("runtime projection readonly-input: "));
+            assert!(legacy
+                .to_string()
+                .starts_with("runtime projection readonly-input: "));
             fs::write(root.join("failure.json"), reading.to_string()).unwrap();
         }
 
@@ -1290,10 +1296,14 @@ mod linux {
             fs::create_dir(&directory).unwrap();
             fs::write(directory.join("unchanged"), b"CONTROLLED_INPUT_UNCHANGED").unwrap();
             let mut operation = None;
-            let admitted = Held::open_observed(&directory, true, &mut operation, VIEW_OPERATIONS).unwrap();
+            let admitted =
+                Held::open_observed(&directory, true, &mut operation, VIEW_OPERATIONS).unwrap();
             admitted.check_requested(&directory).unwrap();
             let metadata = fs::metadata(&directory).unwrap();
-            assert_eq!((admitted.dev, admitted.ino), (metadata.dev(), metadata.ino()));
+            assert_eq!(
+                (admitted.dev, admitted.ino),
+                (metadata.dev(), metadata.ino())
+            );
             assert_eq!(operation, Some("readonly-input.view.route"));
             let alias = root.join("alias");
             std::os::unix::fs::symlink(&directory, &alias).unwrap();
@@ -1303,7 +1313,9 @@ mod linux {
                 .custom_flags(flags)
                 .open(&alias)
                 .unwrap_err();
-            let errno = direct.raw_os_error().expect("genuine native nofollow refusal");
+            let errno = direct
+                .raw_os_error()
+                .expect("genuine native nofollow refusal");
             let cause = Held::open_observed(&alias, true, &mut operation, VIEW_OPERATIONS)
                 .err()
                 .expect("final alias must refuse");
@@ -1323,32 +1335,50 @@ mod linux {
             assert_eq!(failure.cause.kind(), io::ErrorKind::InvalidInput);
             assert_eq!(failure.cause.raw_os_error(), None);
             assert_eq!(failure.as_json()["operation"], "readonly-input.view.form");
-            assert_eq!(fs::read(directory.join("unchanged")).unwrap(), b"CONTROLLED_INPUT_UNCHANGED");
+            assert_eq!(
+                fs::read(directory.join("unchanged")).unwrap(),
+                b"CONTROLLED_INPUT_UNCHANGED"
+            );
             admitted.check_requested(&directory).unwrap();
             let current = admitted.mount_handle(&mut operation).unwrap();
             assert_eq!((current.dev, current.ino), (admitted.dev, admitted.ino));
             let retained = root.join("retained-original");
             fs::rename(&directory, &retained).unwrap();
             fs::create_dir(&directory).unwrap();
-            let replacement = admitted.mount_handle(&mut operation)
+            let replacement = admitted
+                .mount_handle(&mut operation)
                 .err()
                 .expect("replacement must not reaffiliate to another object");
             assert_eq!(replacement.kind(), io::ErrorKind::InvalidInput);
             assert_eq!(operation, Some("readonly-input.reaffiliate.named-before"));
             fs::remove_dir(&directory).unwrap();
             std::os::unix::fs::symlink(&retained, &directory).unwrap();
-            assert_eq!(admitted.mount_handle(&mut operation).err().unwrap().kind(), io::ErrorKind::InvalidInput);
+            assert_eq!(
+                admitted.mount_handle(&mut operation).err().unwrap().kind(),
+                io::ErrorKind::InvalidInput
+            );
             fs::remove_file(&directory).unwrap();
             fs::rename(&retained, &directory).unwrap();
             admitted.check_requested(&directory).unwrap();
-            assert_eq!(fs::read(directory.join("unchanged")).unwrap(), b"CONTROLLED_INPUT_UNCHANGED");
-            fs::write(root.join("form-refusal.json"), failure.as_json().to_string()).unwrap();
+            assert_eq!(
+                fs::read(directory.join("unchanged")).unwrap(),
+                b"CONTROLLED_INPUT_UNCHANGED"
+            );
+            fs::write(
+                root.join("form-refusal.json"),
+                failure.as_json().to_string(),
+            )
+            .unwrap();
         }
 
         #[test]
         #[ignore = "requires real nonroot Linux user/mount namespace, no availability-to-success skip"]
         fn actual_readonly_bind_suboperation_retains_original_kernel_refusal() {
-            assert_ne!(unsafe { libc::geteuid() }, 0, "actual unprivileged prerequisite");
+            assert_ne!(
+                unsafe { libc::geteuid() },
+                0,
+                "actual unprivileged prerequisite"
+            );
             if let Some(root) = std::env::var_os(CHILD) {
                 let root = PathBuf::from(root);
                 enter_namespace().expect("actual namespace prerequisite must succeed");
@@ -1370,9 +1400,19 @@ mod linux {
                 let failure = RuntimeProjectionFailure::new("readonly-input", cause, true)
                     .with_operation(operation);
                 assert_native_cause(&failure, libc::ENOENT);
-                assert_eq!(failure.as_json()["operation"], "readonly-input.skeleton.bind");
-                assert_eq!(fs::read(root.join("retained-input/unchanged")).unwrap(), b"CONTROLLED_INPUT_UNCHANGED");
-                fs::write(root.join("kernel-refusal.json"), failure.as_json().to_string()).unwrap();
+                assert_eq!(
+                    failure.as_json()["operation"],
+                    "readonly-input.skeleton.bind"
+                );
+                assert_eq!(
+                    fs::read(root.join("retained-input/unchanged")).unwrap(),
+                    b"CONTROLLED_INPUT_UNCHANGED"
+                );
+                fs::write(
+                    root.join("kernel-refusal.json"),
+                    failure.as_json().to_string(),
+                )
+                .unwrap();
                 return;
             }
             let root = fixture();
@@ -1384,19 +1424,32 @@ mod linux {
             let captured = capture_case(command, &root);
             fs::write(root.join("child.stdout"), &captured.stdout).unwrap();
             fs::write(root.join("child.stderr"), &captured.stderr).unwrap();
-            fs::write(root.join("child-outcome.json"), json!({
-                "status":captured.status.code(),"timed_out":captured.timed_out,
-                "output_complete":captured.output_complete,
-                "output_truncated":captured.output_truncated
-            }).to_string()).unwrap();
+            fs::write(
+                root.join("child-outcome.json"),
+                json!({
+                    "status":captured.status.code(),"timed_out":captured.timed_out,
+                    "output_complete":captured.output_complete,
+                    "output_truncated":captured.output_truncated
+                })
+                .to_string(),
+            )
+            .unwrap();
             assert!(!captured.timed_out && captured.output_complete && !captured.output_truncated);
-            assert!(captured.status.success(), "genuine namespace/mount assertions must execute");
-            let reading: Value = serde_json::from_slice(&fs::read(root.join("kernel-refusal.json")).unwrap()).unwrap();
+            assert!(
+                captured.status.success(),
+                "genuine namespace/mount assertions must execute"
+            );
+            let reading: Value =
+                serde_json::from_slice(&fs::read(root.join("kernel-refusal.json")).unwrap())
+                    .unwrap();
             assert_eq!(reading["phase"], "readonly-input");
             assert_eq!(reading["operation"], "readonly-input.skeleton.bind");
             assert_eq!(reading["cause"]["raw_os_error"], libc::ENOENT);
             assert_eq!(reading["executed"], false);
-            assert_eq!(fs::read(root.join("retained-input/unchanged")).unwrap(), b"CONTROLLED_INPUT_UNCHANGED");
+            assert_eq!(
+                fs::read(root.join("retained-input/unchanged")).unwrap(),
+                b"CONTROLLED_INPUT_UNCHANGED"
+            );
         }
 
         #[test]
@@ -1404,7 +1457,11 @@ mod linux {
         fn actual_current_namespace_mount_handles_preserve_original_input() {
             const CHILD_POSITIVE: &str = "WORKCELL_NAMESPACE_MOUNT_CHILD";
             const POSITIVE: &str = "runtime_projection::linux::observation_tests::actual_current_namespace_mount_handles_preserve_original_input";
-            assert_ne!(unsafe { libc::geteuid() }, 0, "actual unprivileged prerequisite");
+            assert_ne!(
+                unsafe { libc::geteuid() },
+                0,
+                "actual unprivileged prerequisite"
+            );
             if let Some(root) = std::env::var_os(CHILD_POSITIVE) {
                 let root = PathBuf::from(root);
                 let input = Held::open(&root.join("input"), true).unwrap();
@@ -1448,22 +1505,35 @@ mod linux {
                     Some("overlay"),
                     libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV,
                     Some(&options),
-                ).unwrap();
+                )
+                .unwrap();
                 let refusal = fs::write(input.path.join("unchanged"), b"MUST_NOT_WRITE")
                     .expect_err("genuine readonly view must deny the actual write");
                 assert_eq!(refusal.raw_os_error(), Some(libc::EROFS));
-                assert_eq!(fs::read(input.path.join("unchanged")).unwrap(), b"CONTROLLED_INPUT_UNCHANGED");
-                let source_member = open_at(&input, std::ffi::OsStr::new("unchanged"), false).unwrap();
+                assert_eq!(
+                    fs::read(input.path.join("unchanged")).unwrap(),
+                    b"CONTROLLED_INPUT_UNCHANGED"
+                );
+                let source_member =
+                    open_at(&input, std::ffi::OsStr::new("unchanged"), false).unwrap();
                 let original_file = fs::metadata(input.fd_path().join("unchanged")).unwrap();
-                assert_eq!((source_member.dev, source_member.ino), (original_file.dev(), original_file.ino()));
+                assert_eq!(
+                    (source_member.dev, source_member.ino),
+                    (original_file.dev(), original_file.ino())
+                );
                 named_basis(&input, "unchanged", Some(&source_member)).unwrap();
-                fs::write(root.join("current-namespace-outcome.json"), json!({
-                    "ok":true,"namespace_descriptor_identity_equal":true,
-                    "readonly_bind_and_overlay_completed":true,
-                    "actual_write_errno":refusal.raw_os_error(),
-                    "original_input_unchanged":true,
-                    "provider_executed":false
-                }).to_string()).unwrap();
+                fs::write(
+                    root.join("current-namespace-outcome.json"),
+                    json!({
+                        "ok":true,"namespace_descriptor_identity_equal":true,
+                        "readonly_bind_and_overlay_completed":true,
+                        "actual_write_errno":refusal.raw_os_error(),
+                        "original_input_unchanged":true,
+                        "provider_executed":false
+                    })
+                    .to_string(),
+                )
+                .unwrap();
                 return;
             }
             let root = fixture();
@@ -1477,19 +1547,33 @@ mod linux {
             let captured = capture_case(command, &root);
             fs::write(root.join("child.stdout"), &captured.stdout).unwrap();
             fs::write(root.join("child.stderr"), &captured.stderr).unwrap();
-            fs::write(root.join("child-outcome.json"), json!({
-                "status":captured.status.code(),"timed_out":captured.timed_out,
-                "output_complete":captured.output_complete,
-                "output_truncated":captured.output_truncated
-            }).to_string()).unwrap();
+            fs::write(
+                root.join("child-outcome.json"),
+                json!({
+                    "status":captured.status.code(),"timed_out":captured.timed_out,
+                    "output_complete":captured.output_complete,
+                    "output_truncated":captured.output_truncated
+                })
+                .to_string(),
+            )
+            .unwrap();
             assert!(!captured.timed_out && captured.output_complete && !captured.output_truncated);
-            assert!(captured.status.success(), "actual bind/overlay/readonly invariants must execute");
-            let reading: Value = serde_json::from_slice(&fs::read(root.join("current-namespace-outcome.json")).unwrap()).unwrap();
+            assert!(
+                captured.status.success(),
+                "actual bind/overlay/readonly invariants must execute"
+            );
+            let reading: Value = serde_json::from_slice(
+                &fs::read(root.join("current-namespace-outcome.json")).unwrap(),
+            )
+            .unwrap();
             assert_eq!(reading["ok"], true);
             assert_eq!(reading["readonly_bind_and_overlay_completed"], true);
             assert_eq!(reading["actual_write_errno"], libc::EROFS);
             assert_eq!(reading["provider_executed"], false);
-            assert_eq!(fs::read(root.join("input/unchanged")).unwrap(), b"CONTROLLED_INPUT_UNCHANGED");
+            assert_eq!(
+                fs::read(root.join("input/unchanged")).unwrap(),
+                b"CONTROLLED_INPUT_UNCHANGED"
+            );
         }
     }
 }

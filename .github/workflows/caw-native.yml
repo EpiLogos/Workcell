@@ -104,6 +104,7 @@ jobs:
           export WORKCELL_TEST_COMPILED_SOURCE_REF="$(cat evidence/source-commit.txt)"
           record_command compiler-owner jsonl timeout --kill-after=5s 5m cargo build --locked -p epilogos-workcell-cli --bins --message-format=json
           record_command compiler-test jsonl timeout --kill-after=5s 5m cargo test --locked -p epilogos-workcell-runtime --test runtime_projection --no-run --message-format=json
+          record_command compiler-library jsonl timeout --kill-after=5s 5m cargo test --locked -p epilogos-workcell-runtime --lib --no-run --message-format=json
           cat > "$RUNTIME_GATE_EVIDENCE/audit.py" <<'PY'
           import hashlib,json,os,stat,sys
           from pathlib import Path
@@ -185,6 +186,7 @@ jobs:
                   if row['source']['cause'] or row['manifest']['cause']:raise ValueError('actual compiled source/manifest unavailable')
                   if role['test']:
                       (out/'test-image.path').write_text(str(image)+'\n')
+                      (out/(role['name']+'-image.path')).write_text(str(image)+'\n')
               write('images.before.json',records)
               archive_rows=[]
               for path in json.loads(os.environ['RUNTIME_GATE_SOURCE_ARCHIVES']):
@@ -207,16 +209,20 @@ jobs:
               if len(names)!=len(set(names)) or not set(expected).issubset(names):raise ValueError('missing/duplicate compiled case')
               if len(names)!=int(os.environ['RUNTIME_GATE_TOTAL']):raise ValueError('compiled case census changed')
           elif mode=='case':
-              case=sys.argv[2];prefix=out/case;code=int(prefix.with_suffix('.exit').read_text())
+              case=sys.argv[2];label=sys.argv[3] if len(sys.argv)>3 else case
+              if not label or '/' in label or ':' in label:raise ValueError('case evidence label must be one portable declared member')
+              prefix=out/label;code=int(prefix.with_suffix('.exit').read_text())
               body=prefix.with_suffix('.stdout').read_text()
               ok=code==0 and any(line.startswith('test result: ok. 1 passed; 0 failed; 0 ignored;') for line in body.splitlines())
-              row={'case':case,'exit_status':code,'exact_one_pass_zero_failed_ignored':ok,'stdout':str(prefix.with_suffix('.stdout')),'stderr':str(prefix.with_suffix('.stderr')),'test_image':(out/'test-image.path').read_text().strip(),'outer_timeout_seconds':120,'standing':'foreground test-harness status/raw files; inner native EOF and retirement are asserted by the actual case, not inferred from a shell status'}
-              write(case+'.result.json',row)
+              row={'case':case,'exit_status':code,'exact_one_pass_zero_failed_ignored':ok,'stdout':str(prefix.with_suffix('.stdout')),'stderr':str(prefix.with_suffix('.stderr')),'test_image':(out/os.environ.get('RUNTIME_GATE_TEST_IMAGE_FILE','test-image.path')).read_text().strip(),'outer_timeout_seconds':120,'standing':'foreground test-harness status/raw files; inner native EOF and retirement are asserted by the actual case, not inferred from a shell status'}
+              write(label+'.result.json',row)
               if not ok:raise ValueError('actual selected native case failed; no unsupported-kernel skip')
           elif mode=='snapshot':
               base=Path(os.environ['WORKCELL_TEST_ARTIFACT_ROOT']);rows=[];count=0;total=0
               # Do not feed a retained adverse FIFO/symlink to artifact streaming.
-              pending=[base];dest=out/'fixture-snapshot';dest.mkdir(exist_ok=True)
+              snapshot_label=sys.argv[2] if len(sys.argv)>2 else 'fixture-snapshot'
+              if not snapshot_label or '/' in snapshot_label or ':' in snapshot_label:raise ValueError('snapshot label must be one portable declared member')
+              pending=[base];dest=out/snapshot_label;dest.mkdir(exist_ok=True)
               while pending:
                   directory=pending.pop()
                   for p in sorted(directory.iterdir()):
@@ -232,10 +238,10 @@ jobs:
                       else:
                           row['digest_standing']='not admitted for byte reading; retained type/identity only'
                           if stat.S_ISLNK(s.st_mode):row['link_target']=os.readlink(p)
-                      rows.append(row);write('fixture-snapshot.json',{'entries':rows,'entry_count':count,'copied_regular_bytes':total,'standing':'owned controlled fixture snapshot; original FIFO/aliases remain on runner, no nonregular byte read or external atomic exclusion claim'})
+                      rows.append(row);write(snapshot_label+'.json',{'entries':rows,'entry_count':count,'copied_regular_bytes':total,'standing':'owned controlled fixture snapshot; original FIFO/aliases remain on runner, no nonregular byte read or external atomic exclusion claim'})
           else:raise ValueError('unrecognised evidence operation')
           PY
-          export RUNTIME_GATE_ROLES="[{\"name\":\"workcell\",\"receipt\":\"compiler-owner.jsonl\",\"root\":\"$GITHUB_WORKSPACE\",\"target\":\"workcell\",\"kind\":\"bin\",\"test\":false,\"profile_dir\":\"debug\"},{\"name\":\"workcell-control-service\",\"receipt\":\"compiler-owner.jsonl\",\"root\":\"$GITHUB_WORKSPACE\",\"target\":\"workcell-control-service\",\"kind\":\"bin\",\"test\":false,\"profile_dir\":\"debug\"},{\"name\":\"workcell-write-boundary\",\"receipt\":\"compiler-owner.jsonl\",\"root\":\"$GITHUB_WORKSPACE\",\"target\":\"workcell-write-boundary\",\"kind\":\"bin\",\"test\":false,\"profile_dir\":\"debug\"},{\"name\":\"runtime_projection\",\"receipt\":\"compiler-test.jsonl\",\"root\":\"$GITHUB_WORKSPACE\",\"target\":\"runtime_projection\",\"kind\":\"test\",\"test\":true,\"profile_dir\":\"debug\"}]"
+          export RUNTIME_GATE_ROLES="[{\"name\":\"workcell\",\"receipt\":\"compiler-owner.jsonl\",\"root\":\"$GITHUB_WORKSPACE\",\"target\":\"workcell\",\"kind\":\"bin\",\"test\":false,\"profile_dir\":\"debug\"},{\"name\":\"workcell-control-service\",\"receipt\":\"compiler-owner.jsonl\",\"root\":\"$GITHUB_WORKSPACE\",\"target\":\"workcell-control-service\",\"kind\":\"bin\",\"test\":false,\"profile_dir\":\"debug\"},{\"name\":\"workcell-write-boundary\",\"receipt\":\"compiler-owner.jsonl\",\"root\":\"$GITHUB_WORKSPACE\",\"target\":\"workcell-write-boundary\",\"kind\":\"bin\",\"test\":false,\"profile_dir\":\"debug\"},{\"name\":\"runtime-library\",\"receipt\":\"compiler-library.jsonl\",\"root\":\"$GITHUB_WORKSPACE\",\"target\":\"epilogos_workcell_runtime\",\"kind\":\"lib\",\"test\":true,\"profile_dir\":\"debug\"},{\"name\":\"runtime_projection\",\"receipt\":\"compiler-test.jsonl\",\"root\":\"$GITHUB_WORKSPACE\",\"target\":\"runtime_projection\",\"kind\":\"test\",\"test\":true,\"profile_dir\":\"debug\"}]"
           export RUNTIME_GATE_SOURCE_ARCHIVES="[\"$GITHUB_WORKSPACE/evidence/source.tar.gz\"]"
           python3 "$RUNTIME_GATE_EVIDENCE/audit.py" prepare
           test_image=$(cat "$RUNTIME_GATE_EVIDENCE/test-image.path")
@@ -251,11 +257,41 @@ jobs:
             printf '%s\n' "$status" > "$RUNTIME_GATE_EVIDENCE/$label.exit"
             return "$status"
           }
+          # Same current-source library image: default2 and mandatory kernel2.
+          # Full Rust identities remain in receipts; portable labels address files only.
+          library_image=$(cat "$RUNTIME_GATE_EVIDENCE/runtime-library-image.path")
+          export RUNTIME_GATE_TEST_IMAGE_FILE=runtime-library-image.path
+          record_command roster stdout timeout --kill-after=5s 30s "$library_image" runtime_projection::linux::observation_tests:: --list --format terse
+          export RUNTIME_GATE_CASES='["runtime_projection::linux::observation_tests::actual_missing_view_observation_retains_original_io_and_legacy_json","runtime_projection::linux::observation_tests::actual_view_observation_retains_form_and_alias_refusal","runtime_projection::linux::observation_tests::actual_readonly_bind_suboperation_retains_original_kernel_refusal","runtime_projection::linux::observation_tests::actual_current_namespace_mount_handles_preserve_original_input"]'
+          export RUNTIME_GATE_TOTAL=4
+          python3 "$RUNTIME_GATE_EVIDENCE/audit.py" roster
+          cp "$RUNTIME_GATE_EVIDENCE/roster.stdout" "$RUNTIME_GATE_EVIDENCE/namespace-roster.stdout"
+          cp "$RUNTIME_GATE_EVIDENCE/roster.json" "$RUNTIME_GATE_EVIDENCE/namespace-roster.json"
+          namespace_failed=0
+          while IFS='|' read -r case_name label; do
+            printf '%s\n' "$case_name" > "$RUNTIME_GATE_EVIDENCE/$label.case.txt"
+            set +e
+            timeout --kill-after=5s 120s "$library_image" "$case_name" --include-ignored --exact --nocapture --test-threads=1 > "$RUNTIME_GATE_EVIDENCE/$label.stdout" 2> "$RUNTIME_GATE_EVIDENCE/$label.stderr"
+            status=$?
+            set -e
+            printf '%s\n' "$status" > "$RUNTIME_GATE_EVIDENCE/$label.exit"
+            cat "$RUNTIME_GATE_EVIDENCE/$label.stdout"
+            cat "$RUNTIME_GATE_EVIDENCE/$label.stderr" >&2
+            if ! python3 "$RUNTIME_GATE_EVIDENCE/audit.py" case "$case_name" "$label"; then namespace_failed=1; fi
+          done <<'NAMESPACE_CASES'
+          runtime_projection::linux::observation_tests::actual_missing_view_observation_retains_original_io_and_legacy_json|namespace-missing-view
+          runtime_projection::linux::observation_tests::actual_view_observation_retains_form_and_alias_refusal|namespace-form-alias
+          runtime_projection::linux::observation_tests::actual_readonly_bind_suboperation_retains_original_kernel_refusal|namespace-bind-refusal
+          runtime_projection::linux::observation_tests::actual_current_namespace_mount_handles_preserve_original_input|namespace-current-handles
+          NAMESPACE_CASES
+          # Actual product Run-space, separately retained from the runtime8 aperture.
+          if ! WORKCELL_TEST_ARTIFACT_ROOT="$GITHUB_WORKSPACE/ProjectCentral/now/tmp" python3 "$RUNTIME_GATE_EVIDENCE/audit.py" snapshot namespace-fixture-snapshot; then namespace_failed=1; fi
+          export RUNTIME_GATE_TEST_IMAGE_FILE=test-image.path
           record_command roster stdout timeout --kill-after=5s 30s "$test_image" --ignored --list --format terse
           export RUNTIME_GATE_CASES='["actual_original_input_is_readonly_and_task_history_reentry_is_durable","actual_redirected_runtime_never_writes_the_foreign_directory","actual_immutable_input_redirect_refuses_before_material_or_body","actual_readonly_runtime_file_retains_native_permission_cause","actual_projection_fifo_hardlink_and_digest_refuse_without_blocking_read","actual_unchanged_requested_input_alias_preserves_original_origin","actual_requested_input_alias_retarget_refuses_before_setup","actual_missing_requested_input_retains_resolution_cause"]'
           export RUNTIME_GATE_TOTAL=8
           python3 "$RUNTIME_GATE_EVIDENCE/audit.py" roster
-          failed=0
+          failed=$namespace_failed
           while IFS= read -r case_name; do
             set +e
             timeout --kill-after=5s 120s "$test_image" "$case_name" --ignored --exact --nocapture --test-threads=1 > "$RUNTIME_GATE_EVIDENCE/$case_name.stdout" 2> "$RUNTIME_GATE_EVIDENCE/$case_name.stderr"

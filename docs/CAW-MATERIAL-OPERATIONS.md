@@ -275,7 +275,16 @@ policy revision and digest. No new grant, global home write, auth-refresh
 permission, second supervisor or fallback provider is inferred. Unsupported
 platform/kernel conditions refuse before the body.
 
-`RuntimeProjectionFailure` retains actual IO phase, kind, errno and cause;
+Mount-consumed directory handles are reopened after namespace entry and checked
+against the original held identity and named route. Original held input readers
+remain the source/provenance basis; namespace-affiliated handles serve only mounts.
+This preserves alias/replacement fences without substituting pathname-only binds.
+
+`RuntimeProjectionFailure` retains actual IO phase, kind, errno and cause. Its
+optional body-free `operation` records the observed native suboperation; older
+failures without it retain their unknown suboperation. This additive reply field
+does not change the closed request schema; strict external reply readers are not
+qualified by local Value-based consumers.
 `material_setup_started` distinguishes possible setup effects from body execution.
 A failure after setup is not rollback or authority to retry: terminate the
 one-shot launcher and retain evidence. Existing string-based owner errors do
@@ -286,11 +295,18 @@ owner; that capture is evidence, not a lifecycle or semantic completion authorit
 The draft's required `requested_input_root` field also changes public struct
 literal construction. Inspected callers migrate together; older missing-field
 requests refuse rather than guessing a route. External draft clients are
-uninspected and must supply their actual selected coordinate. The eight real
-Linux projection definitions, the paired existing 39 native capture/lifecycle
-definitions, and installed original-Session startup/re-entry remain **UNRUN at
-this Source freeze**. Actual source/image pins, supported native gates and the
-original owner replay are required. Controlled alias/history tests do not prove
+uninspected and must supply their actual selected coordinate. The existing Linux runtime/image gate selects the original eight projection
+definitions unchanged and, from a separately admitted current-source library
+image, two default observation cases plus two mandatory ignored namespace/kernel
+cases. Exact per-case execution must produce one pass with no ignored case;
+unsupported namespace/kernel refusal stays failure. The existing 39 native
+capture/lifecycle definitions remain separate. Original and retained images,
+Source/lock checkpoints, raw failures and controlled ordinary fixture snapshots
+remain evidence; a shell exit does not certify inner retirement.
+These four new cases and the current-source operational pair are **UNRUN at this
+Source freeze**. Earlier native39 or b6 results cannot qualify the changed images.
+Actual current source/image pins, supported native gates and the original owner
+startup/re-entry replay are required. Controlled alias/history tests do not prove
 provider readiness, credential continuity or the exact final-checkpoint race.
 
 ## Relocation and usage
