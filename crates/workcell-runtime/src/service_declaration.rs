@@ -948,7 +948,7 @@ mod native_file_tests {
             path: path.clone(),
             original: fs::metadata(&path).unwrap().permissions(),
         };
-        fs::set_permissions(&path, fs::Permissions::from_mode(0)).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
         let observed = fs::read_to_string(&path).unwrap_err();
         assert_eq!(observed.kind(), std::io::ErrorKind::PermissionDenied);
         assert!(observed.raw_os_error().is_some());
