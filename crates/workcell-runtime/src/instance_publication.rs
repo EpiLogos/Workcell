@@ -256,16 +256,13 @@ impl Publication {
             ));
         }
         let stage_name = OsString::from(format!(
-            ".workcell-publication-{}-{}",
+            ".workcell-publication-{}-{}-{}",
             std::process::id(),
-            format!(
-                "{}-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_err(io::Error::other)?
-                    .as_nanos(),
-                NEXT_STAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            )
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(io::Error::other)?
+                .as_nanos(),
+            NEXT_STAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         let mut stage = open_in(
             &self.parent,
@@ -648,8 +645,10 @@ mod tests {
     use std::os::unix::process::CommandExt;
     use std::process::{Child, Command};
 
+    type StageCreatedObserver = Box<dyn FnOnce(&Path)>;
+
     std::thread_local! {
-        static ON_STAGE_CREATED: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
+        static ON_STAGE_CREATED: std::cell::RefCell<Option<StageCreatedObserver>> =
             const { std::cell::RefCell::new(None) };
     }
 
@@ -679,7 +678,7 @@ mod tests {
             return false;
         }
         let metadata = unsafe { metadata.assume_init() };
-        metadata.st_dev as u64 == dev && metadata.st_ino as u64 == ino
+        metadata.st_dev as u64 == dev && metadata.st_ino == ino
     }
 
     #[test]
