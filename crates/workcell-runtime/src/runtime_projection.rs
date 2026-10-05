@@ -1342,12 +1342,26 @@ mod linux {
             }
             Ok(())
         }
-        fn raw_map(path: &[u8], bytes: &[u8]) -> io::Result<()> {
+        fn raw_map(
+            path: &[u8],
+            bytes: &[u8],
+            checkpoint_fd: i32,
+            stages: [&[u8]; 3],
+        ) -> io::Result<()> {
+            raw_write_all(checkpoint_fd, stages[0])?;
             let fd = unsafe { libc::open(path.as_ptr().cast(), libc::O_WRONLY | libc::O_CLOEXEC) };
             if fd < 0 {
                 return Err(io::Error::last_os_error());
             }
-            let written = raw_write_all(fd, bytes);
+            let written =
+                raw_write_all(checkpoint_fd, stages[1]).and_then(|()| raw_write_all(fd, bytes));
+            // Close the map descriptor even when recording or writing failed.
+            // Keep the first actual failure and its last attempted stage.
+            let close_checkpoint = if written.is_ok() {
+                raw_write_all(checkpoint_fd, stages[2])
+            } else {
+                Ok(())
+            };
             let close_result = unsafe { libc::close(fd) };
             let close_cause = if close_result != 0 {
                 Some(io::Error::last_os_error())
@@ -1355,6 +1369,7 @@ mod linux {
                 None
             };
             written?;
+            close_checkpoint?;
             if let Some(cause) = close_cause {
                 return Err(cause);
             }
@@ -1439,11 +1454,30 @@ mod linux {
                         return Err(io::Error::last_os_error());
                     }
                     raw_write_all(checkpoint_fd, b"setgroups-deny\n")?;
-                    raw_map(b"/proc/self/setgroups\0", b"deny")?;
+                    raw_map(
+                        b"/proc/self/setgroups\0",
+                        b"deny",
+                        checkpoint_fd,
+                        [
+                            b"setgroups-open\n",
+                            b"setgroups-write\n",
+                            b"setgroups-close\n",
+                        ],
+                    )?;
                     raw_write_all(checkpoint_fd, b"uid-map\n")?;
-                    raw_map(b"/proc/self/uid_map\0", &uid_map)?;
+                    raw_map(
+                        b"/proc/self/uid_map\0",
+                        &uid_map,
+                        checkpoint_fd,
+                        [b"uid-map-open\n", b"uid-map-write\n", b"uid-map-close\n"],
+                    )?;
                     raw_write_all(checkpoint_fd, b"gid-map\n")?;
-                    raw_map(b"/proc/self/gid_map\0", &gid_map)?;
+                    raw_map(
+                        b"/proc/self/gid_map\0",
+                        &gid_map,
+                        checkpoint_fd,
+                        [b"gid-map-open\n", b"gid-map-write\n", b"gid-map-close\n"],
+                    )?;
                     raw_write_all(checkpoint_fd, b"private-mounts\n")?;
                     if libc::mount(
                         std::ptr::null(),
@@ -1596,7 +1630,7 @@ mod linux {
                 })
                 .collect();
             assert_eq!(fs::read(root.join("namespace-setup.steps")).unwrap(),
-                b"unshare-user-mount\nsetgroups-deny\nuid-map\ngid-map\nprivate-mounts\nnamespace-capability-get\nnamespace-capability-inheritable\nnamespace-capability-ambient\noriginal-handles-across-exec\nnamespace-exec-ready\n");
+                b"unshare-user-mount\nsetgroups-deny\nsetgroups-open\nsetgroups-write\nsetgroups-close\nuid-map\nuid-map-open\nuid-map-write\nuid-map-close\ngid-map\ngid-map-open\ngid-map-write\ngid-map-close\nprivate-mounts\nnamespace-capability-get\nnamespace-capability-inheritable\nnamespace-capability-ambient\noriginal-handles-across-exec\nnamespace-exec-ready\n");
             fs::write(
                 root.join("namespace-child-observation.json"),
                 json!({

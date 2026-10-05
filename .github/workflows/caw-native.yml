@@ -163,7 +163,154 @@ jobs:
                       if item.get('reason')=='compiler-artifact':result.append(item)
               return result
           mode=sys.argv[1]
-          if mode=='prepare':
+          if mode=='host-policy':
+              import datetime,signal,subprocess,time
+              phase=sys.argv[2]
+              if phase not in ['before','after']:raise ValueError('unknown host-policy observation phase')
+              observed=time.time()
+              row={'schema':'workcell.hosted-runtime-kernel-policy-observation/v1','phase':phase,
+                   'observed_at_unix_seconds':observed,'policy_mutation':False,
+                   'process':{'pid':os.getpid(),'uid':os.geteuid(),'gid':os.getegid(),'groups':os.getgroups()},
+                   'reads':{},'commands':[]}
+              for name in ['/proc/self/status','/proc/self/attr/current','/proc/self/attr/apparmor/current',
+                           '/proc/self/mountinfo','/proc/self/setgroups','/proc/self/uid_map','/proc/self/gid_map',
+                           '/sys/kernel/security/lsm','/sys/module/apparmor/parameters/enabled',
+                           '/proc/sys/kernel/apparmor_restrict_unprivileged_userns',
+                           '/proc/sys/kernel/apparmor_restrict_unprivileged_unconfined',
+                           '/proc/sys/kernel/unprivileged_userns_clone','/proc/sys/user/max_user_namespaces']:
+                  entry={'path':name}
+                  try:
+                      fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC)
+                      try:
+                          entry['metadata']=facts(os.fstat(fd));raw=bytearray();eof=False
+                          while len(raw)<=65536:
+                              part=os.read(fd,65537-len(raw))
+                              if not part:eof=True;break
+                              raw.extend(part)
+                          entry.update(bytes_read=len(raw),full_eof=eof,truncated=len(raw)>65536,
+                                       text=raw[:65536].decode('utf-8',errors='replace'),sha256=hashlib.sha256(raw).hexdigest())
+                      finally:os.close(fd)
+                  except OSError as failure:entry['cause']={'type':type(failure).__name__,'errno':failure.errno,'message':str(failure)}
+                  row['reads'][name]=entry
+              # Read-only named profile/audit commands, bounded to this existing campaign.
+              # Refusal or partial capture remains evidence; it never substitutes for a test.
+              commands=[('profiles',['sudo','-n','cat','/sys/kernel/security/apparmor/profiles'])]
+              if phase=='after':
+                  since=json.loads((out/'host-policy-before.json').read_text())['observed_at_unix_seconds']
+                  start=datetime.datetime.fromtimestamp(since,datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+                  commands.append(('kernel-audit',['sudo','-n','journalctl','-k','--since',start,'--no-pager',
+                                                  '--output=short-iso','--lines=1024','--grep=apparmor|userns|setgroups']))
+              def diagnostic_command(argv,prefix):
+                  import selectors
+                  capture={'argv':argv,'timed_out':False,'signals':[],'exit':None,'reaped':False,
+                           'stdout_eof':False,'stderr_eof':False,'errors':[],'owned_group_remaining':None}
+                  streams={name:{'count':0,'digest':hashlib.sha256(),'retained':bytearray(),'eof':False}
+                           for name in ['stdout','stderr']}
+                  process=None;selector=selectors.DefaultSelector();term_at=kill_at=None
+                  started=time.monotonic();runtime_deadline=started+10
+                  def failure(operation,error):
+                      capture['errors'].append({'operation':operation,'type':type(error).__name__,
+                                                'errno':getattr(error,'errno',None),'message':str(error)})
+                  def signal_group(sig):
+                      row={'signal':sig.name,'accepted':False,'group_absent':False}
+                      try:
+                          # start_new_session owns this exact group, also after its leader exits.
+                          os.killpg(process.pid,sig);row['accepted']=True
+                      except ProcessLookupError:row['group_absent']=True
+                      except OSError as error:failure('signal-owned-group',error)
+                      capture['signals'].append(row)
+                  def group_present():
+                      try:os.killpg(process.pid,0);return True
+                      except ProcessLookupError:return False
+                      except OSError as error:failure('observe-owned-group',error);return None
+                  def stop_term():
+                      nonlocal term_at
+                      if term_at is None:signal_group(signal.SIGTERM);term_at=time.monotonic()
+                  def stop_kill():
+                      nonlocal kill_at
+                      if kill_at is None:signal_group(signal.SIGKILL);kill_at=time.monotonic()
+                  try:
+                      process=subprocess.Popen(argv,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,
+                                               stderr=subprocess.PIPE,start_new_session=True)
+                      capture['pid']=process.pid;capture['owned_group']=process.pid
+                      for name in streams:
+                          pipe=getattr(process,name);os.set_blocking(pipe.fileno(),False)
+                          selector.register(pipe,selectors.EVENT_READ,name)
+                      while selector.get_map():
+                          now=time.monotonic()
+                          if term_at is None and now>=runtime_deadline:
+                              capture['timed_out']=True;stop_term()
+                          if term_at is not None and kill_at is None and now>=term_at+2:stop_kill()
+                          if kill_at is not None and now>=kill_at+2:break
+                          for key,_ in selector.select(.05):
+                              name=key.data;stream=streams[name]
+                              try:chunk=os.read(key.fileobj.fileno(),65536)
+                              except BlockingIOError:continue
+                              except OSError as error:
+                                  failure('read-'+name,error);stop_term();chunk=None
+                              if not chunk:
+                                  stream['eof']=chunk==b'';selector.unregister(key.fileobj);key.fileobj.close()
+                              else:
+                                  stream['count']+=len(chunk);stream['digest'].update(chunk)
+                                  available=max(0,4194304-len(stream['retained']))
+                                  stream['retained'].extend(chunk[:available])
+                      # Do not reap the leader during capture: its identity stays held through
+                      # any required group signalling, including a descendant-held pipe.
+                      if kill_at is not None:wait_deadline=kill_at+2
+                      elif term_at is not None:wait_deadline=term_at+2
+                      else:wait_deadline=runtime_deadline
+                      try:process.wait(timeout=max(0,wait_deadline-time.monotonic()))
+                      except subprocess.TimeoutExpired:
+                          if term_at is None:capture['timed_out']=True;stop_term()
+                          try:process.wait(timeout=max(0,term_at+2-time.monotonic()))
+                          except subprocess.TimeoutExpired:
+                              stop_kill()
+                              try:process.wait(timeout=max(0,kill_at+2-time.monotonic()))
+                              except subprocess.TimeoutExpired as error:failure('reap-owned-leader',error)
+                      capture['exit']=process.returncode;capture['reaped']=process.returncode is not None
+                      # A descendant may close both pipes and outlive a reaped leader. Retire
+                      # that owned group too, without confusing pipe EOF with quiescence.
+                      remaining=group_present()
+                      if remaining and term_at is None:stop_term()
+                      if remaining and kill_at is None:
+                          while time.monotonic()<term_at+2 and group_present():time.sleep(.02)
+                          remaining=group_present()
+                          if remaining:stop_kill()
+                      if remaining and kill_at is not None:
+                          while time.monotonic()<kill_at+2 and group_present():time.sleep(.02)
+                      capture['owned_group_remaining']=group_present()
+                      if capture['owned_group_remaining']:
+                          capture['errors'].append({'operation':'retire-owned-group',
+                                                    'type':'OwnedGroupStillPresent','errno':None,
+                                                    'message':'owned group remains after bounded cleanup'})
+                  except OSError as error:
+                      failure('launch-or-capture',error)
+                      if process is not None:
+                          stop_kill()
+                          try:process.wait(timeout=max(0,kill_at+2-time.monotonic()))
+                          except subprocess.TimeoutExpired as error:failure('reap-owned-leader',error)
+                          capture['exit']=process.returncode;capture['reaped']=process.returncode is not None
+                          capture['owned_group_remaining']=group_present()
+                  finally:
+                      selector.close()
+                      if process is not None:
+                          for name in streams:
+                              pipe=getattr(process,name)
+                              if pipe is not None:pipe.close()
+                      for name,stream in streams.items():
+                          retained=bytes(stream['retained'])
+                          capture[name+'_eof']=stream['eof']
+                          capture[name]={'bytes':stream['count'],'sha256':stream['digest'].hexdigest(),
+                                         'retained_bytes':len(retained),'retained_sha256':hashlib.sha256(retained).hexdigest(),
+                                         'truncated':stream['count']>len(retained)}
+                          Path(str(prefix)+'.'+name).write_bytes(retained)
+                      capture['elapsed_seconds']=time.monotonic()-started
+                  return capture
+              for label,argv in commands:
+                  prefix=out/('host-policy-'+phase+'-'+label)
+                  row['commands'].append(diagnostic_command(argv,prefix))
+              write('host-policy-'+phase+'.json',row)
+          elif mode=='prepare':
               records=[];total=0
               for role in roles:
                   rows=[r for r in artifacts(out/role['receipt']) if r['target']['name']==role['target'] and r.get('executable')]
@@ -257,6 +404,7 @@ jobs:
             printf '%s\n' "$status" > "$RUNTIME_GATE_EVIDENCE/$label.exit"
             return "$status"
           }
+          python3 "$RUNTIME_GATE_EVIDENCE/audit.py" host-policy before
           # Same current-source library image: default2 and mandatory kernel2.
           # Full Rust identities remain in receipts; portable labels address files only.
           library_image=$(cat "$RUNTIME_GATE_EVIDENCE/runtime-library-image.path")
@@ -313,6 +461,7 @@ jobs:
           CASES
           if ! python3 "$RUNTIME_GATE_EVIDENCE/audit.py" after; then failed=1; fi
           if ! python3 "$RUNTIME_GATE_EVIDENCE/audit.py" snapshot; then failed=1; fi
+          python3 "$RUNTIME_GATE_EVIDENCE/audit.py" host-policy after
           test "$failed" = 0
           git diff --exit-code -- Cargo.lock Cargo.toml crates/
       - name: Compiled protected-source and stdio boundaries
