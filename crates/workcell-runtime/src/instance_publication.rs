@@ -678,7 +678,9 @@ mod tests {
             return false;
         }
         let metadata = unsafe { metadata.assume_init() };
-        metadata.st_dev as u64 == dev && metadata.st_ino == ino
+        // st_dev is i32 on macOS and u64 on Linux; widen both sides losslessly
+        // so neither target sees a redundant cast.
+        i128::from(metadata.st_dev) == i128::from(dev) && metadata.st_ino == ino
     }
 
     #[test]
