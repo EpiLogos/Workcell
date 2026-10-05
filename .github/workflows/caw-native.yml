@@ -679,6 +679,13 @@ jobs:
           if ! python3 evidence/native39/audit.py after; then failed=1; fi
           if ! python3 evidence/native39/audit.py snapshot; then failed=1; fi
           test "$failed" -eq 0
+      - name: Actual native runtime capability and Mac refusal
+        if: matrix.os == 'macos-14'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p epilogos-workcell-cli --test runtime_projection_admission --no-run --message-format=json 2> evidence/runtime-admission-compiler.stderr | tee evidence/runtime-admission-compiler.jsonl
+          cargo test --locked -p epilogos-workcell-cli --test runtime_projection_admission -- --nocapture --test-threads=1 2>&1 | tee evidence/runtime-admission-native.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

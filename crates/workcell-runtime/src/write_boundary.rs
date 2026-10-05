@@ -219,6 +219,10 @@ pub fn write_boundary_capabilities() -> Value {
         "scope": "unprivileged launched process and descendants; regular filesystem writes only",
         "stdio": "null input and pipe output; other inherited descriptors close-on-exec",
         "path_binding": if cfg!(target_os = "macos") { "canonical path rules; object identity revalidated before launch; external replacement during execution is not confined" } else { "kernel object rules; material identity revalidated before launch" },
+        "runtime_projection": {"schema":"workcell.runtime-projection-capabilities/v1",
+            "operation":"exec-runtime", "implemented":cfg!(target_os = "linux"),
+            "provider":if cfg!(target_os = "linux") { Some("linux-private-mounts") } else { None },
+            "scope":"implementation declaration only; same original input path, immutable held origin and Task-owned mutable runtime; actual native admission remains required"},
         "policy_authority": "supplied; Workcell does not recognise or interpret governance"})
 }
 
