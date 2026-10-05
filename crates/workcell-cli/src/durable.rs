@@ -538,7 +538,11 @@ mod tests {
                 .unwrap(),
         );
         let deadline = Instant::now() + Duration::from_secs(3);
-        while !root.join("child-guard-dropped").exists() {
+        // The guard note becomes visible on create before the child's write
+        // lands; readiness is the complete note, not the file's existence.
+        while fs::read_to_string(root.join("child-guard-dropped")).unwrap_or_default()
+            != child.0.id().to_string()
+        {
             if let Some(status) = child.0.try_wait().unwrap() {
                 panic!(
                     "native child exited before guard disposal: {status}; {}",
