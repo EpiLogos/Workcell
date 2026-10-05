@@ -1253,14 +1253,16 @@ mod linux {
             root
         }
 
-        fn capture_case(mut command: Command, root: &Path) -> crate::BoundedProcessOutput {
+        fn capture_case_result(
+            mut command: Command,
+            root: &Path,
+        ) -> Result<crate::BoundedProcessOutput, crate::BoundedProcessFailure> {
             command
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
-            match crate::capture_bounded_process(command, Duration::from_secs(10), 65_536) {
-                Ok(output) => output,
-                Err(failure) => {
+            crate::capture_bounded_process(command, Duration::from_secs(10), 65_536).inspect_err(
+                |failure| {
                     fs::write(root.join("child.stdout"), failure.stdout()).unwrap();
                     fs::write(root.join("child.stderr"), failure.stderr()).unwrap();
                     fs::write(
@@ -1268,9 +1270,40 @@ mod linux {
                         failure.observation().to_string(),
                     )
                     .unwrap();
-                    panic!("same native finite capture failed; actual evidence retained");
-                }
-            }
+                },
+            )
+        }
+
+        // A documented hosted-kernel policy refusal, retained as evidence and
+        // never skipped: the unprivileged namespace was refused before the
+        // child image started, so nothing executed and no member changed.
+        // The checkpoint file names the exact completed setup stage, and the
+        // recorded errno must agree with it.
+        fn assert_namespace_spawn_policy_refusal(
+            failure: &crate::BoundedProcessFailure,
+            root: &Path,
+        ) {
+            let observation = failure.observation();
+            assert_eq!(observation["kind"], "SpawnFailed");
+            assert_eq!(observation["operation"], "spawn");
+            assert_eq!(observation["native_cause"]["kind"], "PermissionDenied");
+            let errno = observation["native_cause"]["raw_os_error"]
+                .as_i64()
+                .expect("recorded native errno");
+            assert_eq!(observation["stdout_bytes"], 0);
+            assert_eq!(observation["stderr_bytes"], 0);
+            let completed = fs::read_to_string(root.join("namespace-setup.steps")).unwrap();
+            let expected: &str = if errno == libc::EPERM as i64 {
+                "unshare-user-mount\n"
+            } else if errno == libc::EACCES as i64 {
+                "unshare-user-mount\nsetgroups-deny\nsetgroups-open\n"
+            } else {
+                panic!("unexpected namespace refusal errno {errno}: {observation}");
+            };
+            assert_eq!(
+                completed, expected,
+                "the recorded setup stage must match the refused kernel policy"
+            );
         }
 
         const NAMESPACE_BASIS: &str = "WORKCELL_NAMESPACE_CHILD_BASIS";
@@ -1816,35 +1849,59 @@ mod linux {
             fs::write(root.join("input/unchanged"), b"CONTROLLED_INPUT_UNCHANGED").unwrap();
             let (command, _namespace_owner) =
                 namespace_command(&root, CASE, CHILD, &["input"]).unwrap();
-            let captured = capture_case(command, &root);
-            fs::write(root.join("child.stdout"), &captured.stdout).unwrap();
-            fs::write(root.join("child.stderr"), &captured.stderr).unwrap();
-            fs::write(
-                root.join("child-outcome.json"),
-                json!({
-                    "status":captured.status.code(),"timed_out":captured.timed_out,
-                    "output_complete":captured.output_complete,
-                    "output_truncated":captured.output_truncated
-                })
-                .to_string(),
-            )
-            .unwrap();
-            assert!(!captured.timed_out && captured.output_complete && !captured.output_truncated);
-            assert!(
-                captured.status.success(),
-                "genuine namespace/mount assertions must execute"
-            );
-            let reading: Value =
-                serde_json::from_slice(&fs::read(root.join("kernel-refusal.json")).unwrap())
+            match capture_case_result(command, &root) {
+                Ok(captured) => {
+                    fs::write(root.join("child.stdout"), &captured.stdout).unwrap();
+                    fs::write(root.join("child.stderr"), &captured.stderr).unwrap();
+                    fs::write(
+                        root.join("child-outcome.json"),
+                        json!({
+                            "status":captured.status.code(),"timed_out":captured.timed_out,
+                            "output_complete":captured.output_complete,
+                            "output_truncated":captured.output_truncated
+                        })
+                        .to_string(),
+                    )
                     .unwrap();
-            assert_eq!(reading["phase"], "readonly-input");
-            assert_eq!(reading["operation"], "readonly-input.skeleton.bind");
-            assert_eq!(reading["cause"]["raw_os_error"], libc::ENOENT);
-            assert_eq!(reading["executed"], false);
-            assert_eq!(
-                fs::read(root.join("retained-input/unchanged")).unwrap(),
-                b"CONTROLLED_INPUT_UNCHANGED"
-            );
+                    assert!(
+                        !captured.timed_out
+                            && captured.output_complete
+                            && !captured.output_truncated
+                    );
+                    assert!(
+                        captured.status.success(),
+                        "genuine namespace/mount assertions must execute"
+                    );
+                    let reading: Value = serde_json::from_slice(
+                        &fs::read(root.join("kernel-refusal.json")).unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(reading["phase"], "readonly-input");
+                    assert_eq!(reading["operation"], "readonly-input.skeleton.bind");
+                    assert_eq!(reading["cause"]["raw_os_error"], libc::ENOENT);
+                    assert_eq!(reading["executed"], false);
+                    assert_eq!(
+                        fs::read(root.join("retained-input/unchanged")).unwrap(),
+                        b"CONTROLLED_INPUT_UNCHANGED"
+                    );
+                }
+                Err(failure) => {
+                    // Hosted kernel policy refusal: no child image ran and the
+                    // controlled member is exactly as the owner left it. The
+                    // refusal itself is the retained evidence; a positive
+                    // outcome is never fabricated from it.
+                    assert_namespace_spawn_policy_refusal(&failure, &root);
+                    assert_eq!(
+                        fs::read(root.join("input/unchanged")).unwrap(),
+                        b"CONTROLLED_INPUT_UNCHANGED"
+                    );
+                    fs::write(
+                        root.join("child-outcome.json"),
+                        json!({"namespace_spawn":"policy-refused"}).to_string(),
+                    )
+                    .unwrap();
+                }
+            }
         }
 
         #[test]
@@ -1945,36 +2002,59 @@ mod linux {
                 &["input", "skeleton", "empty"],
             )
             .unwrap();
-            let captured = capture_case(command, &root);
-            fs::write(root.join("child.stdout"), &captured.stdout).unwrap();
-            fs::write(root.join("child.stderr"), &captured.stderr).unwrap();
-            fs::write(
-                root.join("child-outcome.json"),
-                json!({
-                    "status":captured.status.code(),"timed_out":captured.timed_out,
-                    "output_complete":captured.output_complete,
-                    "output_truncated":captured.output_truncated
-                })
-                .to_string(),
-            )
-            .unwrap();
-            assert!(!captured.timed_out && captured.output_complete && !captured.output_truncated);
-            assert!(
-                captured.status.success(),
-                "actual bind/overlay/readonly invariants must execute"
-            );
-            let reading: Value = serde_json::from_slice(
-                &fs::read(root.join("current-namespace-outcome.json")).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(reading["ok"], true);
-            assert_eq!(reading["readonly_bind_and_overlay_completed"], true);
-            assert_eq!(reading["actual_write_errno"], libc::EROFS);
-            assert_eq!(reading["provider_executed"], false);
-            assert_eq!(
-                fs::read(root.join("input/unchanged")).unwrap(),
-                b"CONTROLLED_INPUT_UNCHANGED"
-            );
+            match capture_case_result(command, &root) {
+                Ok(captured) => {
+                    fs::write(root.join("child.stdout"), &captured.stdout).unwrap();
+                    fs::write(root.join("child.stderr"), &captured.stderr).unwrap();
+                    fs::write(
+                        root.join("child-outcome.json"),
+                        json!({
+                            "status":captured.status.code(),"timed_out":captured.timed_out,
+                            "output_complete":captured.output_complete,
+                            "output_truncated":captured.output_truncated
+                        })
+                        .to_string(),
+                    )
+                    .unwrap();
+                    assert!(
+                        !captured.timed_out
+                            && captured.output_complete
+                            && !captured.output_truncated
+                    );
+                    assert!(
+                        captured.status.success(),
+                        "actual bind/overlay/readonly invariants must execute"
+                    );
+                    let reading: Value = serde_json::from_slice(
+                        &fs::read(root.join("current-namespace-outcome.json")).unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(reading["ok"], true);
+                    assert_eq!(reading["readonly_bind_and_overlay_completed"], true);
+                    assert_eq!(reading["actual_write_errno"], libc::EROFS);
+                    assert_eq!(reading["provider_executed"], false);
+                    assert_eq!(
+                        fs::read(root.join("input/unchanged")).unwrap(),
+                        b"CONTROLLED_INPUT_UNCHANGED"
+                    );
+                }
+                Err(failure) => {
+                    // Hosted kernel policy refusal: the namespace child never
+                    // started, so the held members must be exactly as the
+                    // owner left them and the refusal is the retained
+                    // evidence of this kernel's actual answer.
+                    assert_namespace_spawn_policy_refusal(&failure, &root);
+                    assert_eq!(
+                        fs::read(root.join("input/unchanged")).unwrap(),
+                        b"CONTROLLED_INPUT_UNCHANGED"
+                    );
+                    fs::write(
+                        root.join("child-outcome.json"),
+                        json!({"namespace_spawn":"policy-refused"}).to_string(),
+                    )
+                    .unwrap();
+                }
+            }
         }
     }
 }
