@@ -186,6 +186,162 @@ fn protected_file_under_writable_directory_is_not_silently_dropped() {
     fs::remove_dir_all(root).unwrap();
 }
 
+fn directory_covered_fixture() -> (PathBuf, PathBuf, PathBuf, WriteBoundaryRequirements) {
+    let root = fs::canonicalize(root()).unwrap();
+    fs::create_dir_all(root.join("Work/NOW")).unwrap();
+    fs::create_dir(root.join("Work/project")).unwrap();
+    let parent = root.join("protected");
+    fs::create_dir(&parent).unwrap();
+    let index = parent.join("index.json");
+    fs::write(&index, "retained index").unwrap();
+    let mut r = requirements(&root);
+    r.protected_paths.extend([parent.clone(), index.clone()]);
+    (root, parent, index, r)
+}
+
+fn native_boundary_or_refusal(r: WriteBoundaryRequirements) -> Option<PreparedWriteBoundary> {
+    // Native preparation makes its own finite OS admission. A separate probe
+    // does not bind availability for a later invocation and is not this result.
+    match PreparedWriteBoundary::prepare(r, "revision:1") {
+        Ok(boundary) => Some(boundary),
+        Err(error @ epilogos_workcell_core::WorkcellError::Unsupported(_)) => {
+            eprintln!("COVERED_PROTECTION_PLATFORM_UNAVAILABLE: {error}; no execution claimed");
+            assert_ne!(
+                std::env::var("WORKCELL_REQUIRE_LANDLOCK").ok().as_deref(),
+                Some("1"),
+                "required native preparation refused: {error}"
+            );
+            None
+        }
+        Err(error) => panic!("native covered-protection preparation failed: {error}"),
+    }
+}
+
+#[test]
+fn directory_covered_atomic_child_replacement_preserves_native_boundary() {
+    let (root, parent, index, r) = directory_covered_fixture();
+    let original_requirements = r.as_json();
+    let original_digest = r.digest();
+    let Some(boundary) = native_boundary_or_refusal(r) else {
+        fs::remove_dir_all(root).unwrap();
+        return;
+    };
+    let before = boundary.inspect("revision:1").unwrap();
+    let child = before["protected_objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["path"].as_str() == index.to_str())
+        .unwrap();
+    assert_eq!(child["protection_basis"]["kind"], "protected-directory");
+    assert_eq!(child["protection_basis"]["path"].as_str(), parent.to_str());
+    assert_eq!(child["presence"], "existing");
+    assert!(child["identity"].is_null());
+    let retained = fs::File::open(&index).unwrap();
+    let replacement = parent.join("replacement.json");
+    fs::write(&replacement, "actual replacement").unwrap();
+    fs::rename(&replacement, &index).unwrap();
+    let after = boundary.inspect("revision:1").unwrap();
+    assert_eq!(after, before);
+    assert_eq!(after["requirements"], original_requirements);
+    assert_eq!(after["requirements_digest"], original_digest);
+    let partial = root.join("Work/NOW/partial");
+    fs::write(&partial, b"retained partial").unwrap();
+    let mut command = boundary.command("python3", "revision:1").unwrap();
+    command
+        .args([
+            "-B",
+            "-c",
+            r#"
+import pathlib, sys
+with pathlib.Path(sys.argv[1]).open('ab') as stream: stream.write(b'-continued')
+try: pathlib.Path(sys.argv[2]).write_text('forbidden')
+except PermissionError: print('actual-covered-source-denied')
+else: raise AssertionError('covered source escaped')
+"#,
+        ])
+        .arg(&partial)
+        .arg(&index);
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"actual-covered-source-denied\n");
+    assert_eq!(fs::read(&partial).unwrap(), b"retained partial-continued");
+    assert_eq!(fs::read(&index).unwrap(), b"actual replacement");
+    drop(retained);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn directory_covered_route_type_link_and_parent_changes_refuse_native_launch() {
+    for change in ["symlink", "type", "hardlink", "parent", "writable"] {
+        let (root, parent, index, r) = directory_covered_fixture();
+        let Some(boundary) = native_boundary_or_refusal(r) else {
+            fs::remove_dir_all(root).unwrap();
+            continue;
+        };
+        match change {
+            "symlink" => {
+                let target = root.join("Work/NOW/target");
+                fs::write(&target, "retained writable target").unwrap();
+                fs::remove_file(&index).unwrap();
+                std::os::unix::fs::symlink(&target, &index).unwrap();
+            }
+            "type" => {
+                fs::remove_file(&index).unwrap();
+                fs::create_dir(&index).unwrap();
+            }
+            "hardlink" => fs::hard_link(&index, root.join("Work/NOW/alias")).unwrap(),
+            "parent" => {
+                fs::rename(&parent, root.join("retained-parent")).unwrap();
+                fs::create_dir(&parent).unwrap();
+                fs::write(&index, "replacement parent index").unwrap();
+            }
+            "writable" => {
+                let seat = root.join("Work/NOW");
+                fs::rename(&seat, root.join("retained-seat")).unwrap();
+                fs::create_dir(&seat).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert!(boundary.inspect("revision:1").is_err(), "{change}");
+        assert!(
+            boundary.command("/usr/bin/true", "revision:1").is_err(),
+            "{change}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn protected_parent_with_writable_subtree_retains_child_identity_pin() {
+    let (root, _, _, mut r) = directory_covered_fixture();
+    let index = root.join("Work/index.json");
+    fs::write(&index, "protected index").unwrap();
+    r.protected_paths.push(index.clone());
+    let Some(boundary) = native_boundary_or_refusal(r) else {
+        fs::remove_dir_all(root).unwrap();
+        return;
+    };
+    let before = boundary.inspect("revision:1").unwrap();
+    let child = before["protected_objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["path"].as_str() == index.to_str())
+        .unwrap();
+    assert!(child["identity"].is_string());
+    assert!(child.get("protection_basis").is_none());
+    fs::rename(&index, root.join("retained-index")).unwrap();
+    fs::write(&index, "replacement index").unwrap();
+    assert!(boundary.inspect("revision:1").is_err());
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn missing_protected_path_under_writable_directory_is_not_silently_dropped() {
     let root = fs::canonicalize(root()).unwrap();

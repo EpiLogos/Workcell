@@ -1,3 +1,7 @@
+mod runtime_projection;
+pub use runtime_projection::{
+    RuntimeProjection, RuntimeProjectionFailure, RUNTIME_PROJECTION_SCHEMA,
+};
 mod write_boundary;
 pub use write_boundary::{
     write_boundary_capabilities, PreparedWriteBoundary, WriteBoundaryRequirements,
@@ -12,6 +16,7 @@ pub use directory_storage::{
 mod external_service;
 mod host;
 mod instance_projection;
+mod instance_publication;
 mod instance_registry;
 mod instance_scan;
 mod local;
@@ -39,9 +44,9 @@ pub use instance_projection::{
 };
 pub use instance_registry::{
     build_instance_record, by_slug, identity_hash, recorded_start_marker, seam, sort_by_reference,
-    validate_instance_record, InstanceObservation, InstanceRegistry, ProcessExecution,
-    RegisterOutcome, EVIDENCE_DECLARED_UNVERIFIED, EVIDENCE_GATEWAY_CONFIRMED, EVIDENCE_LIVE_PID,
-    HARNESS_INSTANCE_SCHEMA, LIVENESS_LIVE, LIVENESS_STALE, REGISTRY_SCHEMA,
+    validate_instance_record, InstanceObservation, InstanceRegistry, LivenessUpdate,
+    ProcessExecution, RegisterOutcome, EVIDENCE_DECLARED_UNVERIFIED, EVIDENCE_GATEWAY_CONFIRMED,
+    EVIDENCE_LIVE_PID, HARNESS_INSTANCE_SCHEMA, LIVENESS_LIVE, LIVENESS_STALE, REGISTRY_SCHEMA,
 };
 pub use instance_scan::{
     gateway_answering, read_pid_table, reconcile, report_json, scan_inputs_live, scan_live,
@@ -102,4 +107,7 @@ pub use service_declaration::{
 };
 
 mod bounded_process;
-pub use bounded_process::{run_bounded_process, BoundedProcessOutput};
+pub use bounded_process::{
+    capture_bounded_process, run_bounded_process, BoundedCaptureFailureKind, BoundedProcessFailure,
+    BoundedProcessOutput,
+};

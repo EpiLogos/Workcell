@@ -9,6 +9,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  # SAME Source-pinned hosted staging exception as the native campaign.
+  # This coordinate is job-owned evidence, not a native Project or Run.
+  WORKCELL_TEST_ARTIFACT_ROOT: ${{ github.workspace }}/evidence/native-processes
+  WORKCELL_TEST_ARTIFACT_ADMISSION: hosted-runner
+  WORKCELL_TEST_ARTIFACT_OWNER_SOURCE: ${{ github.workspace }}/evidence/source-commit.txt
+
 permissions:
   contents: read
 
@@ -28,4 +35,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.2
         with:
           cache-on-failure: true
+      - name: Admit existing hosted native verification evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$WORKCELL_TEST_ARTIFACT_ROOT"
+          git rev-parse HEAD > evidence/source-commit.txt
+          printf 'WORKCELL_TEST_ARTIFACT_OWNER_REF=%s\n' "$(cat evidence/source-commit.txt)" >> "$GITHUB_ENV"
       - run: ./scripts/verify.sh

@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import tempfile
@@ -38,7 +39,9 @@ class NativeProtocolBoundary(unittest.TestCase):
         self.assertTrue(caps.get('protocol_exec'), caps)
         self.temp = tempfile.TemporaryDirectory(prefix='workcell-protocol-')
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        # Material admission compares physical routes; macOS TMPDIR may itself
+        # be a /var alias. Use a canonical fixture and test aliases explicitly.
+        self.root = Path(self.temp.name).resolve(strict=True)
         self.now = self.root / 'T'
         self.now.mkdir()
         self.source = self.root / 'human.txt'
@@ -56,9 +59,238 @@ class NativeProtocolBoundary(unittest.TestCase):
         self.path = self.root / 'preparation.json'
         self.path.write_text(json.dumps(self.preparation))
 
-    def argv(self, revision='revision:1'):
+    def argv(self, revision='revision:1', body=BODY):
         return [self.binary, 'exec', str(self.path), revision,
-                self.preparation['requirements_digest'], '--', sys.executable, '-u', '-c', BODY]
+                self.preparation['requirements_digest'], '--', sys.executable, '-u', '-c', body]
+
+    def prepare_index(self, parent=None, missing=False):
+        parent = parent or self.root / 'relations'
+        parent.mkdir(exist_ok=True)
+        index = parent / 'index.json'
+        if not missing:
+            index.write_text('ORIGINAL_INDEX')
+        self.req['protected_paths'] = [str(parent), str(index)]
+        self.requirements.write_text(json.dumps(self.req))
+        result = subprocess.run([self.binary, 'inspect', str(self.requirements), 'revision:1'],
+                                capture_output=True, text=True, check=True, timeout=10)
+        self.preparation = json.loads(result.stdout)
+        self.path.write_text(json.dumps(self.preparation))
+        return parent, index
+
+    def replace_index(self, index):
+        replacement = index.with_name('replacement.json')
+        replacement.write_text('ACTUAL_NEW_INDEX')
+        # Keeping the old file open prevents inode reuse during the proof.
+        with index.open('rb') as original:
+            identity = os.fstat(original.fileno()).st_ino
+            os.replace(replacement, index)
+            self.assertNotEqual(index.stat().st_ino, identity)
+
+    def assert_admission_refused(self):
+        marker = self.now / 'must-not-execute'
+        body = 'import pathlib; pathlib.Path(%r).write_text("ESCAPED")' % str(marker)
+        result = subprocess.run(self.argv(body=body), input='', capture_output=True,
+                                text=True, timeout=10)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assertFalse(marker.exists())
+        return result
+
+    def test_directory_covered_atomic_index_replacement_keeps_parent_and_child_confined(self):
+        parent, index = self.prepare_index()
+        protected = self.preparation['protected_objects']
+        child = next(p for p in protected if p['path'] == str(index))
+        directory = next(p for p in protected if p['path'] == str(parent))
+        self.assertEqual(child['presence'], 'existing')
+        self.assertEqual(child['kind'], 'regular-file')
+        self.assertIsNone(child['identity'])
+        self.assertEqual(child['protection_basis'], {
+            'kind': 'protected-directory', 'path': str(parent), 'identity': directory['identity']})
+        partial = self.now / 'partial-bytes'
+        partial.write_bytes(b'RETAINED_PARTIAL')
+        self.replace_index(index)
+        inspected = subprocess.run([self.binary, 'inspect', str(self.requirements), 'revision:1'],
+                                   capture_output=True, text=True, check=True, timeout=10)
+        current = json.loads(inspected.stdout)
+        self.assertEqual(current['requirements'], self.preparation['requirements'])
+        self.assertEqual(current['requirements_digest'], self.preparation['requirements_digest'])
+        self.assertEqual(current['protected_objects'], protected)
+        child_body = r'''
+import json, os, pathlib, sys
+p = pathlib.Path(sys.argv[1]); source = pathlib.Path(sys.argv[2])
+with p.open('ab') as stream: stream.write(b'-CHILD')
+try: source.write_text('FORBIDDEN_CHILD_REWRITE')
+except PermissionError: denied = True
+else: denied = False
+print(json.dumps({'pid': os.getpid(), 'denied': denied}), flush=True)
+'''
+        body = r'''
+import json, os, pathlib, subprocess, sys
+p = pathlib.Path(%r)
+with p.open('ab') as stream: stream.write(b'-PARENT')
+child = subprocess.run([sys.executable, '-u', '-c', %r, str(p), %r],
+                       capture_output=True, text=True, timeout=5)
+assert child.returncode == 0, child.stderr
+print(json.dumps({'pid': os.getpid(), 'child': json.loads(child.stdout)}), flush=True)
+''' % (str(partial), child_body, str(index))
+        process = subprocess.Popen(self.argv(body=body), stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+        out, err = process.communicate('', timeout=10)
+        self.assertEqual(process.returncode, 0, err)
+        reply = json.loads(out)
+        self.assertEqual(reply['pid'], process.pid)
+        self.assertNotEqual(reply['child']['pid'], process.pid)
+        self.assertTrue(reply['child']['denied'])
+        self.assertEqual(partial.read_bytes(), b'RETAINED_PARTIAL-PARENT-CHILD')
+        self.assertEqual(index.read_text(), 'ACTUAL_NEW_INDEX')
+
+    def test_covered_child_symlink_escape_and_type_replacement_refuse(self):
+        for change in ('symlink', 'directory'):
+            with self.subTest(change=change):
+                parent, index = self.prepare_index(self.root / change)
+                index.unlink()
+                if change == 'symlink':
+                    target = self.now / 'permitted-target'
+                    target.write_text('RETAINED_TARGET')
+                    index.symlink_to(target)
+                else:
+                    index.mkdir()
+                self.assert_admission_refused()
+                if change == 'symlink':
+                    self.assertEqual(target.read_text(), 'RETAINED_TARGET')
+
+    def test_replaced_covered_directory_or_writable_seat_refuses(self):
+        for change in ('directory', 'seat'):
+            with self.subTest(change=change):
+                parent, index = self.prepare_index(self.root / change)
+                replaced = parent if change == 'directory' else self.now
+                replaced.rename(replaced.with_name(replaced.name + '-retained'))
+                replaced.mkdir()
+                if change == 'directory':
+                    index.write_text('REPLACEMENT_DIRECTORY_INDEX')
+                self.assert_admission_refused()
+                if change == 'seat':
+                    # Return the original aperture before the next subcase or cleanup.
+                    replaced.rmdir()
+                    replaced.with_name(replaced.name + '-retained').rename(replaced)
+
+    def test_overlapping_protected_parent_does_not_cover_child(self):
+        _, index = self.prepare_index(self.root)
+        child = next(p for p in self.preparation['protected_objects'] if p['path'] == str(index))
+        self.assertIsInstance(child['identity'], str)
+        self.assertNotIn('protection_basis', child)
+        self.replace_index(index)
+        self.assert_admission_refused()
+
+    def test_missing_child_appearance_requires_fresh_preparation(self):
+        _, index = self.prepare_index(missing=True)
+        child = next(p for p in self.preparation['protected_objects'] if p['path'] == str(index))
+        self.assertEqual(child['presence'], 'missing')
+        self.assertNotIn('protection_basis', child)
+        index.write_text('APPEARED_INDEX')
+        self.assert_admission_refused()
+
+    def test_existing_symbolic_and_hardlink_aliases_remain_identity_pinned(self):
+        for change in ('symlink', 'hardlink'):
+            with self.subTest(change=change):
+                parent, index = self.prepare_index(self.root / change)
+                target = parent / 'target.json'
+                index.rename(target)
+                if change == 'symlink':
+                    index.symlink_to(target)
+                else:
+                    os.link(target, index)
+                result = subprocess.run([self.binary, 'inspect', str(self.requirements), 'revision:1'],
+                                        capture_output=True, text=True, check=True, timeout=10)
+                self.preparation = json.loads(result.stdout)
+                self.path.write_text(json.dumps(self.preparation))
+                child = self.preparation['protected_objects'][1]
+                self.assertIsInstance(child['identity'], str)
+                self.assertNotIn('protection_basis', child)
+                replacement = parent / 'new-target.json'
+                replacement.write_text('REPLACED_ALIAS')
+                os.replace(replacement, target if change == 'symlink' else index)
+                self.assert_admission_refused()
+
+    def test_failed_provider_retains_diagnostics_without_polluting_protocol_stdout(self):
+        body = r'''
+import json, os
+print(json.dumps({'pid': os.getpid(), 'protocol': 'ready'}), flush=True)
+raise RuntimeError('CONTROLLED_NATIVE_PROVIDER_FAILURE')
+'''
+        process = subprocess.Popen(self.argv(body=body), stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+        out, err = process.communicate('', timeout=10)
+        self.assertEqual(process.returncode, 1)
+        self.assertEqual(json.loads(out), {'pid': process.pid, 'protocol': 'ready'})
+        self.assertIn('RuntimeError: CONTROLLED_NATIVE_PROVIDER_FAILURE', err)
+        self.assertNotIn('CONTROLLED_NATIVE_PROVIDER_FAILURE', out)
+
+    def test_socket_diagnostic_channel_retains_actual_provider_bytes(self):
+        reader, writer = socket.socketpair()
+        self.addCleanup(reader.close)
+        self.addCleanup(writer.close)
+        reader.settimeout(10)
+        body = "import sys; sys.stderr.write('CONTROLLED_SOCKET_DIAGNOSTIC\\n'); sys.exit(23)"
+        process = subprocess.Popen(self.argv(body=body), stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=writer)
+        self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+        writer.close()
+        out, _ = process.communicate(b'', timeout=10)
+        self.assertEqual(process.returncode, 23)
+        self.assertEqual(out, b'')
+        diagnostics = []
+        while chunk := reader.recv(4096):
+            diagnostics.append(chunk)
+        self.assertEqual(b''.join(diagnostics), b'CONTROLLED_SOCKET_DIAGNOSTIC\n')
+
+    def test_regular_file_stderr_is_untouched_while_provider_executes(self):
+        diagnostic_file = self.root / 'preopened-stderr.txt'
+        diagnostic_file.write_text('RETAINED_CALLER_DIAGNOSTIC_FILE')
+        marker = self.now / 'actual-execution.txt'
+        body = "import json, os, pathlib, sys; pathlib.Path(%r).write_text('ACTUAL_EXECUTION'); print(json.dumps({'pid': os.getpid(), 'protocol': 'ready'}), flush=True); sys.stderr.write('DISCARDED_PROVIDER_DIAGNOSTIC')" % str(marker)
+        with diagnostic_file.open('a') as diagnostic:
+            process = subprocess.Popen(self.argv(body=body), stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, stderr=diagnostic, text=True)
+            self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+            out, _ = process.communicate('', timeout=10)
+        self.assertEqual(process.returncode, 0)
+        self.assertEqual(json.loads(out), {'pid': process.pid, 'protocol': 'ready'})
+        self.assertEqual(marker.read_text(), 'ACTUAL_EXECUTION')
+        self.assertEqual(diagnostic_file.read_text(), 'RETAINED_CALLER_DIAGNOSTIC_FILE')
+
+    def test_nonstdio_file_and_socket_handles_are_closed_before_provider_exec(self):
+        inherited_file = self.root / 'inherited.txt'
+        inherited_file.write_text('RETAINED_BYTES')
+        reader, writer = socket.socketpair()
+        self.addCleanup(reader.close)
+        self.addCleanup(writer.close)
+        with inherited_file.open('a') as extra:
+            fds = [extra.fileno(), writer.fileno()]
+            body = r'''
+import errno, json, os
+closed = []
+for fd in %r:
+    try:
+        os.write(fd, b'FORBIDDEN_INHERITED_EFFECT')
+        closed.append(False)
+    except OSError as error:
+        closed.append(error.errno == errno.EBADF)
+print(json.dumps({'pid': os.getpid(), 'closed': closed}), flush=True)
+''' % fds
+            process = subprocess.Popen(self.argv(body=body), stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       pass_fds=fds, text=True)
+            self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+            out, err = process.communicate('', timeout=10)
+        self.assertEqual(process.returncode, 0, err)
+        self.assertEqual(json.loads(out), {'pid': process.pid, 'closed': [True, True]})
+        self.assertEqual(inherited_file.read_text(), 'RETAINED_BYTES')
+        writer.close()
+        reader.settimeout(10)
+        self.assertEqual(reader.recv(1), b'')
 
     def test_two_turns_use_same_process_and_cannot_write_protected_source(self):
         process = subprocess.Popen(self.argv(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,

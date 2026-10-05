@@ -2217,7 +2217,7 @@ fn command_sandboxes(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
 // refusal surfaces as run `blocked` — never deletion.
 // ---------------------------------------------------------------------------
 
-const RUN_USAGE: &str = "usage: workcell run start --run SLUG [--demand-json PATH | demand flags] [--rung local|remote|sandbox] [--machine LABEL] [--correlation FILE...] | observe --run SLUG [--correlate FILE] | collect --run SLUG | release --run SLUG | list | show --run SLUG | scope --run SLUG --policy-revision REV [--scope-out PATH] [--place-grant FILE]";
+const RUN_USAGE: &str = "usage: workcell run start --run SLUG [--demand-json PATH | demand flags] [--rung local|remote|sandbox] [--machine LABEL] [--correlation FILE...] | observe --run SLUG [--correlate FILE] | collect --run SLUG | release --run SLUG | list | show --run SLUG | scope --run SLUG --write-boundary PATH --expected-demand-digest DIGEST [--source-seat LOGICAL_REF] [--policy-revision REV] [--scope-out PATH]";
 
 fn command_run(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
     let Some(subcommand) = args.first().map(String::as_str) else {
@@ -3138,7 +3138,8 @@ fn run_scope(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> 
     }
     let place_grant = None::<Value>;
 
-    // The worktree material this run must bind the resident to.
+    // Select material already owned by this Run. Existing shared source seats
+    // use the native DirectoryStorageProvider; no copy or new tree is created.
     let receipt = record["world_receipt"]
         .as_str()
         .map(PathBuf::from)
@@ -3147,25 +3148,59 @@ fn run_scope(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> 
                 "run scope needs a prepared material world; start the run first".into(),
             )
         })?;
-    let world = load_world_receipt_path(&receipt)?;
-    let git_binding = world
+    let (workcell, world, _) = resume_receipt(global, &receipt)?;
+    let source_seat = run_flag(args, "--source-seat")?;
+    let eligible = world
         .binding_graph
         .bindings
         .iter()
-        .find(|binding| binding.material_ref.starts_with("workspace:git-worktree:"))
-        .ok_or_else(|| {
-            WorkcellError::OperationFailed(
-                "run scope needs a git-worktree workspace binding; start the run on the local rung with the branch_law: aikit extension"
-                    .into(),
-            )
-        })?;
-    let worktree_path = git_binding
+        .filter(|binding| {
+            let material = binding.material_ref.starts_with("workspace:git-worktree:")
+                || (binding.material_ref.starts_with("storage:directory:")
+                    && binding.properties.get("access").map(String::as_str) == Some("writable"));
+            material
+                && source_seat
+                    .as_ref()
+                    .is_none_or(|selected| {
+                        selected
+                            == binding
+                                .properties
+                                .get("logical_ref")
+                                .unwrap_or(&binding.logical_ref)
+                    })
+        })
+        .collect::<Vec<_>>();
+    let selected = if source_seat.is_none() {
+        let legacy = eligible
+            .iter()
+            .filter(|binding| binding.material_ref.starts_with("workspace:git-worktree:"))
+            .collect::<Vec<_>>();
+        if legacy.len() == 1 {
+            Some(*legacy[0])
+        } else if legacy.is_empty() && eligible.len() == 1 {
+            Some(eligible[0])
+        } else {
+            None
+        }
+    } else if eligible.len() == 1 {
+        Some(eligible[0])
+    } else {
+        None
+    };
+    let source_binding = selected.ok_or_else(|| WorkcellError::OperationFailed(
+        "run scope needs one owned writable source binding; select an exact --source-seat logical ref when material is ambiguous".into()))?;
+    let observed = workcell.observe(&world.world_ref)?;
+    if !observed.observations.iter().any(|observation| {
+        observation.logical_ref == source_binding.logical_ref
+            && observation.state == HealthState::Healthy
+    }) {
+        return Err(WorkcellError::OperationFailed("selected native source binding is absent or unhealthy; recover or re-resolve it explicitly".into()));
+    }
+    let worktree_path = source_binding
         .properties
         .get("path")
         .ok_or_else(|| {
-            WorkcellError::OperationFailed(
-                "run scope git-worktree binding has no material path".into(),
-            )
+            WorkcellError::OperationFailed("run scope source binding has no material path".into())
         })?
         .clone();
 
@@ -3207,7 +3242,7 @@ fn run_scope(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> 
     let mut scope = compose_prepared_run_scope(
         &record,
         &worktree_path,
-        git_binding.material_ref.as_str(),
+        source_binding.material_ref.as_str(),
         prepared_write_boundary.as_ref(),
         place_grant.as_ref(),
     );

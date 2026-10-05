@@ -427,9 +427,10 @@ pub fn reconcile(
     // were not observed this scan.
     let mut live = Vec::new();
     let mut stale = Vec::new();
-    let mut miss_updates: Vec<(String, u64, &'static str)> = Vec::new();
+    let mut miss_updates: Vec<crate::instance_registry::LivenessUpdate> = Vec::new();
     if let Ok(records) = registry.list() {
         for mut record in records {
+            let previous_record = record.clone();
             let reference = record["instance_ref"]
                 .as_str()
                 .unwrap_or_default()
@@ -450,7 +451,11 @@ pub fn reconcile(
             if observed_refs.contains(&reference) {
                 record["consecutive_misses"] = 0u64.into();
                 record["liveness"] = LIVENESS_LIVE.into();
-                miss_updates.push((reference.clone(), 0, LIVENESS_LIVE));
+                miss_updates.push(crate::instance_registry::LivenessUpdate {
+                    previous_record,
+                    consecutive_misses: 0,
+                    liveness: LIVENESS_LIVE.into(),
+                });
                 live.push(record);
             } else {
                 let misses = record
@@ -467,7 +472,11 @@ pub fn reconcile(
                     record.get("liveness").and_then(Value::as_str) == Some(LIVENESS_STALE);
                 record["consecutive_misses"] = misses.into();
                 record["liveness"] = liveness.into();
-                miss_updates.push((reference.clone(), misses, liveness));
+                miss_updates.push(crate::instance_registry::LivenessUpdate {
+                    previous_record,
+                    consecutive_misses: misses,
+                    liveness: liveness.into(),
+                });
                 if liveness == LIVENESS_STALE && !was_stale {
                     transitions.went_stale += 1;
                     stale.push(record);

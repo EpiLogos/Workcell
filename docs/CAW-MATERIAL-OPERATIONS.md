@@ -138,6 +138,24 @@ A writable ancestor of a protected path or `/` is refused. A protected
 parent such as Work may contain an explicitly permitted NOW/project subtree.
 Revision, expiry and path/object identity are rechecked immediately before exec.
 
+A redundant existing regular-file protection may use the enclosing protected
+directory as its exclusion basis only when both routes are canonical, the file
+has one hard link, and the declared directory is disjoint from every writable
+root. The directory retains its strict native identity pin. Every launch still
+checks the child's canonical route, regular-file type and single-link status;
+an outside owner's atomic replacement of that excluded child does not invalidate
+the unchanged directory protection. Inspection keeps the child's requested row
+in `protected_objects`, with `presence:existing`, `kind:regular-file`,
+`identity:null` and an explicit `protection_basis` containing
+`kind:protected-directory` plus the actual directory path and pinned identity.
+The null child identity means it is not separately inode-bound; it does not
+mean that the child is absent. The complete `protected_paths` and requirements
+digest remain unchanged. A protected parent containing any writable subtree
+cannot supply this basis. Standalone files, missing paths, aliases, directories
+and writable seats retain their strict identity/path checks. A retained prepared
+reading with the old object basis must be prepared afresh; consumers continue
+comparing the exact native protection reading rather than dropping child rows.
+
 An absent protection has no object identity. Inspection reports `presence:missing`,
 `identity:null`, the existing ancestor's supplied/canonical path and native
 identity, and the unresolved suffix. Its prospective canonical path participates
@@ -146,8 +164,8 @@ to create it. A symlink in its ancestor path is refused. Target or intermediate
 path appearance, ancestor replacement and type drift require fresh resolution
 before launch. This preserves Central's protection of source paths that have not
 been created in an assigned checkout without creating placeholder ground or
-discarding policy restrictions. Existing-object inspection retains its previous
-shape. Native path and write-boundary tests exercise this contract; an inspection
+discarding policy restrictions. Separately pinned existing-object inspection
+retains its previous shape. Native path and write-boundary tests exercise this contract; an inspection
 alone is not evidence that a model or task executed under it.
 
 Supported adapters are **unprivileged Linux Landlock ABI >= 3** and **macOS
@@ -167,8 +185,14 @@ roots cannot be removed or renamed by the worker, including nested roots.
 Paths are escaped as SBPL strings; non-UTF-8/control-character paths fail closed.
 The Mac launch marks inherited descriptors above stderr close-on-exec using
 bounded kernel descriptor enumeration; over 4096 descriptors refuses launch.
-Protocol exec accepts only pipe/socket stdin/stdout and discards provider stderr.
-Regular-file stdio is refused because a pre-opened descriptor bypasses path rules.
+Protocol exec accepts only pipe/socket stdin/stdout. Provider diagnostics retain
+their separate channel when caller stderr is a pipe or socket; the protocol owner
+supplies and drains that channel and owns capture limits. Other caller stderr
+handles retain the original null sink, including pre-opened regular files; they
+are never inherited by the provider. Workcell neither redirects diagnostics into
+protocol stdout nor adds a writable file descriptor. Regular-file stdin or stdout
+still refuses provider execution.
+Regular-file provider stdio is refused because a pre-opened descriptor bypasses path rules.
 All three standard descriptors are checked again after Command stdio remapping,
 immediately before exec, so a later caller override cannot introduce a file handle.
 Only pipes, sockets and the actual null device are accepted by the runtime.
@@ -199,6 +223,91 @@ invented revision by comparing two caller-provided strings.
 
 Primary kernel contract and limitations:
 https://www.kernel.org/doc/html/latest/userspace-api/landlock.html
+
+### Draft Task runtime projection
+
+The additive one-shot `exec-runtime` path uses the same prepared write boundary:
+
+```text
+workcell-write-boundary exec-runtime REQUIREMENTS_OR_PREPARATION.json CURRENT_POLICY_REVISION EXPECTED_DIGEST PROJECTION.json EXPECTED_PROJECTION_DIGEST -- PROGRAM ARG...
+```
+
+Its owners are [RuntimeProjection](../crates/workcell-runtime/src/runtime_projection.rs),
+[`PreparedWriteBoundary::command_with_runtime_projection`](../crates/workcell-runtime/src/write_boundary.rs)
+and the existing [protocol exec adapter](../crates/workcell-cli/src/stdio_boundary.rs).
+The caller selects provider member names and roles; Workcell mechanically applies
+the material view. This is a draft extension, not another primitive, service,
+credential store, Session owner or permission system.
+
+The closed `workcell.runtime-projection/v1` request requires `schema`,
+`requested_input_root`, `input_root`, `runtime_root`, `immutable_members`,
+`mutable_directories`, `mutable_files` and `boundary_digest`. The request is a
+held, bounded single-link regular file checked against its supplied digest.
+`requested_input_root` is the actual selected lexical invocation route,
+qualified once against the caller's actual cwd if relative; legal aliases and
+parent spelling remain intact. `input_root` is its expected canonical held
+input directory. Neither path is a semantic Source or Session identity.
+
+Workcell checks that the requested route still resolves to the admitted held
+origin at four checkpoints: initial admission, before material setup, before
+namespace mounting, and final basis before provider execution. At the final
+checkpoint the named object is the held assembled view; original lower members
+are still checked through the original directory fd. Stable aliases are allowed.
+Retargeted, missing or nonordinary origins refuse. These are current checkpoints,
+not atomic exclusion of arbitrary external writers or recursive freezing of
+all input contents.
+
+The original home/auth/config input remains readonly and its selector environment
+is unchanged. Explicit immutable members are disjoint from mutable members.
+Only selected directories and files receive durable copy-on-write continuations
+backed by a strict descendant of the existing authorised Task writable aperture.
+Original lower history remains available; retained Task uppers provide same-Task
+material re-entry. Provider runtime UUIDs/material do not replace Agent, Agency,
+canonical Session or provider-thread identities. No immutable auth/config file
+is copied or made writable. Retained material modes are checked, never silently
+changed; unselected or incompatible writes remain actual refusals.
+
+The native Linux namespace/mount view is applied by the single-threaded one-shot
+launcher. Its namespace capabilities retire before the body, and only privately
+created selected aliases join the same Landlock rules. Kernel capability and
+material availability are separate from the caller's existing grant, fresh
+policy revision and digest. No new grant, global home write, auth-refresh
+permission, second supervisor or fallback provider is inferred. Unsupported
+platform/kernel conditions refuse before the body.
+
+Mount-consumed directory handles are reopened after namespace entry and checked
+against the original held identity and named route. Original held input readers
+remain the source/provenance basis; namespace-affiliated handles serve only mounts.
+This preserves alias/replacement fences without substituting pathname-only binds.
+
+`RuntimeProjectionFailure` retains actual IO phase, kind, errno and cause. Its
+optional body-free `operation` records the observed native suboperation; older
+failures without it retain their unknown suboperation. This additive reply field
+does not change the closed request schema; strict external reply readers are not
+qualified by local Value-based consumers.
+`material_setup_started` distinguishes possible setup effects from body execution.
+A failure after setup is not rollback or authority to retry: terminate the
+one-shot launcher and retain evidence. Existing string-based owner errors do
+not recover previously erased IO details. The filesystem tests retain actual
+raw output and typed failure observations from the same `capture_bounded_process`
+owner; that capture is evidence, not a lifecycle or semantic completion authority.
+
+The draft's required `requested_input_root` field also changes public struct
+literal construction. Inspected callers migrate together; older missing-field
+requests refuse rather than guessing a route. External draft clients are
+uninspected and must supply their actual selected coordinate. The existing Linux runtime/image gate selects the original eight projection
+definitions unchanged and, from a separately admitted current-source library
+image, two default observation cases plus two mandatory ignored namespace/kernel
+cases. Exact per-case execution must produce one pass with no ignored case;
+unsupported namespace/kernel refusal stays failure. The existing 39 native
+capture/lifecycle definitions remain separate. Original and retained images,
+Source/lock checkpoints, raw failures and controlled ordinary fixture snapshots
+remain evidence; a shell exit does not certify inner retirement.
+These four new cases and the current-source operational pair are **UNRUN at this
+Source freeze**. Earlier native39 or b6 results cannot qualify the changed images.
+Actual current source/image pins, supported native gates and the original owner
+startup/re-entry replay are required. Controlled alias/history tests do not prove
+provider readiness, credential continuity or the exact final-checkpoint race.
 
 ## Relocation and usage
 

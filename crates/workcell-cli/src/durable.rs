@@ -15,15 +15,35 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// One material host owns a store at a time. The kernel lock releases on process
-/// death; it is not a stale PID lock. Completed receipts and release tombstones
-/// survive disconnects. An interrupted effect is never silently re-dispatched.
+/// One material host owns a store at a time. The kernel lock is released on
+/// owner teardown, not merely when one possibly duplicated descriptor closes;
+/// it is not a stale PID lock. Completed receipts and release tombstones survive
+/// disconnects. An interrupted effect is never silently re-dispatched.
 pub struct DurableCollapsedLocalWorkcell {
     inner: CollapsedLocalWorkcell,
     receipt_root: PathBuf,
     worlds: BTreeMap<String, WorldRef>,
     receipt_paths: BTreeMap<String, PathBuf>,
-    _host_lock: File,
+    // Struct fields drop in declaration order. Keep this last so the inner
+    // owner and its owned resources are gone before the store is available.
+    _host_lock: MaterialHostLock,
+}
+struct MaterialHostLock {
+    file: File,
+    owner_pid: u32,
+}
+impl Drop for MaterialHostLock {
+    fn drop(&mut self) {
+        // A fork inherits the same open file description. That child must not
+        // release the parent's live lease when it drops an inherited guard.
+        // This is local destructor ownership, never PID-based lock takeover.
+        if self.owner_pid != std::process::id() {
+            return;
+        }
+        if let Err(error) = self.file.unlock() {
+            eprintln!("release material host lock: {error}");
+        }
+    }
 }
 impl DurableCollapsedLocalWorkcell {
     pub fn new(config: CollapsedLocalConfig) -> Result<Self> {
@@ -39,6 +59,12 @@ impl DurableCollapsedLocalWorkcell {
         lock.try_lock().map_err(|e| {
             WorkcellError::Unavailable(format!("another material host owns this state root: {e}"))
         })?;
+        // Install the guard as soon as acquisition succeeds, including failed
+        // construction. Later local owners drop before this earlier guard.
+        let lock = MaterialHostLock {
+            file: lock,
+            owner_pid: std::process::id(),
+        };
         let workcell_ref = config.workcell_ref.clone();
         let mut inner = CollapsedLocalWorkcell::new(config)?;
         let mut worlds = BTreeMap::new();
@@ -388,6 +414,178 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn duplicate_descriptor_does_not_delay_restart_or_unlock_successor() {
+        let root = root();
+        let mut host = DurableCollapsedLocalWorkcell::new(config(&root)).unwrap();
+        let world = host.prepare(&demand()).unwrap();
+        let receipt = host.receipt_path(&world.world_ref);
+        let receipt_before = fs::read(&receipt).unwrap();
+        let old_descriptor = host._host_lock.file.try_clone().unwrap();
+        assert!(DurableCollapsedLocalWorkcell::new(config(&root)).is_err());
+        drop(host);
+        // No sleep/acquisition retry: the original owner's explicit release
+        // must suffice even while its duplicated description remains open.
+        let mut successor = DurableCollapsedLocalWorkcell::new(config(&root)).unwrap();
+        assert_eq!(successor.inspect(&world.world_ref).unwrap(), world);
+        assert_eq!(successor.prepare(&demand()).unwrap(), world);
+        assert_eq!(fs::read(&receipt).unwrap(), receipt_before);
+        assert!(DurableCollapsedLocalWorkcell::new(config(&root)).is_err());
+        drop(old_descriptor);
+        assert!(DurableCollapsedLocalWorkcell::new(config(&root)).is_err());
+        assert_eq!(
+            successor.release(&world.world_ref).unwrap().disposition,
+            ReleaseDisposition::Released
+        );
+        drop(successor);
+        let mut restarted = DurableCollapsedLocalWorkcell::new(config(&root)).unwrap();
+        assert!(restarted.prepare(&demand()).is_err());
+        assert!(!restarted.release(&world.world_ref).unwrap().changed);
+        drop(restarted);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    #[cfg(unix)]
+    fn inherited_guard_cannot_unlock_live_parent_or_delay_handover() {
+        use std::{
+            io::Read,
+            os::fd::AsFd,
+            os::unix::fs::MetadataExt,
+            process::{Child, Command, Stdio},
+            time::{Duration, Instant},
+        };
+        const PARENT: &str = "WORKCELL_DURABLE_TEST_LOCK_PARENT";
+        const ROOT: &str = "WORKCELL_DURABLE_TEST_LOCK_ROOT";
+        if let Some(parent) = std::env::var_os(PARENT) {
+            let root = PathBuf::from(std::env::var_os(ROOT).unwrap());
+            let owner_pid: u32 = parent.to_str().unwrap().parse().unwrap();
+            assert_ne!(owner_pid, std::process::id());
+            // A real native child has inherited the parent's locked open
+            // description on stdin. Clone only that actual descriptor.
+            let file = File::from(std::io::stdin().as_fd().try_clone_to_owned().unwrap());
+            let inherited = file.metadata().unwrap();
+            let actual = fs::metadata(root.join("control-worlds/host.lock")).unwrap();
+            assert_eq!(
+                (inherited.dev(), inherited.ino()),
+                (actual.dev(), actual.ino())
+            );
+            assert!(DurableCollapsedLocalWorkcell::new(config(&root)).is_err());
+            drop(MaterialHostLock { file, owner_pid });
+            assert!(DurableCollapsedLocalWorkcell::new(config(&root)).is_err());
+            // Parent observes guard disposal before attempting handover. The
+            // child still owns stdin's inherited description until exit.
+            fs::write(
+                root.join("child-guard-dropped"),
+                std::process::id().to_string(),
+            )
+            .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !root.join("child-stop").exists() {
+                assert!(Instant::now() < deadline, "owned child stop deadline");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(DurableCollapsedLocalWorkcell::new(config(&root)).is_err());
+            return;
+        }
+        struct OwnedChild(Child);
+        impl OwnedChild {
+            // Read only after this exact child has exited. Its test output
+            // contains controlled filesystem/process diagnostics, no auth.
+            fn diagnostics(&mut self) -> String {
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                if let Some(reader) = self.0.stdout.take() {
+                    reader.take(64 * 1024).read_to_end(&mut stdout).unwrap();
+                }
+                if let Some(reader) = self.0.stderr.take() {
+                    reader.take(64 * 1024).read_to_end(&mut stderr).unwrap();
+                }
+                format!(
+                    "native child {} stdout={} stderr={}",
+                    self.0.id(),
+                    String::from_utf8_lossy(&stdout),
+                    String::from_utf8_lossy(&stderr)
+                )
+            }
+        }
+        impl Drop for OwnedChild {
+            fn drop(&mut self) {
+                if self.0.try_wait().ok().flatten().is_none() {
+                    let _ = self.0.kill();
+                }
+                let _ = self.0.wait();
+            }
+        }
+        let root = root();
+        let mut host = DurableCollapsedLocalWorkcell::new(config(&root)).unwrap();
+        let world = host.prepare(&demand()).unwrap();
+        let receipt = host.receipt_path(&world.world_ref);
+        let receipt_before = fs::read(&receipt).unwrap();
+        let mut child = OwnedChild(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "durable::tests::inherited_guard_cannot_unlock_live_parent_or_delay_handover",
+                    "--nocapture",
+                ])
+                .env(PARENT, std::process::id().to_string())
+                .env(ROOT, &root)
+                .env_remove("CENTRAL_NATIVE_TOKEN")
+                .env_remove("WORKCELL_CONTROL_TOKEN")
+                .stdin(Stdio::from(host._host_lock.file.try_clone().unwrap()))
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(3);
+        // The guard note becomes visible on create before the child's write
+        // lands; readiness is the complete note, not the file's existence.
+        while fs::read_to_string(root.join("child-guard-dropped")).unwrap_or_default()
+            != child.0.id().to_string()
+        {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                panic!(
+                    "native child exited before guard disposal: {status}; {}",
+                    child.diagnostics()
+                );
+            }
+            assert!(Instant::now() < deadline, "native child readiness deadline");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            fs::read_to_string(root.join("child-guard-dropped")).unwrap(),
+            child.0.id().to_string()
+        );
+        assert!(DurableCollapsedLocalWorkcell::new(config(&root)).is_err());
+        drop(host);
+        // The old child's actual stdin remains open. Native ownership still
+        // hands over immediately after the old owner's resources are gone.
+        assert!(child.0.try_wait().unwrap().is_none());
+        let mut successor = DurableCollapsedLocalWorkcell::new(config(&root)).unwrap();
+        assert_eq!(successor.inspect(&world.world_ref).unwrap(), world);
+        assert_eq!(successor.prepare(&demand()).unwrap(), world);
+        assert_eq!(fs::read(&receipt).unwrap(), receipt_before);
+        fs::write(root.join("child-stop"), b"owned-stop").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let status = loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "native child exit deadline");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let diagnostics = child.diagnostics();
+        assert!(
+            status.success(),
+            "native inherited-description case failed: {status}; {diagnostics}"
+        );
+        assert!(DurableCollapsedLocalWorkcell::new(config(&root)).is_err());
+        assert_eq!(successor.inspect(&world.world_ref).unwrap(), world);
+        drop(successor);
+        drop(child);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn interrupted_recovery_cannot_be_bypassed_by_another_demand() {
         let root = root();
         let mut host = DurableCollapsedLocalWorkcell::new(config(&root)).unwrap();
@@ -420,11 +618,14 @@ mod tests {
             .unwrap();
         assert!(host.prepare(&demand()).is_err());
         host.finish(demand().demand_ref.as_str()).unwrap();
-        host.prepare(&demand()).unwrap();
+        let world = host.prepare(&demand()).unwrap();
         drop(host);
         let other =
             CollapsedLocalConfig::new(WorkcellRef::new("workcell:other-placement").unwrap(), &root);
         assert!(DurableCollapsedLocalWorkcell::new(other).is_err());
+        let host = DurableCollapsedLocalWorkcell::new(config(&root)).unwrap();
+        assert_eq!(host.inspect(&world.world_ref).unwrap(), world);
+        drop(host);
         fs::remove_dir_all(root).unwrap();
     }
 }

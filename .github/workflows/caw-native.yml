@@ -7,6 +7,12 @@ on:
     branches: [main]
     paths: ['Cargo.*', 'crates/**', 'scripts/**', '.github/workflows/caw-native.yml']
 
+env:
+  # Explicit hosted staging exception; this is not a native Project/Run.
+  WORKCELL_TEST_ARTIFACT_ROOT: ${{ github.workspace }}/evidence/native-processes
+  WORKCELL_TEST_ARTIFACT_ADMISSION: hosted-runner
+  WORKCELL_TEST_ARTIFACT_OWNER_SOURCE: ${{ github.workspace }}/evidence/source-commit.txt
+
 permissions:
   contents: read
 
@@ -27,8 +33,9 @@ jobs:
           components: rustfmt,clippy
       - name: Record exact tested source and environment
         run: |
-          mkdir -p evidence
+          mkdir -p "$WORKCELL_TEST_ARTIFACT_ROOT"
           git rev-parse HEAD > evidence/source-commit.txt
+          printf 'WORKCELL_TEST_ARTIFACT_OWNER_REF=%s\n' "$(cat evidence/source-commit.txt)" >> "$GITHUB_ENV"
           printf '%s\n' '${{ github.event.pull_request.head.sha || github.sha }}' > evidence/pr-head.txt
           rustc --version --verbose > evidence/toolchain.txt
           uname -a > evidence/kernel.txt
@@ -56,6 +63,407 @@ jobs:
           cargo build --locked -p epilogos-workcell-cli --bins
           cp target/debug/workcell target/debug/workcell-control-service target/debug/workcell-write-boundary evidence/
           sha256sum evidence/workcell evidence/workcell-control-service evidence/workcell-write-boundary > evidence/binary-sha256.txt
+      - name: Current readonly input and Task-owned runtime kernel cases
+        timeout-minutes: 10
+        shell: bash
+        env:
+          WORKCELL_REQUIRE_LANDLOCK: '1'
+          WORKCELL_RUNTIME_PROJECTION_BIN: ${{ github.workspace }}/target/debug/workcell-write-boundary
+          WORKCELL_TEST_ARTIFACT_ROOT: ${{ github.workspace }}/evidence/native-processes
+          WORKCELL_TEST_ARTIFACT_OWNER_SOURCE: ${{ github.workspace }}/evidence/source-commit.txt
+          WORKCELL_TEST_ARTIFACT_ADMISSION: 'hosted-runner'
+        run: |
+          set -euo pipefail
+          test "$(id -u)" -ne 0
+          export RUNTIME_GATE_EVIDENCE="$GITHUB_WORKSPACE/evidence/runtime-projection"
+          mkdir -p "$RUNTIME_GATE_EVIDENCE/images" "$WORKCELL_TEST_ARTIFACT_ROOT"
+          export WORKCELL_TEST_ARTIFACT_OWNER_REF="$(cat evidence/source-commit.txt)"
+          cp Cargo.lock "$RUNTIME_GATE_EVIDENCE/Cargo.lock"
+          git rev-parse HEAD^{tree} > "$RUNTIME_GATE_EVIDENCE/source-tree.txt"
+          git ls-files --stage > "$RUNTIME_GATE_EVIDENCE/source-modes.txt"
+          sha256sum Cargo.lock crates/workcell-runtime/Cargo.toml crates/workcell-cli/Cargo.toml crates/workcell-runtime/src/runtime_projection.rs crates/workcell-runtime/tests/runtime_projection.rs > "$RUNTIME_GATE_EVIDENCE/source-sha256.txt"
+          record_command() {
+            local label=$1 suffix=$2 status
+            shift 2
+            printf '%q ' "$@" > "$RUNTIME_GATE_EVIDENCE/$label.command.txt"
+            printf '\n' >> "$RUNTIME_GATE_EVIDENCE/$label.command.txt"
+            set +e
+            "$@" > "$RUNTIME_GATE_EVIDENCE/$label.$suffix" 2> "$RUNTIME_GATE_EVIDENCE/$label.stderr"
+            status=$?
+            set -e
+            printf '%s\n' "$status" > "$RUNTIME_GATE_EVIDENCE/$label.exit"
+            return "$status"
+          }
+          # This compile label is the actual current tested Source, not a relocated
+          # build path or native material-owner identity. Original CompilerArtifact,
+          # source/lock and held before/after image receipts remain mandatory.
+          record_command replay-source-head txt git rev-parse HEAD
+          record_command replay-source-status txt git status --porcelain=v1 --untracked-files=no
+          test "$(cat evidence/source-commit.txt)" = "$(cat "$RUNTIME_GATE_EVIDENCE/replay-source-head.txt")"
+          test ! -s "$RUNTIME_GATE_EVIDENCE/replay-source-status.txt"
+          export WORKCELL_TEST_COMPILED_SOURCE_REF="$(cat evidence/source-commit.txt)"
+          record_command compiler-owner jsonl timeout --kill-after=5s 5m cargo build --locked -p epilogos-workcell-cli --bins --message-format=json
+          record_command compiler-test jsonl timeout --kill-after=5s 5m cargo test --locked -p epilogos-workcell-runtime --test runtime_projection --no-run --message-format=json
+          record_command compiler-library jsonl timeout --kill-after=5s 5m cargo test --locked -p epilogos-workcell-runtime --lib --no-run --message-format=json
+          cat > "$RUNTIME_GATE_EVIDENCE/audit.py" <<'PY'
+          import hashlib,json,os,stat,sys
+          from pathlib import Path
+          out=Path(os.environ['RUNTIME_GATE_EVIDENCE'])
+          roles=json.loads(os.environ['RUNTIME_GATE_ROLES'])
+          def write(name,value):
+              (out/name).write_text(json.dumps(value,indent=2)+'\n')
+          def facts(s):
+              return dict(device=s.st_dev,inode=s.st_ino,mode=s.st_mode,links=s.st_nlink,
+                          uid=s.st_uid,gid=s.st_gid,bytes=s.st_size,mtime_ns=s.st_mtime_ns,ctime_ns=s.st_ctime_ns)
+          def held(path,root,copy=None,limit=1073741824):
+              p=Path(path); row={'path':str(p),'sha256':None,'cause':None}
+              try:
+                  row['named_before']=facts(os.lstat(p))
+                  if not p.is_absolute() or not p.is_relative_to(root) or p.resolve(strict=True)!=p:
+                      raise ValueError('image/source coordinate is outside the exact admitted physical root')
+                  fd=os.open(p,os.O_RDONLY|os.O_NONBLOCK|os.O_NOFOLLOW|os.O_CLOEXEC)
+                  with os.fdopen(fd,'rb') as f:
+                      first=os.fstat(f.fileno());row['held_before']=facts(first)
+                      if not stat.S_ISREG(first.st_mode) or first.st_uid!=os.geteuid() or first.st_size>limit:
+                          raise ValueError('nonregular/foreign-owner/over-capacity original; no byte read admitted')
+                      digest=hashlib.sha256();observed=0;prefix=b''
+                      sink=None
+                      if copy is not None:
+                          sink=os.fdopen(os.open(copy,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o700),'wb')
+                      try:
+                          while chunk:=f.read(1048576):
+                              if not prefix:prefix=chunk[:64]
+                              observed+=len(chunk)
+                              if observed>limit:raise ValueError('held image exceeded admitted capacity')
+                              digest.update(chunk)
+                              if sink:sink.write(chunk)
+                          if sink:sink.flush()
+                      finally:
+                          if sink:sink.close()
+                      row['held_after']=facts(os.fstat(f.fileno()));row['named_after']=facts(os.lstat(p))
+                      if row['held_before']!=row['held_after'] or row['held_before']!=row['named_before'] or row['held_after']!=row['named_after']:
+                          raise ValueError('held/named original basis changed; digest unavailable')
+                      row['sha256']=digest.hexdigest();row['observed_bytes']=observed;row['header_hex']=prefix.hex()
+                      if copy is not None:
+                          s=os.lstat(copy);row['private_copy']=dict(path=str(copy),metadata=facts(s))
+                          if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1:
+                              raise ValueError('private evidence copy must be regular single-link')
+                  row['digest_standing']='bounded unchanged held regular original; native original link count is observed, not presumed one'
+              except (OSError,ValueError) as e:
+                  row['sha256']=None
+                  row['cause']={'type':type(e).__name__,'errno':getattr(e,'errno',None),'message':str(e)}
+              return row
+          def artifacts(file):
+              used=0;result=[]
+              with Path(file).open('rb') as stream:
+                  for raw in stream:
+                      used+=len(raw)
+                      if used>67108864 or len(raw)>1048576:raise ValueError('compiler receipt capacity exceeded')
+                      item=json.loads(raw)
+                      if item.get('reason')=='compiler-artifact':result.append(item)
+              return result
+          mode=sys.argv[1]
+          if mode=='host-policy':
+              import datetime,signal,subprocess,time
+              phase=sys.argv[2]
+              if phase not in ['before','after']:raise ValueError('unknown host-policy observation phase')
+              observed=time.time()
+              row={'schema':'workcell.hosted-runtime-kernel-policy-observation/v1','phase':phase,
+                   'observed_at_unix_seconds':observed,'policy_mutation':False,
+                   'process':{'pid':os.getpid(),'uid':os.geteuid(),'gid':os.getegid(),'groups':os.getgroups()},
+                   'reads':{},'commands':[]}
+              for name in ['/proc/self/status','/proc/self/attr/current','/proc/self/attr/apparmor/current',
+                           '/proc/self/mountinfo','/proc/self/setgroups','/proc/self/uid_map','/proc/self/gid_map',
+                           '/sys/kernel/security/lsm','/sys/module/apparmor/parameters/enabled',
+                           '/proc/sys/kernel/apparmor_restrict_unprivileged_userns',
+                           '/proc/sys/kernel/apparmor_restrict_unprivileged_unconfined',
+                           '/proc/sys/kernel/unprivileged_userns_clone','/proc/sys/user/max_user_namespaces']:
+                  entry={'path':name}
+                  try:
+                      fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC)
+                      try:
+                          entry['metadata']=facts(os.fstat(fd));raw=bytearray();eof=False
+                          while len(raw)<=65536:
+                              part=os.read(fd,65537-len(raw))
+                              if not part:eof=True;break
+                              raw.extend(part)
+                          entry.update(bytes_read=len(raw),full_eof=eof,truncated=len(raw)>65536,
+                                       text=raw[:65536].decode('utf-8',errors='replace'),sha256=hashlib.sha256(raw).hexdigest())
+                      finally:os.close(fd)
+                  except OSError as failure:entry['cause']={'type':type(failure).__name__,'errno':failure.errno,'message':str(failure)}
+                  row['reads'][name]=entry
+              # Read-only named profile/audit commands, bounded to this existing campaign.
+              # Refusal or partial capture remains evidence; it never substitutes for a test.
+              commands=[('profiles',['sudo','-n','cat','/sys/kernel/security/apparmor/profiles'])]
+              if phase=='after':
+                  since=json.loads((out/'host-policy-before.json').read_text())['observed_at_unix_seconds']
+                  start=datetime.datetime.fromtimestamp(since,datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+                  commands.append(('kernel-audit',['sudo','-n','journalctl','-k','--since',start,'--no-pager',
+                                                  '--output=short-iso','--lines=1024','--grep=apparmor|userns|setgroups']))
+              def diagnostic_command(argv,prefix):
+                  import selectors
+                  capture={'argv':argv,'timed_out':False,'signals':[],'exit':None,'reaped':False,
+                           'stdout_eof':False,'stderr_eof':False,'errors':[],'owned_group_remaining':None}
+                  streams={name:{'count':0,'digest':hashlib.sha256(),'retained':bytearray(),'eof':False}
+                           for name in ['stdout','stderr']}
+                  process=None;selector=selectors.DefaultSelector();term_at=kill_at=None
+                  started=time.monotonic();runtime_deadline=started+10
+                  def failure(operation,error):
+                      capture['errors'].append({'operation':operation,'type':type(error).__name__,
+                                                'errno':getattr(error,'errno',None),'message':str(error)})
+                  def signal_group(sig):
+                      row={'signal':sig.name,'accepted':False,'group_absent':False}
+                      try:
+                          # start_new_session owns this exact group, also after its leader exits.
+                          os.killpg(process.pid,sig);row['accepted']=True
+                      except ProcessLookupError:row['group_absent']=True
+                      except OSError as error:failure('signal-owned-group',error)
+                      capture['signals'].append(row)
+                  def group_present():
+                      try:os.killpg(process.pid,0);return True
+                      except ProcessLookupError:return False
+                      except OSError as error:failure('observe-owned-group',error);return None
+                  def stop_term():
+                      nonlocal term_at
+                      if term_at is None:signal_group(signal.SIGTERM);term_at=time.monotonic()
+                  def stop_kill():
+                      nonlocal kill_at
+                      if kill_at is None:signal_group(signal.SIGKILL);kill_at=time.monotonic()
+                  try:
+                      process=subprocess.Popen(argv,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,
+                                               stderr=subprocess.PIPE,start_new_session=True)
+                      capture['pid']=process.pid;capture['owned_group']=process.pid
+                      for name in streams:
+                          pipe=getattr(process,name);os.set_blocking(pipe.fileno(),False)
+                          selector.register(pipe,selectors.EVENT_READ,name)
+                      while selector.get_map():
+                          now=time.monotonic()
+                          if term_at is None and now>=runtime_deadline:
+                              capture['timed_out']=True;stop_term()
+                          if term_at is not None and kill_at is None and now>=term_at+2:stop_kill()
+                          if kill_at is not None and now>=kill_at+2:break
+                          for key,_ in selector.select(.05):
+                              name=key.data;stream=streams[name]
+                              try:chunk=os.read(key.fileobj.fileno(),65536)
+                              except BlockingIOError:continue
+                              except OSError as error:
+                                  failure('read-'+name,error);stop_term();chunk=None
+                              if not chunk:
+                                  stream['eof']=chunk==b'';selector.unregister(key.fileobj);key.fileobj.close()
+                              else:
+                                  stream['count']+=len(chunk);stream['digest'].update(chunk)
+                                  available=max(0,4194304-len(stream['retained']))
+                                  stream['retained'].extend(chunk[:available])
+                      # Do not reap the leader during capture: its identity stays held through
+                      # any required group signalling, including a descendant-held pipe.
+                      if kill_at is not None:wait_deadline=kill_at+2
+                      elif term_at is not None:wait_deadline=term_at+2
+                      else:wait_deadline=runtime_deadline
+                      try:process.wait(timeout=max(0,wait_deadline-time.monotonic()))
+                      except subprocess.TimeoutExpired:
+                          if term_at is None:capture['timed_out']=True;stop_term()
+                          try:process.wait(timeout=max(0,term_at+2-time.monotonic()))
+                          except subprocess.TimeoutExpired:
+                              stop_kill()
+                              try:process.wait(timeout=max(0,kill_at+2-time.monotonic()))
+                              except subprocess.TimeoutExpired as error:failure('reap-owned-leader',error)
+                      capture['exit']=process.returncode;capture['reaped']=process.returncode is not None
+                      # A descendant may close both pipes and outlive a reaped leader. Retire
+                      # that owned group too, without confusing pipe EOF with quiescence.
+                      remaining=group_present()
+                      if remaining and term_at is None:stop_term()
+                      if remaining and kill_at is None:
+                          while time.monotonic()<term_at+2 and group_present():time.sleep(.02)
+                          remaining=group_present()
+                          if remaining:stop_kill()
+                      if remaining and kill_at is not None:
+                          while time.monotonic()<kill_at+2 and group_present():time.sleep(.02)
+                      capture['owned_group_remaining']=group_present()
+                      if capture['owned_group_remaining']:
+                          capture['errors'].append({'operation':'retire-owned-group',
+                                                    'type':'OwnedGroupStillPresent','errno':None,
+                                                    'message':'owned group remains after bounded cleanup'})
+                  except OSError as error:
+                      failure('launch-or-capture',error)
+                      if process is not None:
+                          stop_kill()
+                          try:process.wait(timeout=max(0,kill_at+2-time.monotonic()))
+                          except subprocess.TimeoutExpired as error:failure('reap-owned-leader',error)
+                          capture['exit']=process.returncode;capture['reaped']=process.returncode is not None
+                          capture['owned_group_remaining']=group_present()
+                  finally:
+                      selector.close()
+                      if process is not None:
+                          for name in streams:
+                              pipe=getattr(process,name)
+                              if pipe is not None:pipe.close()
+                      for name,stream in streams.items():
+                          retained=bytes(stream['retained'])
+                          capture[name+'_eof']=stream['eof']
+                          capture[name]={'bytes':stream['count'],'sha256':stream['digest'].hexdigest(),
+                                         'retained_bytes':len(retained),'retained_sha256':hashlib.sha256(retained).hexdigest(),
+                                         'truncated':stream['count']>len(retained)}
+                          Path(str(prefix)+'.'+name).write_bytes(retained)
+                      capture['elapsed_seconds']=time.monotonic()-started
+                  return capture
+              for label,argv in commands:
+                  prefix=out/('host-policy-'+phase+'-'+label)
+                  row['commands'].append(diagnostic_command(argv,prefix))
+              write('host-policy-'+phase+'.json',row)
+          elif mode=='prepare':
+              records=[];total=0
+              for role in roles:
+                  rows=[r for r in artifacts(out/role['receipt']) if r['target']['name']==role['target'] and r.get('executable')]
+                  if len(rows)!=1:raise ValueError('exactly one actual CompilerArtifact is required for '+role['name'])
+                  artifact=rows[0];root=Path(role['root']);image=Path(artifact['executable'])
+                  row={'role':role,'compiler_artifact':artifact,'image':held(image,root/'target'/role.get('profile_dir','debug'),out/'images'/role['name'],min(1073741824,3221225472-total))}
+                  # Safe physical digest precedes semantic role/profile/source checks.
+                  records.append(row);write('images.before.json',records)
+                  if row['image']['cause']:raise ValueError('original image admission failed; native cause retained')
+                  if not row['image']['header_hex'].startswith('7f454c46') or not row['image']['held_before']['mode']&0o111:
+                      raise ValueError('selected Linux native image is not an executable ELF')
+                  total+=row['image']['observed_bytes']
+                  if total>3221225472:raise ValueError('aggregate copied image capacity exceeded')
+                  if role['kind'] not in artifact['target']['kind'] or artifact['profile']['test']!=role['test']:
+                      raise ValueError('actual Cargo target/profile differs from selected native role')
+                  if 'codex-account-native' in artifact.get('features',[]):raise ValueError('credential-free gate cannot select account feature')
+                  src=Path(artifact['target']['src_path']);manifest=Path(artifact['manifest_path'])
+                  row['source']=held(src,root);row['manifest']=held(manifest,root)
+                  write('images.before.json',records)
+                  if row['source']['cause'] or row['manifest']['cause']:raise ValueError('actual compiled source/manifest unavailable')
+                  if role['test']:
+                      (out/'test-image.path').write_text(str(image)+'\n')
+                      (out/(role['name']+'-image.path')).write_text(str(image)+'\n')
+              write('images.before.json',records)
+              archive_rows=[]
+              for path in json.loads(os.environ['RUNTIME_GATE_SOURCE_ARCHIVES']):
+                  archive_rows.append(held(path,Path(path).parent))
+                  write('source-archives.json',archive_rows)
+                  if archive_rows[-1]['cause']:raise ValueError('actual source archive digest unavailable')
+              write('build-environment.json',{name:os.environ.get(name) for name in ['RUSTFLAGS','RUSTC_WRAPPER','CARGO_TARGET_DIR','CARGO_BUILD_TARGET','CI','GITHUB_RUN_ID','GITHUB_REPOSITORY','GITHUB_SHA']})
+          elif mode=='after':
+              before=json.loads((out/'images.before.json').read_text());rows=[];failed=False
+              for row in before:
+                  now=held(row['image']['path'],Path(row['role']['root'])/'target'/row['role'].get('profile_dir','debug'))
+                  same=now['sha256']==row['image']['sha256'] and now.get('held_before')==row['image'].get('held_before')
+                  rows.append({'role':row['role'],'image':now,'same_before_basis':same});failed|=not same
+              write('images.after.json',rows)
+              if failed:raise ValueError('selected original image basis changed across actual cases')
+          elif mode=='roster':
+              expected=json.loads(os.environ['RUNTIME_GATE_CASES'])
+              names=[line[:-6] for line in (out/'roster.stdout').read_text().splitlines() if line.endswith(': test')]
+              write('roster.json',{'actual':names,'required_selected':expected,'actual_total':len(names),'required_selected_total':len(expected)})
+              if len(names)!=len(set(names)) or not set(expected).issubset(names):raise ValueError('missing/duplicate compiled case')
+              if len(names)!=int(os.environ['RUNTIME_GATE_TOTAL']):raise ValueError('compiled case census changed')
+          elif mode=='case':
+              case=sys.argv[2];label=sys.argv[3] if len(sys.argv)>3 else case
+              if not label or '/' in label or ':' in label:raise ValueError('case evidence label must be one portable declared member')
+              prefix=out/label;code=int(prefix.with_suffix('.exit').read_text())
+              body=prefix.with_suffix('.stdout').read_text()
+              ok=code==0 and any(line.startswith('test result: ok. 1 passed; 0 failed; 0 ignored;') for line in body.splitlines())
+              row={'case':case,'exit_status':code,'exact_one_pass_zero_failed_ignored':ok,'stdout':str(prefix.with_suffix('.stdout')),'stderr':str(prefix.with_suffix('.stderr')),'test_image':(out/os.environ.get('RUNTIME_GATE_TEST_IMAGE_FILE','test-image.path')).read_text().strip(),'outer_timeout_seconds':120,'standing':'foreground test-harness status/raw files; inner native EOF and retirement are asserted by the actual case, not inferred from a shell status'}
+              write(label+'.result.json',row)
+              if not ok:raise ValueError('actual selected native case failed; no unsupported-kernel skip')
+          elif mode=='snapshot':
+              base=Path(os.environ['WORKCELL_TEST_ARTIFACT_ROOT']);rows=[];count=0;total=0
+              # Do not feed a retained adverse FIFO/symlink to artifact streaming.
+              snapshot_label=sys.argv[2] if len(sys.argv)>2 else 'fixture-snapshot'
+              if not snapshot_label or '/' in snapshot_label or ':' in snapshot_label:raise ValueError('snapshot label must be one portable declared member')
+              pending=[base];dest=out/snapshot_label;dest.mkdir(exist_ok=True)
+              while pending:
+                  directory=pending.pop()
+                  for p in sorted(directory.iterdir()):
+                      count+=1
+                      if count>4096:raise ValueError('fixture snapshot entry capacity exceeded')
+                      s=os.lstat(p);rel=p.relative_to(base);row={'relative':str(rel),'metadata':facts(s),'sha256':None}
+                      if stat.S_ISDIR(s.st_mode):pending.append(p)
+                      elif stat.S_ISREG(s.st_mode):
+                          copy=dest/rel;copy.parent.mkdir(parents=True,exist_ok=True)
+                          row['reading']=held(p,base,copy,min(4194304,67108864-total));row['sha256']=row['reading']['sha256']
+                          total+=row['reading'].get('observed_bytes',0)
+                          if row['reading']['cause'] or total>67108864:raise ValueError('fixture payload snapshot unavailable/over capacity')
+                      else:
+                          row['digest_standing']='not admitted for byte reading; retained type/identity only'
+                          if stat.S_ISLNK(s.st_mode):row['link_target']=os.readlink(p)
+                      rows.append(row);write(snapshot_label+'.json',{'entries':rows,'entry_count':count,'copied_regular_bytes':total,'standing':'owned controlled fixture snapshot; original FIFO/aliases remain on runner, no nonregular byte read or external atomic exclusion claim'})
+          else:raise ValueError('unrecognised evidence operation')
+          PY
+          export RUNTIME_GATE_ROLES="[{\"name\":\"workcell\",\"receipt\":\"compiler-owner.jsonl\",\"root\":\"$GITHUB_WORKSPACE\",\"target\":\"workcell\",\"kind\":\"bin\",\"test\":false,\"profile_dir\":\"debug\"},{\"name\":\"workcell-control-service\",\"receipt\":\"compiler-owner.jsonl\",\"root\":\"$GITHUB_WORKSPACE\",\"target\":\"workcell-control-service\",\"kind\":\"bin\",\"test\":false,\"profile_dir\":\"debug\"},{\"name\":\"workcell-write-boundary\",\"receipt\":\"compiler-owner.jsonl\",\"root\":\"$GITHUB_WORKSPACE\",\"target\":\"workcell-write-boundary\",\"kind\":\"bin\",\"test\":false,\"profile_dir\":\"debug\"},{\"name\":\"runtime-library\",\"receipt\":\"compiler-library.jsonl\",\"root\":\"$GITHUB_WORKSPACE\",\"target\":\"epilogos_workcell_runtime\",\"kind\":\"lib\",\"test\":true,\"profile_dir\":\"debug\"},{\"name\":\"runtime_projection\",\"receipt\":\"compiler-test.jsonl\",\"root\":\"$GITHUB_WORKSPACE\",\"target\":\"runtime_projection\",\"kind\":\"test\",\"test\":true,\"profile_dir\":\"debug\"}]"
+          export RUNTIME_GATE_SOURCE_ARCHIVES="[\"$GITHUB_WORKSPACE/evidence/source.tar.gz\"]"
+          python3 "$RUNTIME_GATE_EVIDENCE/audit.py" prepare
+          test_image=$(cat "$RUNTIME_GATE_EVIDENCE/test-image.path")
+          record_command() {
+            local label=$1 suffix=$2 status
+            shift 2
+            printf '%q ' "$@" > "$RUNTIME_GATE_EVIDENCE/$label.command.txt"
+            printf '\n' >> "$RUNTIME_GATE_EVIDENCE/$label.command.txt"
+            set +e
+            "$@" > "$RUNTIME_GATE_EVIDENCE/$label.$suffix" 2> "$RUNTIME_GATE_EVIDENCE/$label.stderr"
+            status=$?
+            set -e
+            printf '%s\n' "$status" > "$RUNTIME_GATE_EVIDENCE/$label.exit"
+            return "$status"
+          }
+          python3 "$RUNTIME_GATE_EVIDENCE/audit.py" host-policy before
+          # Same current-source library image: default2 and mandatory kernel2.
+          # Full Rust identities remain in receipts; portable labels address files only.
+          library_image=$(cat "$RUNTIME_GATE_EVIDENCE/runtime-library-image.path")
+          export RUNTIME_GATE_TEST_IMAGE_FILE=runtime-library-image.path
+          record_command roster stdout timeout --kill-after=5s 30s "$library_image" runtime_projection::linux::observation_tests:: --list --format terse
+          export RUNTIME_GATE_CASES='["runtime_projection::linux::observation_tests::actual_missing_view_observation_retains_original_io_and_legacy_json","runtime_projection::linux::observation_tests::actual_view_observation_retains_form_and_alias_refusal","runtime_projection::linux::observation_tests::actual_readonly_bind_suboperation_retains_original_kernel_refusal","runtime_projection::linux::observation_tests::actual_current_namespace_mount_handles_preserve_original_input"]'
+          export RUNTIME_GATE_TOTAL=4
+          python3 "$RUNTIME_GATE_EVIDENCE/audit.py" roster
+          cp "$RUNTIME_GATE_EVIDENCE/roster.stdout" "$RUNTIME_GATE_EVIDENCE/namespace-roster.stdout"
+          cp "$RUNTIME_GATE_EVIDENCE/roster.json" "$RUNTIME_GATE_EVIDENCE/namespace-roster.json"
+          namespace_failed=0
+          while IFS='|' read -r case_name label; do
+            printf '%s\n' "$case_name" > "$RUNTIME_GATE_EVIDENCE/$label.case.txt"
+            set +e
+            timeout --kill-after=5s 120s "$library_image" "$case_name" --include-ignored --exact --nocapture --test-threads=1 > "$RUNTIME_GATE_EVIDENCE/$label.stdout" 2> "$RUNTIME_GATE_EVIDENCE/$label.stderr"
+            status=$?
+            set -e
+            printf '%s\n' "$status" > "$RUNTIME_GATE_EVIDENCE/$label.exit"
+            cat "$RUNTIME_GATE_EVIDENCE/$label.stdout"
+            cat "$RUNTIME_GATE_EVIDENCE/$label.stderr" >&2
+            if ! python3 "$RUNTIME_GATE_EVIDENCE/audit.py" case "$case_name" "$label"; then namespace_failed=1; fi
+          done <<'NAMESPACE_CASES'
+          runtime_projection::linux::observation_tests::actual_missing_view_observation_retains_original_io_and_legacy_json|namespace-missing-view
+          runtime_projection::linux::observation_tests::actual_view_observation_retains_form_and_alias_refusal|namespace-form-alias
+          runtime_projection::linux::observation_tests::actual_readonly_bind_suboperation_retains_original_kernel_refusal|namespace-bind-refusal
+          runtime_projection::linux::observation_tests::actual_current_namespace_mount_handles_preserve_original_input|namespace-current-handles
+          NAMESPACE_CASES
+          # Actual product Run-space, separately retained from the runtime8 aperture.
+          if ! WORKCELL_TEST_ARTIFACT_ROOT="$GITHUB_WORKSPACE/ProjectCentral/now/tmp" python3 "$RUNTIME_GATE_EVIDENCE/audit.py" snapshot namespace-fixture-snapshot; then namespace_failed=1; fi
+          export RUNTIME_GATE_TEST_IMAGE_FILE=test-image.path
+          record_command roster stdout timeout --kill-after=5s 30s "$test_image" --ignored --list --format terse
+          export RUNTIME_GATE_CASES='["actual_original_input_is_readonly_and_task_history_reentry_is_durable","actual_redirected_runtime_never_writes_the_foreign_directory","actual_immutable_input_redirect_refuses_before_material_or_body","actual_readonly_runtime_file_retains_native_permission_cause","actual_projection_fifo_hardlink_and_digest_refuse_without_blocking_read","actual_unchanged_requested_input_alias_preserves_original_origin","actual_requested_input_alias_retarget_refuses_before_setup","actual_missing_requested_input_retains_resolution_cause"]'
+          export RUNTIME_GATE_TOTAL=8
+          python3 "$RUNTIME_GATE_EVIDENCE/audit.py" roster
+          failed=$namespace_failed
+          while IFS= read -r case_name; do
+            set +e
+            timeout --kill-after=5s 120s "$test_image" "$case_name" --ignored --exact --nocapture --test-threads=1 > "$RUNTIME_GATE_EVIDENCE/$case_name.stdout" 2> "$RUNTIME_GATE_EVIDENCE/$case_name.stderr"
+            status=$?
+            set -e
+            printf '%s\n' "$status" > "$RUNTIME_GATE_EVIDENCE/$case_name.exit"
+            cat "$RUNTIME_GATE_EVIDENCE/$case_name.stdout"
+            cat "$RUNTIME_GATE_EVIDENCE/$case_name.stderr" >&2
+            if ! python3 "$RUNTIME_GATE_EVIDENCE/audit.py" case "$case_name"; then failed=1; fi
+          done <<'CASES'
+          actual_original_input_is_readonly_and_task_history_reentry_is_durable
+          actual_redirected_runtime_never_writes_the_foreign_directory
+          actual_immutable_input_redirect_refuses_before_material_or_body
+          actual_readonly_runtime_file_retains_native_permission_cause
+          actual_projection_fifo_hardlink_and_digest_refuse_without_blocking_read
+          actual_unchanged_requested_input_alias_preserves_original_origin
+          actual_requested_input_alias_retarget_refuses_before_setup
+          actual_missing_requested_input_retains_resolution_cause
+          CASES
+          if ! python3 "$RUNTIME_GATE_EVIDENCE/audit.py" after; then failed=1; fi
+          if ! python3 "$RUNTIME_GATE_EVIDENCE/audit.py" snapshot; then failed=1; fi
+          python3 "$RUNTIME_GATE_EVIDENCE/audit.py" host-policy after
+          test "$failed" = 0
+          git diff --exit-code -- Cargo.lock Cargo.toml crates/
       - name: Compiled protected-source and stdio boundaries
         shell: bash
         env:
@@ -78,5 +486,360 @@ jobs:
         if: always()
         with:
           name: caw-native-${{ github.sha }}
-          path: evidence/
+          path: |
+            evidence/
+            !evidence/native-processes/**
+          retention-days: 7
+
+  native-target-instance:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install native Linux ACL test instrument
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y acl
+      - name: Stage owned native evidence
+        shell: bash
+        run: |
+          mkdir -p "$WORKCELL_TEST_ARTIFACT_ROOT"
+          git rev-parse HEAD > evidence/source-commit.txt
+          printf 'WORKCELL_TEST_ARTIFACT_OWNER_REF=%s\n' "$(cat evidence/source-commit.txt)" >> "$GITHUB_ENV"
+          rustc --version --verbose > evidence/toolchain.txt
+          uname -a > evidence/kernel.txt
+      - name: Compile and retain actual native39 Source and test images
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -m 700 evidence/native39
+          mkdir -m 700 evidence/native39/images
+          git archive --format=tar.gz HEAD > evidence/native39-source.tar.gz
+          cp Cargo.lock evidence/native39-Cargo.lock
+          git ls-tree -r HEAD > evidence/native39-source-modes.txt
+          git status --porcelain=v1 --untracked-files=no > evidence/native39-source-before.status
+          printf '%s\n' '${{ github.event.pull_request.head.sha || github.sha }}' > evidence/native39-requested-head.txt
+          cat > evidence/native39/audit.py <<'PY'
+          import hashlib,json,os,stat,sys
+          from pathlib import Path
+          workspace=Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+          out=workspace/'evidence/native39'
+          root_before=os.stat(workspace)
+          owner=os.stat(out)
+          owner_fd=os.open(out,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+          image_dir=out/'images'
+          image_owner=os.lstat(image_dir)
+          image_fd=os.open(image_dir,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+          def facts(s):
+              return dict(device=s.st_dev,inode=s.st_ino,mode=s.st_mode,links=s.st_nlink,
+                          uid=s.st_uid,gid=s.st_gid,bytes=s.st_size,mtime_ns=s.st_mtime_ns,ctime_ns=s.st_ctime_ns)
+          def current_owner():
+              r=os.stat(workspace);n=os.lstat(out);h=os.fstat(owner_fd)
+              if (r.st_dev,r.st_ino)!=(root_before.st_dev,root_before.st_ino) or not stat.S_ISDIR(n.st_mode):
+                  raise ValueError('hosted workspace/evidence owner affiliation changed')
+              if (n.st_dev,n.st_ino)!=(owner.st_dev,owner.st_ino) or (h.st_dev,h.st_ino)!=(owner.st_dev,owner.st_ino):
+                  raise ValueError('held/named evidence directory affiliation changed')
+              i=os.lstat(image_dir);ih=os.fstat(image_fd)
+              if not stat.S_ISDIR(i.st_mode) or (i.st_dev,i.st_ino)!=(image_owner.st_dev,image_owner.st_ino) or (ih.st_dev,ih.st_ino)!=(image_owner.st_dev,image_owner.st_ino):
+                  raise ValueError('held/named exclusive image-copy directory changed')
+          def save(name,value):
+              current_owner()
+              fd=os.open(name,os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,0o600,dir_fd=owner_fd)
+              with os.fdopen(fd,'w',encoding='utf-8') as f:
+                  s=os.fstat(f.fileno())
+                  if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1:raise ValueError('evidence record must be ordinary single-link')
+                  os.ftruncate(f.fileno(),0)
+                  json.dump(value,f,indent=2);f.write('\n');f.flush();os.fsync(f.fileno())
+              current_owner()
+          def observe(path,allowed_root,copy=None,executable=False,limit=None,single_link=True,copy_root=None):
+              p=Path(path);row={'path':str(p),'sha256':None,'cause':None};copy_fd=None
+              try:
+                  current_owner();row['named_before']=facts(os.lstat(p))
+                  if not p.is_absolute() or not p.is_relative_to(allowed_root) or p.resolve(strict=True)!=p:
+                      raise ValueError('selected coordinate is outside its actual canonical hosted root')
+                  parent_before=os.stat(p.parent)
+                  fd=os.open(p,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC)
+                  with os.fdopen(fd,'rb') as f:
+                      initial=os.fstat(f.fileno());row['held_before']=facts(initial)
+                      if not stat.S_ISREG(initial.st_mode) or (single_link and initial.st_nlink!=1) or initial.st_uid!=os.geteuid():
+                          raise ValueError('selected evidence/image violates its ordinary/owner/link admission')
+                      if limit is not None and initial.st_size>limit:raise ValueError('ordinary snapshot exceeds admitted finite capacity; no body read')
+                      if copy_root is not None:row['copy_admitted_bytes']=initial.st_size
+                      if executable and not initial.st_mode&0o111:raise ValueError('actual test image lacks native execute mode')
+                      if row['named_before']!=row['held_before']:raise ValueError('named/held basis differs before bytes')
+                      digest=hashlib.sha256();remaining=initial.st_size;observed=0
+                      sink=None
+                      if copy is not None:
+                          destination_fd=image_fd
+                          if copy_root is None:
+                              if copy.parent!=image_dir:raise ValueError('copy must remain under exact held image directory')
+                          else:
+                              if copy_root!=out/'fixture-snapshot' or not copy.parent.is_relative_to(copy_root) or copy.parent.resolve(strict=True)!=copy.parent:
+                                  raise ValueError('snapshot copy must remain under exact owned physical snapshot root')
+                              copy_fd=os.open(copy.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+                              named_parent=os.lstat(copy.parent);held_parent=os.fstat(copy_fd)
+                              if (named_parent.st_dev,named_parent.st_ino)!=(held_parent.st_dev,held_parent.st_ino):raise ValueError('held snapshot-copy parent changed')
+                              destination_fd=copy_fd
+                          sink=os.fdopen(os.open(copy.name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o700 if copy_root is None else 0o600,dir_fd=destination_fd),'wb')
+                          row['copy_path']=str(copy)
+                      try:
+                          while remaining:
+                              chunk=f.read(min(65536,remaining))
+                              if not chunk:raise ValueError('held source ended before its admitted actual length')
+                              remaining-=len(chunk);observed+=len(chunk);digest.update(chunk)
+                              if copy_root is not None:row['observed_bytes']=observed
+                              if sink:sink.write(chunk)
+                          if f.read(1):raise ValueError('held source grew beyond its admitted actual length')
+                          if sink:sink.flush();os.fsync(sink.fileno())
+                          if copy_fd is not None:
+                              named_parent=os.lstat(copy.parent);held_parent=os.fstat(copy_fd)
+                              if (named_parent.st_dev,named_parent.st_ino)!=(held_parent.st_dev,held_parent.st_ino) or copy.parent.resolve(strict=True)!=copy.parent:
+                                  raise ValueError('snapshot-copy parent changed across actual bytes')
+                      finally:
+                          if sink:sink.close()
+                      row['observed_bytes']=observed;row['held_after']=facts(os.fstat(f.fileno()));row['named_after']=facts(os.lstat(p))
+                      parent_after=os.stat(p.parent)
+                      if (parent_before.st_dev,parent_before.st_ino)!=(parent_after.st_dev,parent_after.st_ino) or p.resolve(strict=True)!=p:
+                          raise ValueError('selected physical parent route changed across bytes')
+                      if row['held_before']!=row['held_after'] or row['held_after']!=row['named_after']:
+                          raise ValueError('held/named material basis changed; digest unavailable')
+                      row['sha256']=digest.hexdigest()
+                  current_owner()
+              except (OSError,ValueError) as e:
+                  row['sha256']=None;row['cause']={'type':type(e).__name__,'errno':getattr(e,'errno',None),'message':str(e)}
+              finally:
+                  if copy_fd is not None:os.close(copy_fd)
+              return row
+          def compiler_records(path):
+              used=0;records=[]
+              with Path(path).open('rb') as f:
+                  while raw:=f.readline(1048577):
+                      used+=len(raw)
+                      if len(raw)>1048576 or used>67108864:raise ValueError('bounded compiler receipt capacity exceeded')
+                      item=json.loads(raw)
+                      if item.get('reason')=='compiler-artifact':records.append(item)
+              return records
+          roles=[
+           {'name':'external_instance_binding','receipt':'runtime-external','src':'crates/workcell-runtime/tests/external_instance_binding.rs','kind':'test','target':'external_instance_binding'},
+           {'name':'runtime-library','receipt':'runtime-library','src':'crates/workcell-runtime/src/lib.rs','kind':'lib','target':'epilogos_workcell_runtime'},
+           {'name':'bounded_write_boundary','receipt':'cli-boundary','src':'crates/workcell-cli/tests/bounded_write_boundary.rs','kind':'test','target':'bounded_write_boundary'},
+           {'name':'workcell-cli-test','receipt':'cli-workcell','src':'crates/workcell-cli/src/bin/workcell_entry.rs','kind':'bin','target':'workcell'}]
+          mode=sys.argv[1]
+          try:
+              current_owner()
+              if mode=='source':
+                  rows=[]
+                  for name in ['source-commit.txt','toolchain.txt','kernel.txt','native39-source.tar.gz','native39-Cargo.lock','native39-source-modes.txt','native39-source-before.status','native39-requested-head.txt']:
+                      row=observe(workspace/'evidence'/name,workspace);rows.append(row);save('source.before.json',rows)
+                      if row['cause']:raise ValueError('actual source evidence unavailable; native cause retained')
+                  if (workspace/'evidence/native39-source-before.status').stat().st_size:raise ValueError('tracked Source is dirty before compilation')
+                  save('environment.json',{k:os.environ.get(k) for k in ['GITHUB_SHA','GITHUB_RUN_ID','GITHUB_REPOSITORY','GITHUB_WORKSPACE','CI','RUSTFLAGS','RUSTC_WRAPPER','CARGO_TARGET_DIR','CARGO_BUILD_TARGET']})
+              elif mode=='images':
+                  rows=[];failed=False
+                  for role in roles:
+                      row={'role':role,'compiler_artifact':None,'image':None,'cause':None}
+                      try:
+                          status=json.loads((out/(role['receipt']+'.status.json')).read_text())
+                          row['compiler_status']=status
+                          if status['cargo_exit']!=0 or status['tee_exit']!=0:raise ValueError('actual compiler/capture command failed')
+                          expected=(workspace/role['src']).resolve(strict=True)
+                          candidates=[a for a in compiler_records(out/(role['receipt']+'.jsonl')) if a.get('target',{}).get('name')==role['target'] and a.get('executable')]
+                          if len(candidates)!=1:raise ValueError('exactly one actual target CompilerArtifact required')
+                          a=candidates[0];row['compiler_artifact']=a
+                          if role['kind'] not in a['target']['kind'] or a['profile']['test'] is not True or Path(a['target']['src_path']).resolve(strict=True)!=expected:
+                              raise ValueError('CompilerArtifact actual kind/profile/source differs from the selected native test target')
+                          row['source']=observe(expected,workspace);row['manifest']=observe(Path(a['manifest_path']),workspace)
+                          if row['source']['cause'] or row['manifest']['cause']:raise ValueError('actual compiled source/manifest evidence unavailable')
+                          row['image']=observe(Path(a['executable']),workspace/'target',out/'images'/role['name'],True)
+                          if row['image']['cause']:raise ValueError('actual original test image unavailable; native cause retained')
+                          row['copy']=observe(out/'images'/role['name'],out)
+                          if row['copy']['cause'] or row['copy']['sha256']!=row['image']['sha256']:raise ValueError('uploaded byte copy is not equal to admitted original image')
+                      except (OSError,ValueError,KeyError,TypeError) as e:
+                          row['cause']={'type':type(e).__name__,'errno':getattr(e,'errno',None),'message':str(e)};failed=True
+                      rows.append(row);save('images.before.json',rows)
+                  if failed:raise ValueError('one or more actual native test images failed admission; partial evidence retained')
+              elif mode=='after':
+                  rows=[];failed=False
+                  for row in json.loads((out/'images.before.json').read_text()):
+                      if row.get('cause') or not row.get('image'):
+                          rows.append({'role':row['role'],'prior_unavailable':True,'same_basis':False});failed=True;continue
+                      current=observe(row['image']['path'],workspace/'target',executable=True)
+                      same=current['cause'] is None and current['sha256']==row['image']['sha256'] and current.get('held_before')==row['image'].get('held_before')
+                      source=observe(row['source']['path'],workspace);manifest=observe(row['manifest']['path'],workspace)
+                      same_source=source['cause'] is None and manifest['cause'] is None and source['sha256']==row['source']['sha256'] and manifest['sha256']==row['manifest']['sha256']
+                      rows.append({'role':row['role'],'image':current,'same_basis':same,'source':source,'manifest':manifest,'same_compiled_source':same_source});failed|=not(same and same_source)
+                      save('images.after.json',rows)
+                  sources=[]
+                  for row in json.loads((out/'source.before.json').read_text()):
+                      current=observe(row['path'],workspace);same=current['cause'] is None and current['sha256']==row['sha256'] and current.get('held_before')==row.get('held_before')
+                      sources.append({'before':row,'after':current,'same_basis':same});failed|=not same;save('source.after.json',sources)
+                  git_status=json.loads((out/'after-git.status.json').read_text())
+                  head_before=(workspace/'evidence/source-commit.txt').read_text();head_after=(out/'source-after.commit').read_text()
+                  dirty=(out/'source-after.status').read_text();same=head_before==head_after and not dirty and git_status['head_exit']==0 and git_status['status_exit']==0
+                  save('current-source.json',{'head_before':head_before.strip(),'head_after':head_after.strip(),'tracked_changes':dirty,'actual_git_status':git_status,'same_current_source':same})
+                  failed|=not same
+                  if failed:raise ValueError('source/test image custody unavailable or changed; original test outcomes remain separate')
+              elif mode=='snapshot':
+                  base=Path(os.environ['WORKCELL_TEST_ARTIFACT_ROOT'])
+                  if base.resolve(strict=True)!=base or base!=workspace/'evidence/native-processes':
+                      raise ValueError('fixture snapshot must use exact existing hosted fixture aperture')
+                  dest=out/'fixture-snapshot';dest.mkdir(mode=0o700)
+                  rows=[];count=0;total=0;reserved=0;failed=False
+                  def checkpoint():
+                      save('fixture-snapshot.json',{'entries':rows,'entry_count':count,'ordinary_source_bytes_read':total,'admitted_copy_bytes':reserved,
+                          'entry_limit':4096,'depth_limit':64,'ordinary_file_limit':4194304,'aggregate_byte_limit':67108864,
+                          'standing':'controlled ordinary-byte snapshots and actual typed metadata only; original nonregular fixtures retained and excluded from upload; no inner-retirement inference'})
+                  def form(mode):
+                      if stat.S_ISDIR(mode):return 'directory'
+                      if stat.S_ISREG(mode):return 'regular-file'
+                      if stat.S_ISLNK(mode):return 'symlink'
+                      if stat.S_ISFIFO(mode):return 'fifo'
+                      if stat.S_ISSOCK(mode):return 'socket'
+                      if stat.S_ISCHR(mode):return 'character-device'
+                      if stat.S_ISBLK(mode):return 'block-device'
+                      return 'other-nonregular'
+                  def walk(directory,fd,depth):
+                      global count,total,reserved,failed
+                      if depth>64:raise ValueError('fixture snapshot directory depth capacity exceeded')
+                      initial=os.fstat(fd);named=os.lstat(directory)
+                      if not stat.S_ISDIR(named.st_mode) or (initial.st_dev,initial.st_ino)!=(named.st_dev,named.st_ino) or directory.resolve(strict=True)!=directory:
+                          raise ValueError('held fixture directory route changed; no symlink traversal')
+                      with os.scandir(fd) as entries:
+                          for entry in entries:
+                              count+=1
+                              if count>4096:raise ValueError('fixture snapshot entry capacity exceeded')
+                              p=directory/entry.name;rel=p.relative_to(base)
+                              s=os.stat(entry.name,dir_fd=fd,follow_symlinks=False)
+                              row={'relative':str(rel),'metadata':facts(s),'form':form(s.st_mode),'sha256':None,'cause':None}
+                              rows.append(row);checkpoint()
+                              if stat.S_ISDIR(s.st_mode):
+                                  child=os.open(entry.name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=fd)
+                                  try:walk(p,child,depth+1)
+                                  finally:os.close(child)
+                              elif stat.S_ISREG(s.st_mode):
+                                  copy=dest/("entry-"+str(count));copy.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+                                  row['reading']=observe(p,base,copy,limit=min(4194304,67108864-reserved),single_link=False,copy_root=dest)
+                                  row['sha256']=row['reading']['sha256'];total+=row['reading'].get('observed_bytes',0)
+                                  reserved+=row['reading'].get('copy_admitted_bytes',0)
+                                  row['copy_relative']=str(copy.relative_to(out))
+                                  if row['reading']['cause']:row['cause']=row['reading']['cause'];failed=True
+                              else:
+                                  row['byte_read_admitted']=False
+                                  if stat.S_ISLNK(s.st_mode):row['link_target']=os.readlink(entry.name,dir_fd=fd)
+                              checkpoint()
+                      named=os.lstat(directory)
+                      if not stat.S_ISDIR(named.st_mode) or (initial.st_dev,initial.st_ino)!=(named.st_dev,named.st_ino):
+                          raise ValueError('fixture directory affiliation changed after snapshot')
+                  base_fd=os.open(base,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC)
+                  try:walk(base,base_fd,0)
+                  finally:os.close(base_fd)
+                  checkpoint()
+                  if failed:raise ValueError('one or more ordinary fixture snapshots unavailable; actual cause/partial metadata retained')
+              else:raise ValueError('unknown actual evidence phase')
+          except (OSError,ValueError,KeyError,TypeError) as e:
+              save(mode+'.failure.json',{'phase':mode,'cause':{'type':type(e).__name__,'errno':getattr(e,'errno',None),'message':str(e)},'standing':'actual evidence failure, no native success/retirement inferred'})
+              raise
+          finally:
+              os.close(image_fd)
+              os.close(owner_fd)
+          PY
+          python3 evidence/native39/audit.py source
+          compile_target() {
+            local label=$1
+            shift
+            set +e
+            cargo test --locked "$@" --no-run --message-format=json 2> "evidence/native39/$label.stderr" | tee "evidence/native39/$label.jsonl"
+            local codes=("${PIPESTATUS[@]}")
+            set -e
+            printf '{"cargo_exit":%s,"tee_exit":%s}\n' "${codes[0]}" "${codes[1]}" > "evidence/native39/$label.status.json"
+            test "${codes[0]}" -eq 0 && test "${codes[1]}" -eq 0
+          }
+          failed=0
+          if ! compile_target runtime-external -p epilogos-workcell-runtime --test external_instance_binding; then failed=1; fi
+          if ! compile_target runtime-library -p epilogos-workcell-runtime --lib; then failed=1; fi
+          if ! compile_target cli-boundary -p epilogos-workcell-cli --test bounded_write_boundary; then failed=1; fi
+          if ! compile_target cli-workcell -p epilogos-workcell-cli --bin workcell; then failed=1; fi
+          if ! python3 evidence/native39/audit.py images; then failed=1; fi
+          test "$failed" -eq 0
+      - name: Required real target-instance and zombie-reap gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(id -u)" -ne 0
+          command -v python3
+          cargo test --locked -p epilogos-workcell-runtime --test external_instance_binding -- --list 2>&1 | tee evidence/external-instance-list.txt
+          test "$(grep -c ': test$' evidence/external-instance-list.txt)" -eq 19
+          cargo test --locked -p epilogos-workcell-runtime --test external_instance_binding -- --test-threads=1 2>&1 | tee evidence/external-instance-tests.txt
+          grep -F '19 passed; 0 failed; 0 ignored;' evidence/external-instance-tests.txt
+      - name: Required real pipe lifetime and CLI capture gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p epilogos-workcell-runtime --lib bounded_process::tests -- --list 2>&1 | tee evidence/bounded-process-list.txt
+          test "$(grep -c ': test$' evidence/bounded-process-list.txt)" -eq 4
+          cargo test --locked -p epilogos-workcell-runtime --lib bounded_process::tests -- --test-threads=1 2>&1 | tee evidence/bounded-process-tests.txt
+          grep -F '4 passed; 0 failed; 0 ignored;' evidence/bounded-process-tests.txt
+          cargo test --locked -p epilogos-workcell-cli --test bounded_write_boundary -- --list 2>&1 | tee evidence/bounded-write-boundary-list.txt
+          test "$(grep -c ': test$' evidence/bounded-write-boundary-list.txt)" -eq 3
+          cargo test --locked -p epilogos-workcell-cli --test bounded_write_boundary -- --test-threads=1 2>&1 | tee evidence/bounded-write-boundary-tests.txt
+          grep -F '3 passed; 0 failed; 0 ignored;' evidence/bounded-write-boundary-tests.txt
+          cargo test --locked -p epilogos-workcell-cli --bin workcell admission_inputs::tests -- --list 2>&1 | tee evidence/admission-inputs-list.txt
+          test "$(grep -c ': test$' evidence/admission-inputs-list.txt)" -eq 4
+          cargo test --locked -p epilogos-workcell-cli --bin workcell admission_inputs::tests -- --test-threads=1 2>&1 | tee evidence/admission-inputs-tests.txt
+          grep -F '4 passed; 0 failed; 0 ignored;' evidence/admission-inputs-tests.txt
+      - name: Required real status-only, optional-provider and source-IO gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p epilogos-workcell-runtime --lib bounded_process::status_only_tests -- --list 2>&1 | tee evidence/status-only-list.txt
+          test "$(grep -c ': test$' evidence/status-only-list.txt)" -eq 3
+          cargo test --locked -p epilogos-workcell-runtime --lib bounded_process::status_only_tests -- --test-threads=1 2>&1 | tee evidence/status-only-tests.txt
+          grep -F '3 passed; 0 failed; 0 ignored;' evidence/status-only-tests.txt
+          cargo test --locked -p epilogos-workcell-runtime --lib external_service::legacy_command_tests -- --list 2>&1 | tee evidence/legacy-command-list.txt
+          test "$(grep -c ': test$' evidence/legacy-command-list.txt)" -eq 3
+          cargo test --locked -p epilogos-workcell-runtime --lib external_service::legacy_command_tests -- --test-threads=1 2>&1 | tee evidence/legacy-command-tests.txt
+          grep -F '3 passed; 0 failed; 0 ignored;' evidence/legacy-command-tests.txt
+          cargo test --locked -p epilogos-workcell-cli --bin workcell combined::local_cli::source_io_tests -- --list 2>&1 | tee evidence/source-io-list.txt
+          test "$(grep -c ': test$' evidence/source-io-list.txt)" -eq 3
+          cargo test --locked -p epilogos-workcell-cli --bin workcell combined::local_cli::source_io_tests -- --test-threads=1 2>&1 | tee evidence/source-io-tests.txt
+          grep -F '3 passed; 0 failed; 0 ignored;' evidence/source-io-tests.txt
+      - name: Reobserve actual native39 Source and test image custody
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          git rev-parse HEAD > evidence/native39/source-after.commit 2> evidence/native39/source-after-head.stderr
+          head_exit=$?
+          git status --porcelain=v1 --untracked-files=no > evidence/native39/source-after.status 2> evidence/native39/source-after-status.stderr
+          status_exit=$?
+          set -e
+          printf '{"head_exit":%s,"status_exit":%s}\n' "$head_exit" "$status_exit" > evidence/native39/after-git.status.json
+          failed=0
+          if ! python3 evidence/native39/audit.py after; then failed=1; fi
+          if ! python3 evidence/native39/audit.py snapshot; then failed=1; fi
+          test "$failed" -eq 0
+      - name: Actual native runtime capability and Mac refusal
+        if: matrix.os == 'macos-14'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p epilogos-workcell-cli --test runtime_projection_admission --no-run --message-format=json 2> evidence/runtime-admission-compiler.stderr | tee evidence/runtime-admission-compiler.jsonl
+          cargo test --locked -p epilogos-workcell-cli --test runtime_projection_admission -- --nocapture --test-threads=1 2>&1 | tee evidence/runtime-admission-native.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-target-instance-${{ matrix.os }}-${{ github.sha }}
+          path: |
+            evidence/
+            !evidence/native-processes/**
           retention-days: 7

@@ -23,6 +23,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::instance_publication::Publication;
 use epilogos_workcell_core::{Result, WorkcellError, WorkcellRef};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -70,6 +71,16 @@ pub enum RegisterOutcome {
     },
 }
 
+/// One scan-derived update together with the exact owner record it inspected.
+/// A later registration or liveness result invalidates this basis. No member
+/// of a stale batch is published, and unknown record fields remain intact.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LivenessUpdate {
+    pub previous_record: Value,
+    pub consecutive_misses: u64,
+    pub liveness: String,
+}
+
 /// Registry file (`$state_root/instances/registry.json`).
 #[derive(Debug, Clone)]
 pub struct InstanceRegistry {
@@ -102,31 +113,60 @@ impl InstanceRegistry {
     /// or invalid file is named unavailability.
     pub fn load(&self) -> Result<Value> {
         let path = self.registry_path();
-        if !path.exists() {
-            return Ok(self.empty_file());
-        }
-        let raw = fs::read_to_string(&path).map_err(|error| {
+        let raw = Publication::read(&path).map_err(|error| {
             WorkcellError::OperationFailed(format!(
                 "read instance registry {}: {error}",
                 path.display()
             ))
         })?;
-        let parsed: Value = serde_json::from_str(&raw).map_err(|error| {
+        let Some(raw) = raw else {
+            return Ok(self.empty_file());
+        };
+        let parsed: Value = serde_json::from_slice(&raw).map_err(|error| {
             WorkcellError::OperationFailed(format!(
                 "parse instance registry {}: {error}",
                 path.display()
             ))
         })?;
-        validate_registry_file(&parsed)?;
+        self.validate_file(&parsed)?;
+        Ok(parsed)
+    }
+
+    fn validate_file(&self, parsed: &Value) -> Result<()> {
+        validate_registry_file(parsed)?;
         if parsed.get("workcell_ref").and_then(Value::as_str) != Some(self.workcell_ref.as_str()) {
             return Err(WorkcellError::OperationFailed(format!(
                 "instance registry {} belongs to {}, not {}",
-                path.display(),
+                self.registry_path().display(),
                 parsed["workcell_ref"].as_str().unwrap_or("unknown"),
                 self.workcell_ref
             )));
         }
-        Ok(parsed)
+        Ok(())
+    }
+
+    fn begin(&self) -> Result<(Publication, Value)> {
+        let path = self.registry_path();
+        fs::create_dir_all(path.parent().expect("instance registry parent")).map_err(|error| {
+            WorkcellError::OperationFailed(format!("create instance registry directory: {error}"))
+        })?;
+        let publication = Publication::acquire(&path).map_err(|error| {
+            WorkcellError::OperationFailed(format!(
+                "lock instance registry {}: {error}",
+                path.display()
+            ))
+        })?;
+        let file = match publication.bytes() {
+            Some(bytes) => serde_json::from_slice(bytes).map_err(|error| {
+                WorkcellError::OperationFailed(format!(
+                    "parse instance registry {}: {error}",
+                    path.display()
+                ))
+            })?,
+            None => self.empty_file(),
+        };
+        self.validate_file(&file)?;
+        Ok((publication, file))
     }
 
     pub fn list(&self) -> Result<Vec<Value>> {
@@ -159,7 +199,7 @@ impl InstanceRegistry {
         let record_ref = record_ref(&record)?;
         let _slug = harness_slug(&record)?;
 
-        let mut file = self.load()?;
+        let (publication, mut file) = self.begin()?;
         let instances = file
             .get_mut("instances")
             .and_then(Value::as_object_mut)
@@ -178,13 +218,16 @@ impl InstanceRegistry {
                     updated[key] = value.clone();
                 }
             }
+            if &updated == existing {
+                return Ok(RegisterOutcome::Unchanged);
+            }
             instances.insert(record_ref.clone(), updated.clone());
-            self.store(&file)?;
+            self.store(&publication, &file)?;
             return Ok(RegisterOutcome::Registered);
         }
 
         instances.insert(record_ref, record);
-        self.store(&file)?;
+        self.store(&publication, &file)?;
         Ok(RegisterOutcome::Registered)
     }
 
@@ -229,7 +272,7 @@ impl InstanceRegistry {
         validate_instance_record(&record)?;
         let declared_ref = record_ref(&record)?;
 
-        let mut file = self.load()?;
+        let (publication, mut file) = self.begin()?;
         let instances = file
             .get_mut("instances")
             .and_then(Value::as_object_mut)
@@ -241,13 +284,11 @@ impl InstanceRegistry {
             }
             // Same identity, refreshed declaration fields in place.
             let mut updated = existing.clone();
-            for key in ["observed_at"] {
-                if let Some(value) = record.get(key) {
-                    updated[key] = value.clone();
-                }
+            if let Some(value) = record.get("observed_at") {
+                updated["observed_at"] = value.clone();
             }
             instances.insert(declared_ref.clone(), updated);
-            self.store(&file)?;
+            self.store(&publication, &file)?;
             return Ok(RegisterOutcome::Registered);
         }
 
@@ -289,7 +330,7 @@ impl InstanceRegistry {
         }
 
         instances.insert(declared_ref, record);
-        self.store(&file)?;
+        self.store(&publication, &file)?;
         Ok(RegisterOutcome::Registered)
     }
 
@@ -301,7 +342,7 @@ impl InstanceRegistry {
     pub fn adopt(&self, observed: Value, declared_ref: &str) -> Result<RegisterOutcome> {
         validate_instance_record(&observed)?;
         let observed_ref = record_ref(&observed)?;
-        let mut file = self.load()?;
+        let (publication, mut file) = self.begin()?;
         let instances = file
             .get_mut("instances")
             .and_then(Value::as_object_mut)
@@ -330,7 +371,7 @@ impl InstanceRegistry {
                 }
             }
             instances.insert(observed_ref.clone(), updated);
-            self.store(&file)?;
+            self.store(&publication, &file)?;
             return Ok(RegisterOutcome::Registered);
         }
         for (existing_ref, existing) in instances.iter() {
@@ -344,7 +385,12 @@ impl InstanceRegistry {
                 });
             }
         }
-        let mut adopted = observed;
+        // Preserve extension data acknowledged on the declaration while the
+        // observed native fields take over the material identity and evidence.
+        let mut adopted = declared.clone();
+        for (key, value) in observed.as_object().expect("validated observed record") {
+            adopted[key] = value.clone();
+        }
         adopted["lineage"] = json!({
             "adopted_from": declared_ref,
             "declared_identity_material": declared
@@ -354,7 +400,7 @@ impl InstanceRegistry {
         });
         instances.remove(declared_ref);
         instances.insert(observed_ref, adopted);
-        self.store(&file)?;
+        self.store(&publication, &file)?;
         Ok(RegisterOutcome::Registered)
     }
 
@@ -362,34 +408,66 @@ impl InstanceRegistry {
     /// get their miss count and liveness state written; every other record
     /// is untouched. Records are never deleted here — `stale` is disclosed,
     /// not removed.
-    pub fn apply_liveness(&self, updates: &[(String, u64, &str)]) -> Result<()> {
-        let mut file = self.load()?;
+    pub fn apply_liveness(&self, updates: &[LivenessUpdate]) -> Result<()> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+        let (publication, mut file) = self.begin()?;
         let instances = file
             .get_mut("instances")
             .and_then(Value::as_object_mut)
             .expect("validated registry file has an instances object");
-        for (reference, misses, liveness) in updates {
-            if let Some(record) = instances.get_mut(reference) {
-                record["consecutive_misses"] = (*misses).into();
-                record["liveness"] = (*liveness).into();
+        let mut references = BTreeSet::new();
+        // Validate every member and compare every basis before changing any
+        // state. A stale scan cannot age a newer registration or observation.
+        for update in updates {
+            validate_instance_record(&update.previous_record)?;
+            let reference = record_ref(&update.previous_record)?;
+            if !references.insert(reference.clone()) {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "duplicate instance liveness update `{reference}`"
+                )));
+            }
+            if !LIVENESS_STATES.contains(&update.liveness.as_str()) {
+                return Err(WorkcellError::InvalidDemand(
+                    "instance liveness update has unsupported state".into(),
+                ));
+            }
+            if instances.get(&reference) != Some(&update.previous_record) {
+                return Err(WorkcellError::OperationFailed(format!("stale instance liveness basis `{reference}`; registry unchanged; inspect current owner records before another scan")));
             }
         }
-        self.store(&file)
+        for update in updates {
+            let reference = record_ref(&update.previous_record)?;
+            let record = instances
+                .get_mut(&reference)
+                .expect("all bases matched under owner lock");
+            record["consecutive_misses"] = update.consecutive_misses.into();
+            record["liveness"] = update.liveness.clone().into();
+        }
+        self.store(&publication, &file)
     }
 
-    fn store(&self, file: &Value) -> Result<()> {
-        let path = self.registry_path();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                WorkcellError::OperationFailed(format!(
-                    "create instance registry directory {}: {error}",
-                    parent.display()
-                ))
-            })?;
+    fn store(&self, publication: &Publication, file: &Value) -> Result<()> {
+        self.validate_file(file)?;
+        if let Some(bytes) = publication.bytes() {
+            let previous: Value = serde_json::from_slice(bytes)
+                .map_err(|error| WorkcellError::OperationFailed(error.to_string()))?;
+            if &previous == file {
+                return Ok(());
+            }
         }
         let bytes =
             serde_json::to_string_pretty(file).expect("registry file is a validated JSON value");
-        atomic_write(&path, bytes.as_bytes())
+        publication
+            .replace(bytes.as_bytes())
+            .map(|_| ())
+            .map_err(|error| {
+                WorkcellError::OperationFailed(format!(
+                    "publish instance registry {}: {error}",
+                    self.registry_path().display()
+                ))
+            })
     }
 }
 
@@ -455,6 +533,10 @@ pub fn build_instance_record(
         "instance_ref": format!("instance:{}:{stable_hash}", observation.slug),
         "harness_ref": format!("harness/{}", observation.slug),
         "workcell_ref": workcell_ref.to_string(),
+        // Exact first-seen material is provenance, not a second identity.
+        // The stable hash above and legacy refs are unchanged. Existing
+        // records missing this field are never reconstructed or backfilled.
+        "identity_material": observation.identity_material,
         "pids": observation.pids,
         "executions": executions,
         "executable": {
@@ -767,22 +849,6 @@ pub fn seam(kind: &str, path: impl Into<PathBuf>, exists: bool, count: Option<us
         seam.insert("count".into(), count.into());
     }
     Value::Object(seam)
-}
-
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
-    let temp = path.with_extension("json.tmp");
-    fs::write(&temp, bytes).map_err(|error| {
-        WorkcellError::OperationFailed(format!(
-            "write instance registry {}: {error}",
-            temp.display()
-        ))
-    })?;
-    fs::rename(&temp, path).map_err(|error| {
-        WorkcellError::OperationFailed(format!(
-            "commit instance registry {}: {error}",
-            path.display()
-        ))
-    })
 }
 
 /// Sort helper for stable listings.

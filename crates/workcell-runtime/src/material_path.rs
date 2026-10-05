@@ -176,6 +176,59 @@ impl MaterialPath {
         Ok(())
     }
 
+    pub fn is_direct_directory(&self) -> bool {
+        self.supplied == self.canonical
+            && matches!(
+                self.state,
+                MaterialState::Existing {
+                    kind: MaterialKind::Directory,
+                    ..
+                }
+            )
+    }
+
+    /// Only a direct, single-link regular file can use its protected directory
+    /// as the physical exclusion basis. Aliases keep their exact object pin.
+    pub fn is_direct_single_link_file(&self) -> Result<bool> {
+        if self.supplied != self.canonical
+            || !matches!(
+                self.state,
+                MaterialState::Existing {
+                    kind: MaterialKind::RegularFile,
+                    ..
+                }
+            )
+        {
+            return Ok(false);
+        }
+        let metadata = fs::symlink_metadata(&self.supplied).map_err(|error| {
+            WorkcellError::Unavailable(format!("inspect covered protected file route: {error}"))
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Ok(metadata.is_file() && metadata.nlink() == 1)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = metadata;
+            Ok(false)
+        }
+    }
+
+    /// The unchanged enclosing directory is pinned separately. Replacing an
+    /// excluded regular child is lawful, but disappearance, type/alias drift
+    /// or an additional hard link requires fresh material resolution.
+    pub fn validate_covered_file(&self) -> Result<()> {
+        let current = Self::resolve(&self.supplied, Some(MaterialKind::RegularFile), false)?;
+        if current.canonical != self.canonical || !current.is_direct_single_link_file()? {
+            return Err(WorkcellError::OperationFailed(
+                "covered protected file route changed; re-resolve policy and placement".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn inspection(&self) -> Value {
         match &self.state {
             MaterialState::Existing { identity, .. } => {
