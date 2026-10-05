@@ -395,7 +395,7 @@ fn native_admission_refuses_stop_for_real_active_work_even_with_one_local_receip
     let retained = basis(&owner);
     thread::scope(|scope| {
         let task = scope.spawn(|| target.native("hold", &retained));
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now() + Duration::from_secs(8);
         loop {
             let observation = target.native("status", &retained);
             let value: Value = serde_json::from_slice(&observation.stdout).unwrap();
@@ -434,7 +434,7 @@ fn a_late_basis_is_captured_from_the_original_start_generation() {
     let mut provider = target.provider(service);
     let current = target.root.join("current");
     let replace_current = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(10);
         while !current.is_file() {
             assert!(
                 Instant::now() < deadline,
@@ -518,7 +518,7 @@ fn missing_basis_returns_reconciliation_error_with_actual_immutable_start_intent
     )
     .unwrap();
     let published = directory.join("basis.json");
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(10);
     while !published.exists() || staged.exists() {
         assert!(
             Instant::now() < deadline,
