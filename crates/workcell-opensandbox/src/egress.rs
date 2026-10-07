@@ -650,7 +650,7 @@ mod tests {
         );
         assert!(error.to_string().contains("upstream 502"));
         assert!(error.to_string().contains("opensandbox/egress:v1.1.7"));
-        assert!(error.to_string().contains("egress_control_direct = false"));
+        assert!(error.to_string().contains("no write performed"));
     }
 
     #[test]
