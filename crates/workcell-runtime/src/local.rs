@@ -13,14 +13,22 @@ use epilogos_workcell_core::{
     WorkcellRef, WorkspaceAccess, WorkspaceMaterialRequest, WorkspaceMaterialSource,
     WorkspaceProvider, WorldRef,
 };
+use epilogos_workcell_docker::DockerExecutionProvider;
 use epilogos_workcell_opensandbox::{
     OpenSandboxConfig, OpenSandboxExecutionProvider, StdHttpOpenSandboxTransport,
 };
 use epilogos_workcell_workspace::{DirectoryWorkspaceProvider, GitWorktreeWorkspaceProvider};
 
 use crate::{
+    admission::{
+        task_resources_from_provenance, AdmissionLedger, BudgetPolicy, CapacityBudget,
+        LinuxHostObserver, TaskResources,
+    },
     read_directory_storage,
-    service_declaration::{read_service_declarations, read_state_root_service_declarations},
+    service_declaration::{
+        read_service_declarations, read_state_root_service_declarations,
+        DOCKER_EXECUTION_PROVIDER_REF,
+    },
     DeclaredServices, DirectoryStorage, DirectoryStorageProvider, ExternalManagedService,
     ExternalManagedServiceProvider, HostLifetime, HostProcessExecutionProvider, ManagedHostService,
     ManagedHostServiceProvider, DIRECTORY_STORAGE_FILE, DIRECTORY_STORAGE_PROVIDER_REF,
@@ -96,6 +104,12 @@ pub struct CollapsedLocalConfig {
     /// unsatisfiable. File declarations (`services.json` `execution` section)
     /// are merged at composition time.
     pub opensandbox: Option<OpenSandboxConfig>,
+    /// A direct Docker execution deployment this Workcell materialises
+    /// container execution through, declared programmatically by the
+    /// composing host. `None` offers no Docker execution; file declarations
+    /// (`services.json` `execution` section, `kind: "docker"`) are merged at
+    /// composition time.
+    pub docker: Option<epilogos_workcell_docker::DockerExecutionConfig>,
     /// Execution providers the composing host brings from its own technology
     /// — the admission seam the provider SDK names. Registered alongside the
     /// built-in ports; duplicate identities are refused like any other.
@@ -103,6 +117,13 @@ pub struct CollapsedLocalConfig {
     /// Workspace providers the composing host brings from its own technology,
     /// registered beside the directory and git-worktree ports the same way.
     pub external_workspace: Vec<ExternalWorkspaceProviderFactory>,
+    /// A fixed capacity budget for admission. `None` observes the actual host
+    /// (memory, cgroup limits, parallelism) at composition time through the
+    /// default policy; a value here pins the budget for deterministic tests
+    /// and operator-declared budgets. See [`crate::admission`].
+    pub capacity_budget: Option<CapacityBudget>,
+    /// Policy used to derive the budget when `capacity_budget` is `None`.
+    pub budget_policy: BudgetPolicy,
 }
 
 impl std::fmt::Debug for CollapsedLocalConfig {
@@ -121,6 +142,7 @@ impl std::fmt::Debug for CollapsedLocalConfig {
             .field("opensandbox", &self.opensandbox)
             .field("external_execution", &self.external_execution.len())
             .field("external_workspace", &self.external_workspace.len())
+            .field("capacity_budget", &self.capacity_budget.is_some())
             .finish()
     }
 }
@@ -137,8 +159,11 @@ impl CollapsedLocalConfig {
             host_lifetime: HostLifetime::OneShotCommand,
             directories: Vec::new(),
             opensandbox: None,
+            docker: None,
             external_execution: Vec::new(),
             external_workspace: Vec::new(),
+            capacity_budget: None,
+            budget_policy: BudgetPolicy::default(),
         }
     }
 
@@ -223,6 +248,20 @@ impl CollapsedLocalConfig {
         self
     }
 
+    /// Declare a direct Docker execution deployment this Workcell materialises
+    /// container execution through.
+    pub fn with_docker(mut self, config: epilogos_workcell_docker::DockerExecutionConfig) -> Self {
+        self.docker = Some(config);
+        self
+    }
+
+    /// Pin the capacity budget (deterministic tests, operator-declared
+    /// budgets). `None` (the default) observes the actual host.
+    pub fn with_capacity_budget(mut self, budget: CapacityBudget) -> Self {
+        self.capacity_budget = Some(budget);
+        self
+    }
+
     /// Resolve the declaration source into concrete services.
     pub fn resolve_services(&self) -> Result<DeclaredServices> {
         let mut resolved = match &self.service_declaration {
@@ -238,7 +277,12 @@ impl CollapsedLocalConfig {
         resolved
             .target_owned
             .extend(self.services.target_owned.iter().cloned());
-        resolved.execution.extend(self.opensandbox.iter().cloned());
+        resolved.execution.extend(
+            self.opensandbox
+                .iter()
+                .cloned()
+                .map(crate::service_declaration::ExecutionDeployment::OpenSandbox),
+        );
 
         // Each provider refuses duplicates within itself. One logical ref
         // declared under both lifetimes would produce two offers for the same
@@ -258,10 +302,10 @@ impl CollapsedLocalConfig {
         }
         let mut seen_execution = std::collections::BTreeSet::new();
         for deployment in &resolved.execution {
-            if !seen_execution.insert(deployment.provider_ref.as_str().to_owned()) {
+            if !seen_execution.insert(deployment.provider_ref_str().to_owned()) {
                 return Err(WorkcellError::InvalidDemand(format!(
                     "execution deployment `{}` is declared more than once",
-                    deployment.provider_ref.as_str()
+                    deployment.provider_ref_str()
                 )));
             }
         }
@@ -428,10 +472,19 @@ pub struct CollapsedLocalWorkcell {
     git_workspace: SharedProvider<GitWorktreeWorkspaceProvider>,
     execution: HostProcessExecutionProvider,
     opensandbox: Option<OpenSandboxExecutionProvider<StdHttpOpenSandboxTransport>>,
+    docker: Option<DockerExecutionProvider>,
     artifacts: SharedProvider<DirectoryArtifactStorageProvider>,
     managed_services: SharedProvider<ManagedHostServiceProvider>,
     target_services: SharedProvider<ExternalManagedServiceProvider>,
     directories: SharedProvider<DirectoryStorageProvider>,
+    /// Capacity budget (observed or declared) and the durable reservation
+    /// ledger. Admission accounts simultaneous allocations before any
+    /// provider prepares material. `None` means this host exposes no
+    /// observation facts (non-Linux without a portable observer yet):
+    /// accounting is disclosed as unavailable, never invented.
+    budget: Option<CapacityBudget>,
+    budget_observation_error: Option<String>,
+    admission: AdmissionLedger,
 }
 
 /// The branch law shared by run worktrees, `aikit task --worktree` trees and
@@ -530,23 +583,58 @@ impl CollapsedLocalWorkcell {
             declared.target_owned,
         )?);
 
-        // One OpenSandbox execution deployment may be declared — from the
+        // One execution deployment of each kind may be declared — from the
         // services file's `execution` section or programmatically. More than
-        // one is refused rather than silently composed: this composition has
-        // exactly one sandbox execution seam.
+        // one of the same kind is refused rather than silently composed: this
+        // composition has exactly one sandbox seam and one direct Docker seam.
         let mut opensandbox_config = config.opensandbox.clone();
-        if declared.execution.len() > 1 {
+        let mut docker_config = config.docker.clone();
+        let mut opensandbox_declarations = 0_usize;
+        let mut docker_declarations = 0_usize;
+        for deployment in &declared.execution {
+            match deployment {
+                crate::service_declaration::ExecutionDeployment::OpenSandbox(_) => {
+                    opensandbox_declarations += 1;
+                }
+                crate::service_declaration::ExecutionDeployment::Docker(declared) => {
+                    docker_declarations += 1;
+                    if docker_config.is_none() {
+                        docker_config = Some(declared.clone());
+                    }
+                }
+            }
+        }
+        if opensandbox_declarations > 1 || docker_declarations > 1 {
             return Err(WorkcellError::InvalidDemand(
-                "more than one execution deployment is declared; collapsed-local composes exactly one OpenSandbox deployment"
+                "more than one execution deployment of the same kind is declared; collapsed-local composes exactly one OpenSandbox and one direct Docker deployment"
                     .into(),
             ));
         }
         if opensandbox_config.is_none() {
-            opensandbox_config = declared.execution.first().cloned();
+            opensandbox_config =
+                declared
+                    .execution
+                    .iter()
+                    .find_map(|deployment| match deployment {
+                        crate::service_declaration::ExecutionDeployment::OpenSandbox(config) => {
+                            Some(config.clone())
+                        }
+                        crate::service_declaration::ExecutionDeployment::Docker(_) => None,
+                    });
         }
         let opensandbox = opensandbox_config
             .map(|deployment| {
                 OpenSandboxExecutionProvider::new(deployment, StdHttpOpenSandboxTransport)
+            })
+            .transpose()?;
+        let docker = docker_config
+            .map(|execution_config| {
+                let provider_ref =
+                    epilogos_workcell_core::ProviderRef::new(DOCKER_EXECUTION_PROVIDER_REF)?;
+                Ok::<_, epilogos_workcell_core::WorkcellError>(DockerExecutionProvider::new(
+                    provider_ref,
+                    execution_config,
+                ))
             })
             .transpose()?;
 
@@ -555,6 +643,9 @@ impl CollapsedLocalWorkcell {
         control.register_workspace_provider(git_workspace.clone())?;
         control.register_execution_provider(execution.clone())?;
         if let Some(provider) = &opensandbox {
+            control.register_execution_provider(provider.clone())?;
+        }
+        if let Some(provider) = &docker {
             control.register_execution_provider(provider.clone())?;
         }
         // External providers the host declared: constructed at composition
@@ -572,6 +663,17 @@ impl CollapsedLocalWorkcell {
         control.register_service_provider(managed_services.clone())?;
         control.register_service_provider(target_services.clone())?;
         control.register_storage_provider(directories.clone())?;
+        // Admission: observe (or take the declared) budget and load the
+        // durable reservation ledger for this state root.
+        let budget = match &config.capacity_budget {
+            Some(budget) => (Some(budget.clone()), None),
+            None => match CapacityBudget::observe(&LinuxHostObserver, config.budget_policy) {
+                Ok(budget) => (Some(budget), None),
+                Err(error) => (None, Some(error.to_string())),
+            },
+        };
+        let (budget, budget_observation_error) = budget;
+        let admission = AdmissionLedger::load(&config.state_root)?;
         Ok(Self {
             workcell_ref: config.workcell_ref,
             workspace_source: config.workspace_source,
@@ -580,15 +682,50 @@ impl CollapsedLocalWorkcell {
             git_workspace,
             execution,
             opensandbox,
+            docker,
             artifacts,
             managed_services,
             target_services,
             directories,
+            budget,
+            budget_observation_error,
+            admission,
         })
     }
 
     pub fn world(&self, world_ref: &WorldRef) -> Option<&MaterialisedExecutionWorld> {
         self.control.world(world_ref)
+    }
+
+    /// Drop a world's control-plane registration without provider effects —
+    /// the crash/provider-loss simulation reconciliation requires. This is
+    /// deliberately explicit and test/diagnostic-facing: losing material is
+    /// not something ordinary operations do silently.
+    #[doc(hidden)]
+    pub fn control_forget_world(&mut self, world_ref: &WorldRef) {
+        self.control.forget_world(world_ref);
+    }
+
+    /// Capacity admission readback: the observed/declared budget, every live
+    /// reservation and the recent waiting-for-capacity reasons. This is the
+    /// consumption surface for status and remote inspection.
+    pub fn admission_readback(&self) -> serde_json::Value {
+        match &self.budget {
+            Some(budget) => AdmissionLedger::readback(budget, &self.admission),
+            None => serde_json::json!({
+                "available": false,
+                "reason": self.budget_observation_error.clone().unwrap_or_else(|| {
+                    "no host observation facts on this platform".to_owned()
+                }),
+                "accounting": "unavailable: demands are not refused for capacity, and none are invented",
+            }),
+        }
+    }
+
+    /// The enforceable task budget this Workcell admitted under, when this
+    /// host exposes observation facts.
+    pub fn capacity_budget(&self) -> Option<&CapacityBudget> {
+        self.budget.as_ref()
     }
 
     /// Re-enter a previously prepared material world from durable allocation
@@ -617,11 +754,39 @@ impl CollapsedLocalWorkcell {
             .prepare_allocation_restores(allocations)?;
         // The native world owner validates and accepts the unchanged world
         // first. Only then can its prepared provider records be committed.
-        self.control.register_world(world)?;
+        self.control.register_world(world.clone())?;
         self.target_services
             .inner
             .borrow()
             .commit_allocation_restores(prepared);
+        // Re-entry rebuilds the admission reservation from the durable
+        // provenance recorded at first prepare, so a world that returns after
+        // host restart keeps occupying the budget it was admitted under.
+        // A released (or superseded) world holds no budget: re-entry restores
+        // the reservation only for live material.
+        let released_or_superseded = world.provenance.contains_key("superseded_by")
+            || world
+                .binding_graph
+                .bindings
+                .iter()
+                .any(|binding| binding.presence == BindingPresence::Released);
+        if !released_or_superseded {
+            let task_resources = task_resources_from_provenance(&world.provenance);
+            if !task_resources.is_empty()
+                || self
+                    .admission
+                    .reservation_for(world.demand_ref.as_str())
+                    .is_some()
+            {
+                self.admission.reenter(
+                    world.demand_ref.as_str(),
+                    world.world_ref.as_str(),
+                    &task_resources,
+                )?;
+            }
+        } else {
+            self.admission.release_world(world.world_ref.as_str())?;
+        }
         Ok(())
     }
 
@@ -694,9 +859,36 @@ impl CollapsedLocalWorkcell {
             )));
         }
 
+        // Admission precedes provider preparation: the demand's resource
+        // floors are accounted simultaneously with every live allocation. A
+        // required floor the host cannot commit beside the rest is a named
+        // waiting-for-capacity outcome, never a silent downgrade to weaker
+        // placement.
+        let task_resources = TaskResources::from_resources(&demand.resources)?;
+        if let Some(budget) = self.budget.clone() {
+            self.admission
+                .admit(&budget, demand.demand_ref.as_str(), &task_resources)?;
+        }
+        let prepared = self.materialise_planned(demand, plan, &task_resources);
+        if prepared.is_err() {
+            // Reconcile after failure: a failed prepare must not hold budget.
+            // The provider's own partial effects remain its documented
+            // cleanup responsibility; this retires only the admission.
+            self.admission.release_demand(demand.demand_ref.as_str())?;
+        }
+        prepared
+    }
+
+    fn materialise_planned(
+        &mut self,
+        demand: &ExecutionDemand,
+        plan: MaterialisationPlan,
+        task_resources: &TaskResources,
+    ) -> Result<MaterialisedExecutionWorld> {
         let workspace_ref = self.workspace.provider_ref().clone();
         let execution_ref = self.execution.provider_ref().clone();
         let opensandbox_ref = self.opensandbox.as_ref().map(|p| p.provider_ref().clone());
+        let docker_ref = self.docker.as_ref().map(|p| p.provider_ref().clone());
         let artifact_ref = self.artifacts.provider_ref().clone();
         let managed_service_ref = self.managed_services.provider_ref().clone();
         let target_service_ref = self.target_services.provider_ref().clone();
@@ -737,6 +929,10 @@ impl CollapsedLocalWorkcell {
             Some(provider_ref) => execution_atoms_of(provider_ref)?,
             None => (Vec::new(), Vec::new()),
         };
+        let (docker_affordances, docker_connectivity) = match &docker_ref {
+            Some(provider_ref) => execution_atoms_of(provider_ref)?,
+            None => (Vec::new(), Vec::new()),
+        };
 
         for binding in &plan.planned_bindings {
             let allocation = if binding.provider_ref == workspace_ref {
@@ -762,6 +958,7 @@ impl CollapsedLocalWorkcell {
                     .expect("workspace allocation set")
             } else if binding.provider_ref == execution_ref
                 || opensandbox_ref.as_ref() == Some(&binding.provider_ref)
+                || docker_ref.as_ref() == Some(&binding.provider_ref)
             {
                 let provider_key = binding.provider_ref.as_str().to_owned();
                 if !execution_allocations.contains_key(&provider_key) {
@@ -772,6 +969,23 @@ impl CollapsedLocalWorkcell {
                                 affordances: execution_affordances.clone(),
                                 resources: demand.resources.clone(),
                                 connectivity: execution_connectivity.clone(),
+                                isolation_trust: demand.isolation_trust.clone(),
+                                retention: demand.retention.clone(),
+                            })?
+                    } else if docker_ref.as_ref() == Some(&binding.provider_ref) {
+                        self.docker
+                            .as_mut()
+                            .ok_or_else(|| {
+                                WorkcellError::OperationFailed(format!(
+                                    "collapsed-local selected unregistered preparation provider `{}`",
+                                    binding.provider_ref
+                                ))
+                            })?
+                            .prepare_execution(&ExecutionMaterialRequest {
+                                demand_ref: demand.demand_ref.clone(),
+                                affordances: docker_affordances.clone(),
+                                resources: demand.resources.clone(),
+                                connectivity: docker_connectivity.clone(),
                                 isolation_trust: demand.isolation_trust.clone(),
                                 retention: demand.retention.clone(),
                             })?
@@ -861,13 +1075,37 @@ impl CollapsedLocalWorkcell {
             });
         }
 
-        let world = compose_world(
+        let mut world = compose_world(
             self.workcell_ref.clone(),
             demand,
             &plan,
             allocations,
             vec![],
         )?;
+        // Durable admission evidence: on re-entry the reservation is rebuilt
+        // from these provenance facts without re-decoding the demand.
+        if let Some(minimum) = task_resources.memory_minimum_bytes {
+            world
+                .provenance
+                .insert("admission_memory_minimum_bytes".into(), minimum.to_string());
+        }
+        if let Some(maximum) = task_resources.memory_maximum_bytes {
+            world
+                .provenance
+                .insert("admission_memory_maximum_bytes".into(), maximum.to_string());
+        }
+        if let Some(minimum) = task_resources.cpu_minimum_milli {
+            world
+                .provenance
+                .insert("admission_cpu_minimum_millicpu".into(), minimum.to_string());
+        }
+        if let Some(maximum) = task_resources.cpu_maximum_milli {
+            world
+                .provenance
+                .insert("admission_cpu_maximum_millicpu".into(), maximum.to_string());
+        }
+        self.admission
+            .bind_world(demand.demand_ref.as_str(), world.world_ref.as_str())?;
         self.control.register_world(world.clone())?;
         Ok(world)
     }
@@ -910,6 +1148,7 @@ impl WorkcellControlPlane for CollapsedLocalWorkcell {
         }
         // Check existing source/storage before changing any executable service.
         let opensandbox_ref = self.opensandbox.as_ref().map(|p| p.provider_ref().clone());
+        let docker_ref = self.docker.as_ref().map(|p| p.provider_ref().clone());
         for binding in &snapshot.binding_graph.bindings {
             let allocation = allocation_of(binding);
             let observed = match binding.port {
@@ -932,6 +1171,13 @@ impl WorkcellControlPlane for CollapsedLocalWorkcell {
                             self.opensandbox
                                 .as_ref()
                                 .expect("opensandbox provider present for its own binding")
+                                .observe_execution(&allocation)?,
+                        )
+                    } else if docker_ref.as_ref() == Some(&binding.provider_ref) {
+                        Some(
+                            self.docker
+                                .as_ref()
+                                .expect("docker provider present for its own binding")
                                 .observe_execution(&allocation)?,
                         )
                     } else {
@@ -1025,11 +1271,39 @@ impl WorkcellControlPlane for CollapsedLocalWorkcell {
                 "world superseded by `{successor}`; release the current binding explicitly"
             )));
         }
-        self.control.release(world)
+        let released = self.control.release(world)?;
+        // Release frees the committed budget through the same lifecycle. A
+        // failed release leaves the reservation in place — the material may
+        // still exist and must keep accounting.
+        self.admission.release_world(world.as_str())?;
+        Ok(released)
     }
 
     fn reconcile(&mut self, desired: &[DesiredMaterialState]) -> Result<ReconciliationResult> {
-        self.control.reconcile(desired)
+        let result = self.control.reconcile(desired)?;
+        // Presence facts retire reservations whose world verifiably no longer
+        // exists. In-flight reservations (no world yet) are kept.
+        // Presence means *active* material: a world whose bindings are all
+        // released (or superseded) is not present for admission purposes.
+        let present = self
+            .control
+            .world_refs()
+            .into_iter()
+            .filter(|world| {
+                self.control.world(world).is_some_and(|snapshot| {
+                    !snapshot.provenance.contains_key("superseded_by")
+                        && !snapshot.binding_graph.bindings.is_empty()
+                        && snapshot
+                            .binding_graph
+                            .bindings
+                            .iter()
+                            .any(|binding| binding.presence != BindingPresence::Released)
+                })
+            })
+            .map(|world| world.to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        self.admission.reconcile(&present)?;
+        Ok(result)
     }
 }
 

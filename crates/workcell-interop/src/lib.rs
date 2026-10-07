@@ -417,6 +417,7 @@ fn parse_resource_requirement(value: &str) -> Result<ResourceRequirement> {
     Ok(ResourceRequirement {
         key: key.trim().into(),
         minimum: Some(minimum),
+        maximum: None,
         unit: if unit.is_empty() {
             None
         } else {

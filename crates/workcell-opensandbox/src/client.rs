@@ -44,6 +44,22 @@ pub(crate) fn resolve_data_endpoint<T: OpenSandboxTransport>(
     allocation: &ProviderAllocation,
     port: u16,
 ) -> Result<DataEndpoint> {
+    resolve_data_endpoint_with_proxy(config, transport, allocation, port, config.use_server_proxy)
+}
+
+/// Resolve an endpoint with an explicit proxy decision. Egress/credential
+/// *control* paths pass `use_server_proxy = config.use_server_proxy &&
+/// !config.egress_control_direct`: the recorded upstream defect is the server
+/// proxy's 502 on those paths, so the provider-native configuration routes
+/// them straight to the sidecar while the data plane keeps its configured
+/// route.
+pub(crate) fn resolve_data_endpoint_with_proxy<T: OpenSandboxTransport>(
+    config: &OpenSandboxConfig,
+    transport: &T,
+    allocation: &ProviderAllocation,
+    port: u16,
+    use_server_proxy: bool,
+) -> Result<DataEndpoint> {
     if allocation.provider_ref != config.provider_ref || allocation.material_ref.trim().is_empty() {
         return Err(WorkcellError::OperationFailed(
             "OpenSandbox material endpoint requested for a foreign/empty allocation".into(),
@@ -51,7 +67,7 @@ pub(crate) fn resolve_data_endpoint<T: OpenSandboxTransport>(
     }
     let path = format!(
         "/sandboxes/{}/endpoints/{port}?use_server_proxy={}",
-        allocation.material_ref, config.use_server_proxy
+        allocation.material_ref, use_server_proxy
     );
     let response = lifecycle_request(config, transport, "GET", &path, Vec::new())?;
     require_success_safe(&response, "resolve data-plane endpoint")?;
@@ -132,11 +148,13 @@ pub(crate) fn require_success_safe(
         409 | 429 => Err(WorkcellError::Unavailable(message)),
         // HTTP 502 on the egress sidecar's control paths (`PATCH`/`GET
         // /policy`, `POST`/`DELETE /credential-vault`) is the known upstream
-        // gap from the 2026-09-07 live receipt: the deployed egress sidecar
-        // does not implement the pinned control API behind the server proxy.
-        // The refusal is named — never a generic failure — and nothing is
-        // written. The denied-route no-write broker remains the credential
-        // path of record until the upstream probe clears this fence.
+        // gap, physically re-confirmed 2026-10-07 against server 0.2.3 with
+        // egress image v1.1.7: the 502 answers BOTH through the server proxy
+        // AND on the direct sidecar route — the deployed egress sidecar does
+        // not implement the pinned control API. The refusal is named — never
+        // a generic failure — and nothing is written. The denied-route
+        // no-write broker remains the credential path of record until an
+        // upstream egress image implements the pinned API.
         502 => Err(WorkcellError::Unsupported(format!(
             "{message}: {EGRESS_CONTROL_FENCE}"
         ))),
@@ -145,9 +163,16 @@ pub(crate) fn require_success_safe(
 }
 
 /// The standing, named fence on the OpenSandbox egress/credential control
-/// path. Surfaced by doctor/system degradations whenever an OpenSandbox
-/// deployment is declared, so the gap is disclosed, not discovered.
-pub const EGRESS_CONTROL_FENCE: &str = "egress policy control path: upstream 502, image opensandbox/egress:v1.1.7 (egress spec blob 08e4885176998e854df62b999914c5eb01855308) — the deployed sidecar does not implement the pinned egress/credential control API behind the server proxy; refused by name, no write performed";
+/// path. Physically re-confirmed 2026-10-07 on the Omarchy machine (server
+/// 0.2.3, egress image `opensandbox/egress:v1.1.7`): the 502 answers BOTH
+/// through the lifecycle server's proxy AND on the direct sidecar route
+/// (`egress_control_direct = true`) — the deployed egress sidecar does not
+/// implement the pinned egress/credential control API. Surfaced by
+/// doctor/system whenever an OpenSandbox deployment is declared, so the gap
+/// is disclosed, not discovered. When a newer upstream egress image
+/// implements the pinned API, the direct route (`egress_control_direct`)
+/// is the configuration that reaches it.
+pub const EGRESS_CONTROL_FENCE: &str = "egress policy control path: upstream 502, image opensandbox/egress:v1.1.7 (egress spec blob 08e4885176998e854df62b999914c5eb01855308) — physically re-confirmed 2026-10-07 on server 0.2.3: the deployed egress sidecar does not implement the pinned egress/credential control API on the direct sidecar route or through the server proxy; refused by name, no write performed. The denied-route no-write broker remains the credential path of record";
 
 pub(crate) fn join_url(base: &str, path: &str) -> String {
     format!(

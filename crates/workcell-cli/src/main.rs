@@ -209,6 +209,7 @@ fn command_status(global: &GlobalArgs) -> Result<(), WorkcellError> {
     let receipts = receipt_count(&global.state_root)?;
     let connections = list_connection_records(&global.state_root)?;
     let grants_summary = grants_status_summary(global)?;
+    let admission = workcell.admission_readback();
     if global.json {
         emit_json(json!({
             "ok": true,
@@ -216,6 +217,7 @@ fn command_status(global: &GlobalArgs) -> Result<(), WorkcellError> {
             "health": health(&discovery.health),
             "providers": provider_count(&discovery),
             "offers": discovery.offers.len(),
+            "admission": admission,
             "persisted_world_receipts": receipts,
             "connections": connections.iter().map(connection_status_json).collect::<Vec<_>>(),
             "connection_grants": grants_summary.map(|(active, expired, revoked)| json!({
@@ -230,6 +232,17 @@ fn command_status(global: &GlobalArgs) -> Result<(), WorkcellError> {
         println!("health: {}", health(&discovery.health));
         println!("providers: {}", provider_count(&discovery));
         println!("offers: {}", discovery.offers.len());
+        let budget = &admission["budget"];
+        let committed = &admission["committed"];
+        println!(
+            "capacity: task budget {}B, committed {}B, waiting {}",
+            budget["memory_task_bytes"],
+            committed["memory_bytes"],
+            admission["waiting"]
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or(0)
+        );
         println!("persisted worlds: {receipts}");
         if connections.is_empty() {
             println!("connections: none");
@@ -1228,23 +1241,43 @@ fn parse_resource(value: &str) -> Result<ResourceRequirement, WorkcellError> {
         return Ok(ResourceRequirement {
             key: value.to_owned(),
             minimum: None,
+            maximum: None,
             unit: None,
         });
     };
     if key.trim().is_empty() || specification.trim().is_empty() {
         return Err(WorkcellError::InvalidDemand(
-            "resource must use `key=amount[:unit]`".into(),
+            "resource must use `key=amount[:unit]` or `key=min..max[:unit]`".into(),
         ));
     }
-    let (amount, unit) = specification
+    let (amounts, unit) = specification
         .split_once(':')
         .map_or((specification, None), |(amount, unit)| (amount, Some(unit)));
-    let minimum = amount.parse::<u64>().map_err(|error| {
-        WorkcellError::InvalidDemand(format!("invalid resource amount `{amount}`: {error}"))
-    })?;
+    // `min..max` declares a floor and a caller-authorised ceiling. The
+    // ceiling — never the floor — becomes the provider's enforced limit.
+    let (minimum, maximum) = if let Some((floor, ceiling)) = amounts.split_once("..") {
+        let minimum = floor.parse::<u64>().map_err(|error| {
+            WorkcellError::InvalidDemand(format!("invalid resource minimum `{floor}`: {error}"))
+        })?;
+        let maximum = ceiling.parse::<u64>().map_err(|error| {
+            WorkcellError::InvalidDemand(format!("invalid resource maximum `{ceiling}`: {error}"))
+        })?;
+        if minimum > maximum {
+            return Err(WorkcellError::InvalidDemand(format!(
+                "resource minimum {minimum} exceeds maximum {maximum}"
+            )));
+        }
+        (minimum, Some(maximum))
+    } else {
+        let minimum = amounts.parse::<u64>().map_err(|error| {
+            WorkcellError::InvalidDemand(format!("invalid resource amount `{amounts}`: {error}"))
+        })?;
+        (minimum, None)
+    };
     Ok(ResourceRequirement {
         key: key.to_owned(),
         minimum: Some(minimum),
+        maximum,
         unit: unit.map(str::to_owned),
     })
 }
@@ -5856,7 +5889,16 @@ fn system_descriptor(global: &GlobalArgs) -> Result<Value, WorkcellError> {
         offer.port == ProviderPortKind::Execution.as_str()
             && offer.provider_ref.as_str().contains("opensandbox")
     });
-    if opensandbox_declared {
+    // The fence is a degradation only when a deployment forces proxied
+    // control paths; the default provider-native configuration (direct
+    // sidecar route) is not a degradation, it is the supported shape.
+    // The fence is physically re-confirmed on this stack (2026-10-07: the
+    // pinned egress image answers 502 on the direct sidecar route too), so
+    // any declared OpenSandbox deployment lists it — disclosed, not
+    // discovered. `egress_control_direct` selects the route that reaches the
+    // sidecar when a newer upstream image implements the pinned API.
+    let opensandbox_proxied_control = opensandbox_declared;
+    if opensandbox_proxied_control {
         degradations.push(json!({
             "subject_ref": "providers.opensandbox.egress_control",
             "state": "unavailable",
@@ -7327,6 +7369,7 @@ fn error_kind(error: &WorkcellError) -> &'static str {
         WorkcellError::ReconciliationFailed(_) => "reconciliation-failed",
         WorkcellError::NotFound(_) => "not-found",
         WorkcellError::Unsupported(_) => "unsupported",
+        WorkcellError::Capacity(_) => "waiting-for-capacity",
     }
 }
 
@@ -7340,6 +7383,9 @@ fn exit_code(error: &WorkcellError) -> u8 {
         WorkcellError::OperationFailed(_)
         | WorkcellError::CleanupFailed(_)
         | WorkcellError::ReconciliationFailed(_) => 7,
+        // Waiting for capacity is retryable and expected: a distinct exit
+        // code so callers can distinguish it from hard failures.
+        WorkcellError::Capacity(_) => 11,
     }
 }
 
@@ -7610,13 +7656,21 @@ fn declared_sandbox_deployment(
     declared
         .execution
         .into_iter()
-        .find(|deployment| deployment.provider_ref.as_str() == provider_ref)
-        .ok_or_else(|| {
-            WorkcellError::Unavailable(format!(
+        .find_map(|deployment| match deployment {
+            epilogos_workcell_runtime::ExecutionDeployment::OpenSandbox(config)
+                if config.provider_ref.as_str() == provider_ref =>
+            {
+                Some(Ok(config))
+            }
+            epilogos_workcell_runtime::ExecutionDeployment::OpenSandbox(_) => None,
+            epilogos_workcell_runtime::ExecutionDeployment::Docker(_) => None,
+        })
+        .unwrap_or_else(|| {
+            Err(WorkcellError::Unavailable(format!(
                 "no OpenSandbox deployment `{provider_ref}` is declared in {}`s services file; \
                  declare it under `execution` before delivering secrets to a sandbox",
                 global.state_root.display()
-            ))
+            )))
         })
 }
 

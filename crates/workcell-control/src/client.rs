@@ -322,6 +322,9 @@ where
             "unsupported" => Err(ControlClientError::Remote(WorkcellError::Unsupported(
                 message,
             ))),
+            "waiting-for-capacity" => {
+                Err(ControlClientError::Remote(WorkcellError::Capacity(message)))
+            }
             other => Err(ControlClientError::InvalidResponse(format!(
                 "unknown control error kind `{other}`: {message}"
             ))),

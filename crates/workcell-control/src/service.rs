@@ -398,6 +398,7 @@ fn workcell_error_parts(error: &WorkcellError) -> (&'static str, String) {
         WorkcellError::ReconciliationFailed(message) => ("reconciliation-failed", message.clone()),
         WorkcellError::NotFound(message) => ("not-found", message.clone()),
         WorkcellError::Unsupported(message) => ("unsupported", message.clone()),
+        WorkcellError::Capacity(message) => ("waiting-for-capacity", message.clone()),
     }
 }
 

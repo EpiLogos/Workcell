@@ -306,8 +306,14 @@ materialise it.
 
 6. **Known fence**: the egress-policy and credential-vault *control* paths
    (`PATCH`/`GET /policy`, `POST`/`DELETE /credential-vault` on the sidecar)
-   answer HTTP 502 through the server proxy with the pinned egress image
-   (`opensandbox/egress:v1.1.7`). The provider refuses those paths by name
+   answer HTTP 502 **when routed through the lifecycle server's proxy** with
+   the pinned egress image (`opensandbox/egress:v1.1.7`) — the proxy does not
+   implement the pinned control API; the sidecar itself does. The
+   provider-native configuration is therefore the default
+   `egress_control_direct = true`: control paths resolve their endpoint
+   straight against the sidecar port while the data plane keeps its configured
+   `use_server_proxy` route. A deployment that forces proxied control paths
+   (`"egress_control_direct": false`) is refused by name at those paths
    (`Unsupported`, see `EGRESS_CONTROL_FENCE`), doctor and `workcell system`
-   list the fence as a degradation while a deployment is declared, and the
+   list the fence as a degradation **only for that forced shape**, and the
    proven denied-route no-write broker remains the credential path of record.

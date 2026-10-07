@@ -132,7 +132,13 @@ impl StorageRequirement {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResourceRequirement {
     pub key: String,
+    /// The floor the host must be able to satisfy for this allocation. A
+    /// minimum is never an enforcement instruction: mapping it to a provider
+    /// hard limit would cap the workload at exactly its floor.
     pub minimum: Option<u64>,
+    /// An explicit caller-authorised ceiling. This — and only this — is what
+    /// providers may enforce as a hard limit (a container/cgroup cap).
+    pub maximum: Option<u64>,
     pub unit: Option<String>,
 }
 
@@ -455,6 +461,7 @@ mod tests {
         demand.resources.push(ResourceRequirement {
             key: "memory".into(),
             minimum: Some(16),
+            maximum: None,
             unit: Some("GiB".into()),
         });
         demand

@@ -51,6 +51,114 @@ impl ResourceUsageReport {
 /// The registry binding is checked before and after sampling, while the OS
 /// process start marker and executable are checked across both samples. A PID
 /// replacement or concurrent registry rebind is rejected rather than merged.
+/// One cgroup v2 observation for the observed PID's cgroup. When the observed
+/// process is a containerised workload, this cgroup *is* the container's —
+/// the reading therefore covers the whole workload (all its threads and child
+/// processes), not just one PID's RSS. A workload's cgroup is task-attributable;
+/// the root/resident cgroups stay out of this reading so shared resident costs
+/// are never folded into a task's account.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct CgroupSample {
+    path: Option<String>,
+    memory_current_bytes: Option<u64>,
+    /// `None` also covers the unlimited `max` value; `max_is_unlimited`
+    /// distinguishes the two.
+    memory_max_bytes: Option<u64>,
+    memory_max_is_unlimited: bool,
+    oom_kill_events: Option<u64>,
+    cpu_usage_usec: Option<u64>,
+}
+
+impl CgroupSample {
+    fn unavailable() -> Value {
+        json!({
+            "available": false,
+            "version": null,
+            "path": null,
+            "memory_current_bytes": null,
+            "memory_max_bytes": null,
+            "memory_max_unlimited": null,
+            "memory_events_oom_kills": null,
+            "cpu_usage_usec": null,
+            "reason": "no readable cgroup v2 membership for this process on this host",
+        })
+    }
+
+    fn as_json(&self) -> Value {
+        json!({
+            "available": true,
+            "version": 2,
+            "path": self.path,
+            "memory_current_bytes": self.memory_current_bytes,
+            "memory_max_bytes": self.memory_max_bytes,
+            "memory_max_unlimited": self.memory_max_is_unlimited,
+            "memory_events_oom_kills": self.oom_kill_events,
+            "cpu_usage_usec": self.cpu_usage_usec,
+            "reason": null,
+        })
+    }
+}
+
+/// Read the process's cgroup v2 membership and the bounded control files Workcell
+/// understands. Everything optional; any unreadable field stays `None`.
+fn sample_cgroup(pid: u32) -> Option<CgroupSample> {
+    let membership = fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
+    let line = membership.lines().find(|line| line.starts_with("0::"))?;
+    let relative = line.trim_start_matches("0::").trim();
+    if relative.is_empty() {
+        return None;
+    }
+    let base = Path::new("/sys/fs/cgroup").join(relative.trim_start_matches('/'));
+    let read_u64 = |file: &str| -> Option<u64> {
+        fs::read_to_string(base.join(file))
+            .ok()?
+            .trim()
+            .parse::<u64>()
+            .ok()
+    };
+    let memory_max_raw = fs::read_to_string(base.join("memory.max")).ok()?;
+    let memory_max_trimmed = memory_max_raw.trim().to_owned();
+    let (memory_max_bytes, memory_max_is_unlimited) = if memory_max_trimmed == "max" {
+        (None, true)
+    } else {
+        (memory_max_trimmed.parse::<u64>().ok(), false)
+    };
+    // memory.events: `oom_kill <n>` among its lines.
+    let oom_kill_events = fs::read_to_string(base.join("memory.events"))
+        .ok()
+        .and_then(|events| {
+            events.lines().find_map(|line| {
+                let mut parts = line.split_whitespace();
+                if parts.next() == Some("oom_kill") {
+                    parts.next().and_then(|value| value.parse::<u64>().ok())
+                } else {
+                    None
+                }
+            })
+        });
+    // cpu.stat: `usage_usec <n>`.
+    let cpu_usage_usec = fs::read_to_string(base.join("cpu.stat"))
+        .ok()
+        .and_then(|stat| {
+            stat.lines().find_map(|line| {
+                let mut parts = line.split_whitespace();
+                if parts.next() == Some("usage_usec") {
+                    parts.next().and_then(|value| value.parse::<u64>().ok())
+                } else {
+                    None
+                }
+            })
+        });
+    Some(CgroupSample {
+        path: Some(base.display().to_string()),
+        memory_current_bytes: read_u64("memory.current"),
+        memory_max_bytes,
+        memory_max_is_unlimited,
+        oom_kill_events,
+        cpu_usage_usec,
+    })
+}
+
 pub fn observe_resource_usage(
     registry: &InstanceRegistry,
     instance_ref: &str,
@@ -119,6 +227,7 @@ pub fn observe_resource_usage(
     let cpu_utilisation = cpu_delta
         .and_then(|delta| (duration_ms > 0).then_some((delta as f64 / duration_ms as f64) * 100.0));
     let usage_ref = usage_ref(instance_ref, pid, &first.start_marker, started_at, ended_at);
+    let cgroup = sample_cgroup(pid);
     let executable = before_record
         .get("executable")
         .cloned()
@@ -128,6 +237,12 @@ pub fn observe_resource_usage(
         .cloned()
         .unwrap_or_else(|| json!([]));
 
+    let mut native_refs = raw_native_refs(pid);
+    if cgroup.is_some() {
+        native_refs.push(format!(
+            "local-os:cgroup-v2:pid:{pid}:memory.current,memory.max,memory.events,cpu.stat"
+        ));
+    }
     let value = json!({
         "schema": RESOURCE_USAGE_SCHEMA,
         "ok": true,
@@ -155,12 +270,16 @@ pub fn observe_resource_usage(
             "source": local_provider_source(),
             "platform": std::env::consts::OS,
             "collection": "bounded-on-demand",
-            "raw_native_refs": raw_native_refs(pid),
+            "raw_native_refs": native_refs,
             "privacy": {
                 "argv_collected": false,
                 "environment_collected": false,
             },
         },
+        "cgroup": cgroup
+            .as_ref()
+            .map(CgroupSample::as_json)
+            .unwrap_or_else(CgroupSample::unavailable),
         "metrics": {
             "cpu_time": metric_observed(second.cpu_time_millis, "milliseconds", "ps time"),
             "cpu_utilisation": metric_derived(cpu_utilisation, "percent", "cpu_time delta / wall interval"),
@@ -226,6 +345,7 @@ pub fn validate_resource_usage(reading: &Value) -> Result<()> {
             "material_binding",
             "interval",
             "provider",
+            "cgroup",
             "metrics",
             "external_correlation_refs",
         ],
@@ -436,6 +556,42 @@ pub fn validate_resource_usage(reading: &Value) -> Result<()> {
         return Err(WorkcellError::InvalidDemand(
             "resource usage readings must disclose argv/environment as not collected".into(),
         ));
+    }
+
+    let cgroup = object
+        .get("cgroup")
+        .and_then(Value::as_object)
+        .ok_or_else(|| WorkcellError::InvalidDemand("cgroup must be an object".into()))?;
+    exact_keys(
+        cgroup,
+        &[
+            "available",
+            "version",
+            "path",
+            "memory_current_bytes",
+            "memory_max_bytes",
+            "memory_max_unlimited",
+            "memory_events_oom_kills",
+            "cpu_usage_usec",
+            "reason",
+        ],
+        "cgroup",
+    )?;
+    if cgroup.get("available").and_then(Value::as_bool) == Some(true) {
+        if cgroup.get("version").and_then(Value::as_u64) != Some(2) {
+            return Err(WorkcellError::InvalidDemand(
+                "an available cgroup reading must declare cgroup v2".into(),
+            ));
+        }
+        if cgroup
+            .get("path")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            return Err(WorkcellError::InvalidDemand(
+                "an available cgroup reading must name its cgroup path".into(),
+            ));
+        }
     }
 
     let metrics = object

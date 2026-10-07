@@ -141,6 +141,7 @@ fn semantic_demand() -> ExecutionDemand {
     demand.resources.push(ResourceRequirement {
         key: "cpu".into(),
         minimum: Some(2),
+        maximum: None,
         unit: Some("cores".into()),
     });
     demand

@@ -8,7 +8,7 @@ use epilogos_workcell_sdk::{
 use serde_json::{json, Value};
 
 use super::{
-    client::{data_request, require_success_safe, resolve_data_endpoint},
+    client::{data_request, require_success_safe, resolve_data_endpoint_with_proxy, DataEndpoint},
     protocol::{OpenSandboxConfig, OpenSandboxTransport, OPENSANDBOX_SOURCE_REVISION},
     OPENSANDBOX_EGRESS_PORT,
 };
@@ -145,6 +145,20 @@ where
         })
     }
 
+    /// Resolve a *control* endpoint (policy, credential-vault) with the
+    /// recorded proxy-defect configuration: control paths bypass the server
+    /// proxy unless the operator explicitly forced proxied control.
+    fn resolve_control_endpoint(&self, port: u16) -> Result<DataEndpoint> {
+        let proxied = self.config.use_server_proxy && !self.config.egress_control_direct;
+        resolve_data_endpoint_with_proxy(
+            &self.config,
+            &self.transport,
+            &self.allocation,
+            port,
+            proxied,
+        )
+    }
+
     /// Merge provider-native egress rules. This mutates enforcement only; it
     /// does not claim or create a network route.
     pub fn patch_policy(&self, rules: &[OpenSandboxEgressRule]) -> Result<()> {
@@ -156,12 +170,7 @@ where
         for rule in rules {
             rule.validate()?;
         }
-        let endpoint = resolve_data_endpoint(
-            &self.config,
-            &self.transport,
-            &self.allocation,
-            OPENSANDBOX_EGRESS_PORT,
-        )?;
+        let endpoint = self.resolve_control_endpoint(OPENSANDBOX_EGRESS_PORT)?;
         let body = serde_json::to_vec(
             &rules
                 .iter()
@@ -190,12 +199,7 @@ where
     }
 
     fn observe_policy(&self) -> Result<ObservedPolicy> {
-        let endpoint = resolve_data_endpoint(
-            &self.config,
-            &self.transport,
-            &self.allocation,
-            OPENSANDBOX_EGRESS_PORT,
-        )?;
+        let endpoint = self.resolve_control_endpoint(OPENSANDBOX_EGRESS_PORT)?;
         let response = data_request(
             &self.transport,
             &endpoint,
@@ -616,14 +620,18 @@ mod tests {
 
     #[test]
     fn an_upstream_502_is_refused_by_name_as_the_known_control_fence() {
-        // Live receipt 2026-09-07 finding 1: PATCH /policy returns 502 via
-        // the server proxy with egress image v1.1.7. The refusal must be
-        // named and typed `Unsupported`, never a generic failure — and the
-        // patch must not have been silently "successful".
+        // Live receipt 2026-09-07 finding 1: PATCH /policy returns 502 when
+        // routed through the server proxy with egress image v1.1.7. Forcing
+        // the proxied control shape (`egress_control_direct = false`) must
+        // refuse by name, typed `Unsupported`, never a generic failure — and
+        // the patch must not have been silently "successful".
+        let mut forced = config();
+        forced.use_server_proxy = true;
+        forced.egress_control_direct = false;
         let transport =
             FixtureTransport::with_responses(vec![response(502, json!({"error": "bad gateway"}))]);
         let provider = OpenSandboxEgressPolicyProvider::new(
-            config(),
+            forced,
             transport,
             allocation(),
             WorkcellRef::new("workcell:local").unwrap(),
@@ -642,6 +650,51 @@ mod tests {
         );
         assert!(error.to_string().contains("upstream 502"));
         assert!(error.to_string().contains("opensandbox/egress:v1.1.7"));
+        assert!(error.to_string().contains("no write performed"));
+    }
+
+    #[test]
+    fn proxied_data_plane_keeps_direct_control_paths_by_default() {
+        // The recorded proxy defect's provider-native resolution: with the
+        // deployment declared `use_server_proxy: true`, the egress *control*
+        // endpoint still resolves directly against the sidecar
+        // (`use_server_proxy=false` on the lifecycle endpoint query), because
+        // the proxy — not the sidecar — is what answers those paths with 502.
+        let mut declared = config();
+        declared.use_server_proxy = true;
+        let transport = FixtureTransport::with_responses(vec![
+            response(
+                200,
+                json!({
+                    "endpoint": "http://egress-direct.fixture:18080",
+                    "headers": {}
+                }),
+            ),
+            response(200, json!({"status": "ok"})),
+        ]);
+        let requests_transport = transport.clone();
+        let provider = OpenSandboxEgressPolicyProvider::new(
+            declared,
+            transport,
+            allocation(),
+            WorkcellRef::new("workcell:local").unwrap(),
+            vec![target("policy:github", "api.github.com")],
+        )
+        .unwrap();
+        provider
+            .patch_policy(&[OpenSandboxEgressRule {
+                action: OpenSandboxEgressAction::Allow,
+                target: "api.github.com".into(),
+            }])
+            .unwrap();
+        let requests = requests_transport.requests();
+        assert_eq!(requests.len(), 2, "lifecycle resolution + control patch");
+        assert!(
+            requests[0].url.contains("use_server_proxy=false"),
+            "control paths resolve the sidecar directly: {}",
+            requests[0].url
+        );
+        assert_eq!(requests[1].url, "http://egress-direct.fixture:18080/policy");
     }
 
     #[test]

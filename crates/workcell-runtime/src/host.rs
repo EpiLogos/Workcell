@@ -170,6 +170,33 @@ impl ProviderPort for HostProcessExecutionProvider {
             "untrusted_isolation".into(),
             "unsupported-use-isolated-provider".into(),
         );
+        // The offer advertises the observed host envelope so demands with
+        // resource floors can plan against what this host actually reports.
+        // A failed observation advertises no capacity rather than a guess.
+        let capacity = {
+            use crate::admission::HostObserver;
+            crate::admission::LinuxHostObserver
+                .observe()
+                .map(|observed| {
+                    let mut capacity = BTreeMap::new();
+                    capacity.insert(
+                        "memory".to_owned(),
+                        epilogos_workcell_core::Capacity {
+                            amount: observed.memory_total_bytes,
+                            unit: Some("bytes".into()),
+                        },
+                    );
+                    capacity.insert(
+                        "cpu".to_owned(),
+                        epilogos_workcell_core::Capacity {
+                            amount: observed.cpu_count as u64,
+                            unit: Some("count".into()),
+                        },
+                    );
+                    capacity
+                })
+                .unwrap_or_default()
+        };
         Ok(vec![OperationalOffer {
             offer_ref: OfferRef::new(format!("offer:{}:host-process", self.provider_ref))
                 .map_err(|error| WorkcellError::OperationFailed(error.into()))?,
@@ -187,7 +214,7 @@ impl ProviderPort for HostProcessExecutionProvider {
             isolation_trust: vec!["host-process".into()],
             availability: Availability::Available,
             health: HealthState::Healthy,
-            capacity: BTreeMap::new(),
+            capacity,
             metadata,
         }])
     }
@@ -477,7 +504,7 @@ fn operation_fingerprint(program: &str, args: &[String], cwd: Option<&str>) -> S
     format!("{}|{}|{}", program, args.join("\u{1f}"), cwd.unwrap_or("-"))
 }
 
-fn now_unix_ms() -> Result<u64> {
+pub(crate) fn now_unix_ms() -> Result<u64> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| WorkcellError::OperationFailed(format!("system clock error: {error}")))?;

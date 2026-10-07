@@ -35,6 +35,7 @@ pub fn demand_value(demand: &ExecutionDemand) -> Value {
         "resources": demand.resources.iter().map(|resource| json!({
             "key": resource.key,
             "minimum": resource.minimum,
+            "maximum": resource.maximum,
             "unit": resource.unit,
         })).collect::<Vec<_>>(),
         "connectivity": tiered_strings(
@@ -120,6 +121,7 @@ pub fn decode_demand(value: &Value) -> Result<ExecutionDemand, WorkcellError> {
             Ok(ResourceRequirement {
                 key: string_field(resource, "key")?.to_owned(),
                 minimum: optional_u64_field(resource, "minimum")?,
+                maximum: optional_u64_field(resource, "maximum")?,
                 unit: optional_string_field(resource, "unit")?.map(str::to_owned),
             })
         })

@@ -1,4 +1,9 @@
+pub mod admission;
 mod runtime_projection;
+pub use admission::{
+    AdmissionLedger, BudgetPolicy, CapacityBudget, HostObservation, HostObserver,
+    LinuxHostObserver, TaskResources, ADMISSION_FILE, ADMISSION_SCHEMA,
+};
 pub use runtime_projection::{
     RuntimeProjection, RuntimeProjectionFailure, RUNTIME_PROJECTION_SCHEMA,
 };
@@ -102,8 +107,8 @@ pub use service::{
 };
 pub use service_declaration::{
     default_service_declaration_path, parse_service_declarations, read_service_declarations,
-    read_state_root_service_declarations, DeclaredServices, ServiceLifetime,
-    SERVICE_DECLARATION_FILE, SERVICE_DECLARATION_SCHEMA,
+    read_state_root_service_declarations, DeclaredServices, ExecutionDeployment, ServiceLifetime,
+    DOCKER_EXECUTION_PROVIDER_REF, SERVICE_DECLARATION_FILE, SERVICE_DECLARATION_SCHEMA,
 };
 
 mod bounded_process;
