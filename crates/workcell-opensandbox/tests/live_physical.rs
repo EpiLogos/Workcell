@@ -217,8 +217,7 @@ fn live_physical_sandbox_lifecycle_execd_lease_egress_and_release() {
             action: epilogos_workcell_opensandbox::OpenSandboxEgressAction::Allow,
             target: "api.github.com".into(),
         }])
-        .err()
-        .expect("the pinned egress control API is fenced on this stack");
+        .expect_err("the pinned egress control API is fenced on this stack");
     assert!(
         fence.to_string().contains("egress policy control path"),
         "expected the named egress control fence, got: {fence}"
