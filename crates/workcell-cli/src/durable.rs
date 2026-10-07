@@ -179,7 +179,8 @@ impl DurableCollapsedLocalWorkcell {
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
         });
-        fs::write(&resolved, record.to_string()).map_err(io_error("record failed material intent"))?;
+        fs::write(&resolved, record.to_string())
+            .map_err(io_error("record failed material intent"))?;
         fs::remove_file(&pending).map_err(io_error("close failed material intent"))?;
         sync_directory(&self.receipt_root)
     }

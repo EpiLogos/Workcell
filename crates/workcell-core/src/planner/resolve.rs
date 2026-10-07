@@ -58,8 +58,8 @@ pub(crate) fn resolve<'a>(
             // match, and a weaker offer still resolves when nothing better
             // exists (the provider then refuses honestly at prepare).
             .then_with(|| {
-                let demanded_isolation = requirement.kind == "affordance"
-                    && demand.isolation_trust.is_some();
+                let demanded_isolation =
+                    requirement.kind == "affordance" && demand.isolation_trust.is_some();
                 if demanded_isolation {
                     let iso = demand.isolation_trust.as_ref().map(|value| value.as_str());
                     let left_matches = iso
