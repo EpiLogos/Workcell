@@ -143,6 +143,7 @@ fn execution_request() -> ExecutionMaterialRequest {
         resources: vec![ResourceRequirement {
             key: "memory".into(),
             minimum: Some(4),
+            maximum: None,
             unit: Some("GiB".into()),
         }],
         connectivity: Vec::new(),

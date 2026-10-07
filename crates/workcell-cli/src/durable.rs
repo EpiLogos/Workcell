@@ -160,6 +160,29 @@ impl DurableCollapsedLocalWorkcell {
         fs::remove_file(self.intent_path(id)).map_err(io_error("complete material intent"))?;
         sync_directory(&self.receipt_root)
     }
+    /// Resolve an intent whose effect returned a *deterministic* error: the
+    /// inner control plane returned (no unknown partial state), so the intent
+    /// is closed as failed and retained as journal evidence (`.failed.json`).
+    /// A crash still leaves `.pending`/`.writing`, which keeps refusing new
+    /// effects until a human reconciles — this path never touches that law.
+    fn resolve_failed(&self, id: &str, operation: &str, error: &WorkcellError) -> Result<()> {
+        let pending = self.intent_path(id);
+        let resolved = self.receipt_root.join(format!("{}.failed", key(id)));
+        let record = json!({
+            "schema": "workcell.material-intent-failed/v1",
+            "id": id,
+            "operation": operation,
+            "error_kind": error_kind_name(error),
+            "error": error.to_string(),
+            "resolved_at_unix_ms": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+        });
+        fs::write(&resolved, record.to_string()).map_err(io_error("record failed material intent"))?;
+        fs::remove_file(&pending).map_err(io_error("close failed material intent"))?;
+        sync_directory(&self.receipt_root)
+    }
     fn persist_world(&self, world: &MaterialisedExecutionWorld) -> Result<()> {
         let destination = self.receipt_path(&world.world_ref);
         let temporary = destination.with_extension("writing");
@@ -237,7 +260,17 @@ impl WorkcellControlPlane for DurableCollapsedLocalWorkcell {
             ));
         }
         self.begin(demand.demand_ref.as_str(), "prepare", demand_value(demand))?;
-        let mut world = self.inner.prepare(demand)?;
+        let prepared = self.inner.prepare(demand);
+        let mut world = match prepared {
+            Ok(world) => world,
+            // A deterministic refusal (planning, admission, provider) closed
+            // the inner operation cleanly: resolve the intent with the
+            // failure retained as journal evidence.
+            Err(error) => {
+                self.resolve_failed(demand.demand_ref.as_str(), "prepare", &error)?;
+                return Err(error);
+            }
+        };
         world
             .provenance
             .insert("demand_fingerprint".into(), fingerprint);
@@ -339,6 +372,22 @@ impl WorkcellControlPlane for DurableCollapsedLocalWorkcell {
         result
     }
 }
+/// The wire name of a Workcell error kind (mirrors the control codec).
+fn error_kind_name(error: &WorkcellError) -> &'static str {
+    match error {
+        WorkcellError::InvalidDemand(_) => "invalid-demand",
+        WorkcellError::UnsatisfiedDemand(_) => "unsatisfied-demand",
+        WorkcellError::Unavailable(_) => "unavailable",
+        WorkcellError::Degraded(_) => "degraded",
+        WorkcellError::OperationFailed(_) => "operation-failed",
+        WorkcellError::CleanupFailed(_) => "cleanup-failed",
+        WorkcellError::ReconciliationFailed(_) => "reconciliation-failed",
+        WorkcellError::NotFound(_) => "not-found",
+        WorkcellError::Unsupported(_) => "unsupported",
+        WorkcellError::Capacity(_) => "waiting-for-capacity",
+    }
+}
+
 fn key(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
 }

@@ -16,6 +16,7 @@ use std::{
 };
 
 use epilogos_workcell_core::{Result, WorkcellError};
+use epilogos_workcell_docker::DockerExecutionConfig;
 use epilogos_workcell_opensandbox::OpenSandboxConfig;
 use serde_json::Value;
 
@@ -58,14 +59,37 @@ impl ServiceLifetime {
 }
 
 /// Declared services split by which provider can honestly materialise them.
-/// `execution` carries an optional OpenSandbox lifecycle deployment the
-/// Workcell materialises sandbox execution through.
+/// `execution` carries operator-declared execution deployments — an OpenSandbox
+/// lifecycle deployment and/or a direct Docker execution deployment — that the
+/// Workcell materialises execution through.
 #[derive(Clone, Debug, Default)]
 pub struct DeclaredServices {
     pub managed: Vec<ManagedHostService>,
     pub target_owned: Vec<ExternalManagedService>,
-    pub execution: Vec<OpenSandboxConfig>,
+    pub execution: Vec<ExecutionDeployment>,
 }
+
+/// One operator-declared execution deployment. The kind names which provider
+/// materialises it; every field maps onto that provider's own configuration
+/// and its defaults — a declaration names the deployment, it does not invent a
+/// provider contract.
+#[derive(Clone, Debug)]
+pub enum ExecutionDeployment {
+    OpenSandbox(OpenSandboxConfig),
+    Docker(DockerExecutionConfig),
+}
+
+impl ExecutionDeployment {
+    pub fn provider_ref_str(&self) -> &str {
+        match self {
+            Self::OpenSandbox(config) => config.provider_ref.as_str(),
+            Self::Docker(_) => DOCKER_EXECUTION_PROVIDER_REF,
+        }
+    }
+}
+
+/// Provider identity for a declared direct Docker execution deployment.
+pub const DOCKER_EXECUTION_PROVIDER_REF: &str = "provider:docker";
 
 impl DeclaredServices {
     pub fn is_empty(&self) -> bool {
@@ -233,12 +257,12 @@ pub fn parse_service_declarations(raw: &str) -> Result<DeclaredServices> {
     Ok(declared)
 }
 
-/// One operator-declared execution deployment. The only declared kind today is
-/// an OpenSandbox lifecycle deployment; every field maps onto
-/// `epilogos_workcell_opensandbox::OpenSandboxConfig`, and the defaults are
-/// that config's own defaults — a declaration names the deployment, it does
-/// not invent a provider contract.
-fn parse_execution_deployment(entry: &Value) -> Result<OpenSandboxConfig> {
+/// One operator-declared execution deployment. The `kind` field names which
+/// provider materialises it (`opensandbox` today's default, `docker` direct);
+/// every other field maps onto that provider's own configuration and its
+/// defaults — a declaration names the deployment, it does not invent a
+/// provider contract.
+fn parse_execution_deployment(entry: &Value) -> Result<ExecutionDeployment> {
     let object = entry.as_object().ok_or_else(|| {
         WorkcellError::InvalidDemand(
             "each declared execution deployment must be a JSON object".into(),
@@ -248,11 +272,75 @@ fn parse_execution_deployment(entry: &Value) -> Result<OpenSandboxConfig> {
         .get("kind")
         .and_then(Value::as_str)
         .unwrap_or("opensandbox");
+    if kind == "docker" {
+        return parse_docker_execution_deployment(object).map(ExecutionDeployment::Docker);
+    }
     if kind != "opensandbox" {
         return Err(WorkcellError::InvalidDemand(format!(
-            "declared execution deployment has unknown kind `{kind}`; known kinds: opensandbox"
+            "declared execution deployment has unknown kind `{kind}`; known kinds: opensandbox, docker"
         )));
     }
+    parse_opensandbox_execution_deployment(object).map(ExecutionDeployment::OpenSandbox)
+}
+
+/// A declared direct Docker execution deployment. `image` is the only
+/// required field; everything else takes the adapter's own defaults.
+fn parse_docker_execution_deployment(
+    object: &serde_json::Map<String, Value>,
+) -> Result<DockerExecutionConfig> {
+    let image = optional_str(object, "image")?.ok_or_else(|| {
+        WorkcellError::InvalidDemand(
+            "declared docker execution deployment requires field `image`".into(),
+        )
+    })?;
+    let mut config = DockerExecutionConfig::new(image)?;
+    // A distinctive affordance so ordinary demands can select container
+    // execution exactly, not "whatever offers shell".
+    config = config.with_affordance("container-execution")?;
+    for affordance in string_list(object, "affordances")? {
+        config = config.with_affordance(affordance)?;
+    }
+    for (logical, docker_network) in string_map(object, "logical_networks")? {
+        config = config.with_logical_network(logical, docker_network)?;
+    }
+    for requirement in string_list(object, "isolation_trust")? {
+        config = config.with_isolation_trust(requirement)?;
+    }
+    if let Some(hold) = object.get("hold_command") {
+        let command = hold
+            .as_array()
+            .ok_or_else(|| {
+                WorkcellError::InvalidDemand(
+                    "declared docker execution deployment field `hold_command` must be an array"
+                        .into(),
+                )
+            })?
+            .iter()
+            .map(|value| {
+                value.as_str().map(str::to_owned).ok_or_else(|| {
+                    WorkcellError::InvalidDemand(
+                        "declared docker execution deployment `hold_command` entries must be strings"
+                            .into(),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        config = config.with_hold_command(command)?;
+    }
+    if let Some(shell) = optional_str(object, "shell_program")? {
+        if shell.trim().is_empty() {
+            return Err(WorkcellError::InvalidDemand(
+                "declared docker execution deployment `shell_program` must not be empty".into(),
+            ));
+        }
+        config.shell_program = shell;
+    }
+    Ok(config)
+}
+
+fn parse_opensandbox_execution_deployment(
+    object: &serde_json::Map<String, Value>,
+) -> Result<OpenSandboxConfig> {
     let provider_ref = epilogos_workcell_core::ProviderRef::new(
         optional_str(object, "provider_ref")?
             .unwrap_or_else(|| OPENSANDBOX_PROVIDER_REF.to_owned()),
@@ -277,6 +365,20 @@ fn parse_execution_deployment(entry: &Value) -> Result<OpenSandboxConfig> {
         .get("use_server_proxy")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    // Provider-native configuration for the recorded egress/Vault proxy
+    // defect: control paths address the sidecar directly (the default)
+    // instead of the server proxy that answers them with an upstream 502.
+    config.egress_control_direct = object
+        .get("egress_control_direct")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    // `"api_key_env": null` is an explicit declaration that this deployment
+    // runs without server auth — distinct from omitting the key, which keeps
+    // the provider default (`OPEN_SANDBOX_API_KEY`). The value is only ever
+    // *named*; it stays in the composing process's environment.
+    if let Some(Value::Null) = object.get("api_key_env") {
+        config.api_key_env = None;
+    }
     if let Some(env) = optional_str(object, "api_key_env")? {
         config.api_key_env = Some(env);
     }
@@ -701,7 +803,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(declared.execution.len(), 1);
-        let deployment = &declared.execution[0];
+        let deployment = match &declared.execution[0] {
+            ExecutionDeployment::OpenSandbox(config) => config,
+            other => panic!("expected an OpenSandbox deployment, got {other:?}"),
+        };
         assert_eq!(deployment.provider_ref.as_str(), "provider:opensandbox");
         assert_eq!(deployment.lifecycle_base_url, "http://127.0.0.1:8080/v1");
         assert!(deployment.use_server_proxy);

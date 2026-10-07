@@ -115,6 +115,7 @@ fn vllm_material_demand(placement: &str) -> ExecutionDemand {
     demand.resources.push(ResourceRequirement {
         key: "accelerator".into(),
         minimum: Some(1),
+        maximum: None,
         unit: Some("device".into()),
     });
     demand

@@ -284,6 +284,7 @@ fn unsupported_per_vm_resource_sizing_is_rejected_not_ignored() {
     request.resources.push(ResourceRequirement {
         key: "memory".into(),
         minimum: Some(8),
+        maximum: None,
         unit: Some("GiB".into()),
     });
     assert!(matches!(

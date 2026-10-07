@@ -10,6 +10,35 @@ Docker is a material provider, not a Workcell semantic primitive. `ExecutionDema
 
 The adapter lives in `epilogos-workcell-docker`. Removing that crate or making the Docker executable unavailable removes its current `OperationalOffer`; it does not change the public semantic-client reference types or the provider-neutral demand schema.
 
+### Composition and declaration
+
+The adapter is registered into collapsed-local composition like any other
+execution port. Declare it in `<state-root>/services.json`:
+
+```json
+{
+  "schema": "workcell.service-declaration/v1",
+  "execution": [
+    {
+      "kind": "docker",
+      "image": "alpine:3.22",
+      "affordances": ["shell"],
+      "logical_networks": {"redis": "workcell-redis-net"},
+      "isolation_trust": ["process-isolation"]
+    }
+  ]
+}
+```
+
+`image` is the only required field; the other keys map onto
+`DockerExecutionConfig`'s own defaults. The same declaration reaches the
+zero-daemon CLI and the Control Service (both compose
+`CollapsedLocalConfig`), so `workcell discover` shows the offer and ordinary
+prepare/execute/observe/release operations run against the real Engine.
+Exactly one `kind: "docker"` deployment may be declared alongside exactly one
+`kind: "opensandbox"` deployment; more of the same kind is refused rather
+than silently composed.
+
 ## Inspected upstream seam
 
 The implementation pins the inspected source baseline while probing the actually installed runtime at operation time:
@@ -52,7 +81,9 @@ Absence is explicit. Discovery returns no Docker-backed offer when the Engine or
 The Docker execution adapter maps only the provider portion of an `ExecutionMaterialRequest`:
 
 - generic `shell` affordance -> `docker container exec`;
-- memory/CPU requirements -> Docker resource flags;
+- memory/CPU requirements -> an explicit `maximum` becomes the enforced
+  ceiling (`--memory`/`--cpus`); a `minimum` is admission's business (see
+  `docs/CAPACITY-ADMISSION.md`) and produces no hard limit;
 - logical connection names -> adapter-owned physical Docker network names;
 - isolation/trust requirements -> declared offer capability;
 - lifecycle -> create/start/inspect/restart/stop/remove.

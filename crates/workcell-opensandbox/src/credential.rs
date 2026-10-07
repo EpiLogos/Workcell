@@ -7,7 +7,7 @@ use epilogos_workcell_core::{
 use serde_json::{json, Value};
 
 use super::{
-    client::{data_request, require_success_safe, resolve_data_endpoint},
+    client::{data_request, require_success_safe, resolve_data_endpoint_with_proxy},
     protocol::{OpenSandboxConfig, OpenSandboxTransport, OPENSANDBOX_SOURCE_REVISION},
 };
 
@@ -171,11 +171,12 @@ where
         &self,
         allocation: &ProviderAllocation,
     ) -> Result<OpenSandboxVaultRevocationReceipt> {
-        let endpoint = resolve_data_endpoint(
+        let endpoint = resolve_data_endpoint_with_proxy(
             &self.config,
             &self.transport,
             allocation,
             OPENSANDBOX_EGRESS_PORT,
+            self.config.use_server_proxy && !self.config.egress_control_direct,
         )?;
         let response = data_request(
             &self.transport,
@@ -216,11 +217,12 @@ where
         let (material, workcell_receipt) =
             authorise_broker_boundary(source_provider, policy, handle, request, route)?;
 
-        let endpoint = resolve_data_endpoint(
+        let endpoint = resolve_data_endpoint_with_proxy(
             &self.config,
             &self.transport,
             allocation,
             OPENSANDBOX_EGRESS_PORT,
+            self.config.use_server_proxy && !self.config.egress_control_direct,
         )?;
         let body = serde_json::to_vec(&json!({
             "credentials": [{

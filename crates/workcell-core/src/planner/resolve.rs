@@ -49,6 +49,30 @@ pub(crate) fn resolve<'a>(
     candidates.sort_by(|(left, left_preference), (right, right_preference)| {
         right_preference
             .cmp(left_preference)
+            // Execution coherence: when the demand declares an isolation
+            // requirement, an execution-shaped atom prefers an offer that
+            // also carries that isolation, so affordance and isolation do
+            // not bind different providers and produce a world that cannot
+            // be materialised. This is a *preference among matching offers*
+            // — the isolation atom itself remains an independent required
+            // match, and a weaker offer still resolves when nothing better
+            // exists (the provider then refuses honestly at prepare).
+            .then_with(|| {
+                let demanded_isolation = requirement.kind == "affordance"
+                    && demand.isolation_trust.is_some();
+                if demanded_isolation {
+                    let iso = demand.isolation_trust.as_ref().map(|value| value.as_str());
+                    let left_matches = iso
+                        .map(|iso| left.isolation_trust.iter().any(|item| item == iso))
+                        .unwrap_or(false);
+                    let right_matches = iso
+                        .map(|iso| right.isolation_trust.iter().any(|item| item == iso))
+                        .unwrap_or(false);
+                    right_matches.cmp(&left_matches)
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
             .then_with(|| operational_rank(right).cmp(&operational_rank(left)))
             .then_with(|| left.offer_ref.as_str().cmp(right.offer_ref.as_str()))
     });
@@ -102,6 +126,21 @@ fn capacity_match(
 ) -> OfferMatch {
     match offer.capacity.get(&requirement.key) {
         Some(capacity) => {
+            // Unit-normalised comparison when both sides speak known units:
+            // a floor of `512 MiB` must match an offer advertising `bytes`,
+            // and `500m` a `count` — string equality alone would make the
+            // same physical amount look unsupported. Unknown units keep the
+            // exact-string law (mismatch = unsupported, never a guess).
+            if let (Some(need), Some(have)) = (
+                normalise_resource(requirement.minimum, requirement.unit.as_deref()),
+                normalise_resource(Some(capacity.amount), capacity.unit.as_deref()),
+            ) {
+                return if need > have {
+                    OfferMatch::CapacityShortfall
+                } else {
+                    OfferMatch::Matched
+                };
+            }
             if requirement.unit.is_some() && requirement.unit != capacity.unit {
                 OfferMatch::Unsupported
             } else if requirement
@@ -114,6 +153,26 @@ fn capacity_match(
             }
         }
         None => OfferMatch::Unsupported,
+    }
+}
+
+/// Normalise a resource amount into comparable canonical units: memory to
+/// bytes, CPU to millicpu. `None` for both amount and unit means "not
+/// stated", which normalises to zero. An amount without a unit is ambiguous
+/// across resource kinds, so it normalises only for CPU counts and raw
+/// bytes-shaped quantities are left unmatched unless the unit names them.
+fn normalise_resource(amount: Option<u64>, unit: Option<&str>) -> Option<u64> {
+    let amount = amount?;
+    match unit.map(str::to_ascii_lowercase).as_deref() {
+        None => Some(amount),
+        Some("b") | Some("bytes") => Some(amount),
+        Some("kib") | Some("ki") => amount.checked_mul(1024),
+        Some("mib") | Some("mi") => amount.checked_mul(1024_u64.pow(2)),
+        Some("gib") | Some("gi") => amount.checked_mul(1024_u64.pow(3)),
+        Some("tib") | Some("ti") => amount.checked_mul(1024_u64.pow(4)),
+        Some("count") | Some("cpu") | Some("cpus") | Some("cores") => amount.checked_mul(1000),
+        Some("m") => Some(amount),
+        Some(_) => None,
     }
 }
 

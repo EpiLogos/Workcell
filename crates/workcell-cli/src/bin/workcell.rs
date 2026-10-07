@@ -673,6 +673,7 @@ fn workcell_error_kind(error: &WorkcellError) -> &'static str {
         WorkcellError::ReconciliationFailed(_) => "reconciliation-failed",
         WorkcellError::NotFound(_) => "not-found",
         WorkcellError::Unsupported(_) => "unsupported",
+        WorkcellError::Capacity(_) => "waiting-for-capacity",
     }
 }
 
@@ -698,5 +699,9 @@ fn workcell_exit_code(error: &WorkcellError) -> u8 {
         WorkcellError::OperationFailed(_)
         | WorkcellError::CleanupFailed(_)
         | WorkcellError::ReconciliationFailed(_) => 7,
+        // Retryable and expected: distinct from hard failures, and distinct
+        // from this client's transport-unavailable code (8) because the
+        // transport answered and the budget refused.
+        WorkcellError::Capacity(_) => 11,
     }
 }

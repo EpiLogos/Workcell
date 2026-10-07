@@ -108,6 +108,9 @@ struct ExecutionRecord {
     logical_networks: Vec<String>,
 }
 
+/// A clone shares the same command runner and execution records; allocation
+/// records stay coherent across the registered and direct handles.
+#[derive(Clone)]
 pub struct DockerExecutionProvider {
     provider_ref: ProviderRef,
     config: DockerExecutionConfig,
@@ -239,20 +242,36 @@ impl DockerExecutionProvider {
         for resource in &request.resources {
             match resource.key.as_str() {
                 "memory" => {
-                    let minimum = resource.minimum.ok_or_else(|| {
+                    // A minimum is a floor the host must satisfy — admission
+                    // accounts it against the observed budget. Mapping it to
+                    // `--memory` would hard-cap the workload at exactly its
+                    // floor and OOM it the moment it needed what it asked
+                    // for. Only an explicit caller-authorised maximum becomes
+                    // an enforced ceiling.
+                    if resource.maximum.is_none() && resource.minimum.is_some() {
+                        continue;
+                    }
+                    let maximum = resource.maximum.ok_or_else(|| {
                         WorkcellError::InvalidDemand(
-                            "memory resource requires a minimum value".into(),
+                            "memory resource requires a maximum value to enforce a ceiling".into(),
                         )
                     })?;
                     args.push("--memory".into());
-                    args.push(docker_memory_bytes(minimum, resource.unit.as_deref())?);
+                    args.push(docker_memory_bytes(maximum, resource.unit.as_deref())?);
                 }
                 "cpu" | "cpus" => {
-                    let minimum = resource.minimum.ok_or_else(|| {
-                        WorkcellError::InvalidDemand("CPU resource requires a minimum value".into())
+                    // Same distinction: the minimum is admission's business;
+                    // `--cpus` enforces only a declared ceiling.
+                    if resource.maximum.is_none() && resource.minimum.is_some() {
+                        continue;
+                    }
+                    let maximum = resource.maximum.ok_or_else(|| {
+                        WorkcellError::InvalidDemand(
+                            "CPU resource requires a maximum value to enforce a ceiling".into(),
+                        )
                     })?;
                     args.push("--cpus".into());
-                    args.push(minimum.to_string());
+                    args.push(maximum.to_string());
                 }
                 other => {
                     return Err(WorkcellError::UnsatisfiedDemand(format!(
@@ -323,6 +342,43 @@ impl ProviderPort for DockerExecutionProvider {
         let mut metadata = provider_metadata(&engine_version, None);
         metadata.insert("image".into(), self.config.image.clone());
 
+        // Advertise the daemon-observed envelope (NCPU, MemTotal) so demands
+        // with resource floors plan against what the Engine actually reports.
+        // A failed probe advertises no capacity rather than a guess.
+        let capacity = self
+            .runner
+            .run(&DockerCommand::new([
+                "info",
+                "--format",
+                "{{.NCPU}} {{.MemTotal}}",
+            ]))
+            .ok()
+            .and_then(|output| {
+                let fields = output.stdout.split_whitespace().collect::<Vec<_>>();
+                if fields.len() != 2 {
+                    return None;
+                }
+                let cpus = fields[0].parse::<u64>().ok()?;
+                let memory = fields[1].parse::<u64>().ok()?;
+                let mut capacity = BTreeMap::new();
+                capacity.insert(
+                    "memory".to_owned(),
+                    epilogos_workcell_core::Capacity {
+                        amount: memory,
+                        unit: Some("bytes".into()),
+                    },
+                );
+                capacity.insert(
+                    "cpu".to_owned(),
+                    epilogos_workcell_core::Capacity {
+                        amount: cpus,
+                        unit: Some("count".into()),
+                    },
+                );
+                Some(capacity)
+            })
+            .unwrap_or_default();
+
         Ok(vec![OperationalOffer {
             offer_ref: OfferRef::new(format!("offer:{}:docker-execution", self.provider_ref))
                 .map_err(|error| WorkcellError::OperationFailed(error.into()))?,
@@ -334,7 +390,7 @@ impl ProviderPort for DockerExecutionProvider {
             isolation_trust: self.config.isolation_trust.clone(),
             availability: Availability::Available,
             health: HealthState::Healthy,
-            capacity: BTreeMap::new(),
+            capacity,
             metadata,
         }])
     }

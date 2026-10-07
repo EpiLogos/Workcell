@@ -24,6 +24,21 @@ portable provider does not establish peak RSS, GPU, VRAM, per-process network
 or portable storage-I/O bytes, so those fields say `unsupported` and carry no
 numeric value.
 
+### cgroup reading (workload/container condition beyond single-PID RSS)
+
+On Linux the reading also samples the observed process's **cgroup v2**
+membership (`/proc/<pid>/cgroup` → `memory.current`, `memory.max`,
+`memory.events` `oom_kill`, `cpu.stat` `usage_usec`) and reports it in the
+reading's `cgroup` section. When the observed process is a containerised
+workload, that cgroup *is* the container's, so the section covers the whole
+workload — every thread and child process — rather than one PID's RSS; an
+`oom_kill` count and the enforced `memory.max` ceiling are exactly the
+conditions that explain a containerised workload dying or throttling. The
+sampled cgroup is the workload's own: root/resident cgroups are never folded
+into a task's account, so shared resident costs stay distinct from
+attributable task costs. Every field is optional; an unavailable membership is
+reported as `available: false` with the reason, never as numeric zero.
+
 The collector requires the PID to belong to the named live HarnessInstance.
 It checks the registry binding before and after the interval and checks the OS
 process start marker and executable across both samples. When the recording

@@ -113,6 +113,16 @@ pub struct OpenSandboxConfig {
     pub environment: BTreeMap<String, String>,
     pub metadata: BTreeMap<String, String>,
     pub use_server_proxy: bool,
+    /// Provider-native configuration for the recorded egress/Vault proxy
+    /// defect: the lifecycle server's proxy answers the sidecar's *control*
+    /// paths (PATCH/GET `/policy`, POST/DELETE `/credential-vault`) with an
+    /// upstream 502, while the sidecar itself implements them. When set (the
+    /// default), egress and credential *control* paths resolve their endpoint
+    /// directly against the sidecar port, bypassing the proxy; the data plane
+    /// keeps the configured `use_server_proxy` route. Set it to `false` to
+    /// force proxied control paths — which then hit the standing named fence
+    /// instead of silently writing through a broken path.
+    pub egress_control_direct: bool,
     pub api_key_env: Option<String>,
     /// Outbound egress policy carried into every create request; `None` sends
     /// neither a policy nor the credential-proxy switch, and upstream defaults
@@ -139,6 +149,7 @@ impl OpenSandboxConfig {
             environment: BTreeMap::new(),
             metadata: BTreeMap::new(),
             use_server_proxy: false,
+            egress_control_direct: true,
             api_key_env: Some(OPENSANDBOX_DEFAULT_API_KEY_ENV.into()),
             egress: None,
             capacity: BTreeMap::new(),
@@ -164,6 +175,7 @@ impl OpenSandboxConfig {
             environment: BTreeMap::new(),
             metadata: BTreeMap::new(),
             use_server_proxy: false,
+            egress_control_direct: true,
             api_key_env: Some(OPENSANDBOX_DEFAULT_API_KEY_ENV.into()),
             egress: None,
             capacity: BTreeMap::new(),
@@ -1429,6 +1441,7 @@ mod tests {
             resources: vec![ResourceRequirement {
                 key: "memory".into(),
                 minimum: Some(2),
+                maximum: None,
                 unit: Some("GiB".into()),
             }],
             connectivity: Vec::new(),

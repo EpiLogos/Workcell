@@ -70,6 +70,8 @@ fn execution_request() -> ExecutionMaterialRequest {
 fn execution_provider_satisfies_shared_conformance_and_materialises_logical_networks() {
     let runner = ScriptedRunner::new([
         output("29.6.2\n"),
+        // offers() probes the daemon envelope (NCPU, MemTotal).
+        output("4 3998404608\n"),
         output("29.6.2\n"),
         output("container-abc\n"),
         output("container-abc\n"),

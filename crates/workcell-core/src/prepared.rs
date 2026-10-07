@@ -361,6 +361,23 @@ impl PreparedWorldControlPlane {
         self.worlds.get(world_ref.as_str())
     }
 
+    /// Every world ref currently registered. Admission reconciliation uses
+    /// this as the presence fact set: reservations whose world is verifiably
+    /// absent are retired; everything else keeps holding budget.
+    pub fn world_refs(&self) -> Vec<WorldRef> {
+        self.worlds
+            .values()
+            .map(|world| world.world_ref.clone())
+            .collect()
+    }
+
+    /// Drop one registration without provider effects (crash/provider-loss
+    /// simulation for reconciliation). Diagnostic-facing; see
+    /// `CollapsedLocalWorkcell::control_forget_world`.
+    pub fn forget_world(&mut self, world_ref: &WorldRef) {
+        self.worlds.remove(world_ref.as_str());
+    }
+
     fn require_world(&self, world_ref: &WorldRef) -> Result<&MaterialisedExecutionWorld> {
         self.world(world_ref).ok_or_else(|| {
             WorkcellError::NotFound(format!("material world `{world_ref}` is not registered"))

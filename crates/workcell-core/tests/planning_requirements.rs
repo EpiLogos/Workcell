@@ -65,6 +65,7 @@ fn capacity_exhaustion_is_distinct() {
     demand.resources.push(ResourceRequirement {
         key: "memory".into(),
         minimum: Some(16),
+        maximum: None,
         unit: Some("GiB".into()),
     });
     let mut small = offer("small");

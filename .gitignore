@@ -4,3 +4,6 @@
 
 # Agent NOW field: session returns and episode evidence are moving state, never source
 ProjectCentral/agents/now/
+
+# Native-test artifact scratch (verify.sh product-scratch admission)
+ProjectCentral/now/tmp/

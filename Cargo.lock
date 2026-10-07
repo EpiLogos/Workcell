@@ -454,6 +454,7 @@ name = "epilogos-workcell-docker"
 version = "0.1.0"
 dependencies = [
  "epilogos-workcell-core",
+ "epilogos-workcell-runtime",
 ]
 
 [[package]]
@@ -518,6 +519,7 @@ version = "0.1.0"
 dependencies = [
  "epilogos-workcell-artifact",
  "epilogos-workcell-core",
+ "epilogos-workcell-docker",
  "epilogos-workcell-fabric",
  "epilogos-workcell-opensandbox",
  "epilogos-workcell-workspace",

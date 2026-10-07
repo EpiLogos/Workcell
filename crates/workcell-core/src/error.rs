@@ -13,6 +13,11 @@ pub enum WorkcellError {
     ReconciliationFailed(String),
     NotFound(String),
     Unsupported(String),
+    /// The demand is well-formed and its provider exists, but the host cannot
+    /// commit it beside what is already committed. Named and distinct from
+    /// `Unavailable`: the material is fine, the budget is not. Retry after
+    /// capacity is released; the reason names the actual binding constraint.
+    Capacity(String),
 }
 
 impl fmt::Display for WorkcellError {
@@ -27,6 +32,7 @@ impl fmt::Display for WorkcellError {
             Self::ReconciliationFailed(v) => ("reconciliation failed", v),
             Self::NotFound(v) => ("not found", v),
             Self::Unsupported(v) => ("unsupported", v),
+            Self::Capacity(v) => ("waiting for capacity", v),
         };
         write!(f, "{kind}: {detail}")
     }
