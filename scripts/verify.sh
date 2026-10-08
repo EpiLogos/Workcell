@@ -89,6 +89,16 @@ bash -n scripts/stage-remote-file-share.sh
 test "$(id -u)" -ne 0
 command -v python3
 cargo fmt --all --check
+# The native guardian tests execute the actual CLI, not a test-only driver.
+cargo build --locked -p epilogos-workcell-cli --bin workcell --bin workcell-control-service
+WORKCELL_TEST_NATIVE_EXECUTABLE="$(python3 - <<'PY_NATIVE'
+import os
+import pathlib
+root = pathlib.Path(os.environ.get('CARGO_TARGET_DIR', 'target')).resolve(strict=True)
+print((root / 'debug/workcell').resolve(strict=True))
+PY_NATIVE
+)"
+export WORKCELL_TEST_NATIVE_EXECUTABLE
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
 set -o pipefail
