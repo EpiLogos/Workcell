@@ -477,7 +477,13 @@ mod native {
                 _ => return Err(refusal("command gate environment value is unreadable")),
             }
         }
-        cmd.stdin(Stdio::null());
+        // The guardian already owns these pipe readers. A boundary Command
+        // defaults to new piped output, which exec would create and then drop
+        // without a parent reader. Keep the actual native capture pipes; the
+        // boundary's pre-exec safe_stdio check still verifies their OS types.
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
         Ok(cmd)
     }
     pub(super) fn command_trampoline() -> Result<()> {

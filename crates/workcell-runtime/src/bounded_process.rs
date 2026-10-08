@@ -671,7 +671,27 @@ mod native {
         let mut reconciled_eperm = false;
         let pid = child.id() as libc::pid_t;
         let actual_group = unsafe { libc::getpgid(pid) };
-        if actual_group == pid {
+        let group_error = (actual_group < 0).then(io::Error::last_os_error);
+        // Darwin may stop exposing a completed leader through getpgid before
+        // the actual owner has reaped it. Both callers established this exact
+        // initial group at spawn. WNOWAIT still holds the leader PID against
+        // reuse, so its original group remains the owned cancellation target.
+        // A live moved leader never supplies this completion proof.
+        let completed_original_leader = if group_error
+            .as_ref()
+            .is_some_and(|error| error.raw_os_error() == Some(libc::ESRCH))
+        {
+            match owned_exit_observed(child, deadline) {
+                Ok(exited) => exited,
+                Err(error) => {
+                    result.wait_refusal(error);
+                    return result;
+                }
+            }
+        } else {
+            false
+        };
+        if actual_group == pid || completed_original_leader {
             // Revalidate the still-unreaped Child immediately before delivery.
             let exited = match owned_exit_observed(child, deadline) {
                 Ok(exited) => exited,
@@ -710,7 +730,7 @@ mod native {
             // A retained leader can move to another group. Do not signal that
             // foreign group: terminate only the actual still-owned Child.
             if actual_group < 0 {
-                result.error = Some(io::Error::last_os_error());
+                result.error = group_error;
             }
         }
         let still_running = match owned_exit_observed(child, deadline) {
