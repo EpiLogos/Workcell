@@ -228,7 +228,7 @@ pub fn decode_grant_value(value: &Value) -> Result<ConnectionGrant> {
                 .iter()
                 .map(crate::decode_material_operation_grant)
                 .collect::<Result<Vec<_>>>()?,
-            Some(_) => return Err(invalid("execution_grants must be an array")),
+            Some(_) => return Err(invalid("execution_grants must be an array".into())),
         },
         advertise: string_array(grant, "advertise")?,
         credential_sha256: string_field(grant, "credential_sha256")?.to_owned(),
