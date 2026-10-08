@@ -521,7 +521,7 @@ mod native {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(safe)?;
-        let mut body_gate = child
+        let body_gate = child
             .stdin
             .take()
             .ok_or_else(|| refusal("command gate pipe is absent"))?;
@@ -629,7 +629,7 @@ mod native {
             .stderr(Stdio::null())
             .spawn()
             .map_err(safe)?;
-        let mut lifeline = child
+        let lifeline = child
             .stdin
             .take()
             .ok_or_else(|| refusal("guardian lifeline is absent"))?;

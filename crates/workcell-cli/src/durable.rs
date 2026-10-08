@@ -431,6 +431,7 @@ impl WorkcellControlPlane for DurableCollapsedLocalWorkcell {
             "reading":epilogos_workcell_wire::material_operation_reading_value(&reading)}),
         )?;
         self.persist_operation(&reading)?;
+        let receipt_root = self.receipt_root.clone();
         let mut recorder =
             |identity: &epilogos_workcell_runtime::MaterialProcessIdentity| -> Result<()> {
                 let name = match identity.role {
