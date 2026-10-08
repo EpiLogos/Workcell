@@ -10,7 +10,7 @@ use std::{
 use epilogos_workcell_control::{
     check_compatibility, credential_sha256, generate_credential, grant_ref_for,
     parse_duration_millis, software_version, validate_label, ConnectionGrants, ControlClient,
-    ControlClientError, ControlService, CreateOutcome, ProjectionDecision,
+    ControlClientError, ControlService, CreateOutcome, DirectTransport, ProjectionDecision,
     RemoteMachineDeclaration, RemoteMachineRegistry, SecretProjectionLedger,
     SecretProjectionRecord, TcpControlServer, TcpControlTransport, CONTROL_OPERATIONS,
     CONTROL_PROTOCOL_VERSION, GRANTS_FILE,
@@ -2557,7 +2557,7 @@ fn run_start_local(
     demand: &ExecutionDemand,
 ) -> Result<Value, WorkcellError> {
     let channels = demand_output_channels(demand);
-    let mut workcell = new_local(global, parse_workcell_ref(&global.workcell_ref)?, channels)?;
+    let mut workcell = new_durable_local(global, channels)?;
     let world = workcell.prepare(demand)?;
     let receipt = global
         .receipt
@@ -2566,6 +2566,7 @@ fn run_start_local(
     write_receipt(&receipt, &world)?;
     record["world_receipt"] = json!(receipt.display().to_string());
     record["world_ref"] = json!(world.world_ref.as_str());
+    record["material_owner"] = json!("workcell.durable-local-run/v1");
     Ok(record)
 }
 
@@ -2676,16 +2677,107 @@ fn remote_error(context: &'static str) -> impl Fn(ControlClientError) -> Workcel
     }
 }
 
-/// Correlate the remote owner's retained material result to the existing Run.
+/// A local Run uses the same durable material owner as the optional server.
+/// Its native host lease is never bypassed when another material host is live.
+fn new_durable_local(
+    global: &GlobalArgs,
+    additional_channels: BTreeSet<String>,
+) -> Result<epilogos_workcell_cli::DurableCollapsedLocalWorkcell, WorkcellError> {
+    let mut config = with_declared_services(
+        CollapsedLocalConfig::new(
+            parse_workcell_ref(&global.workcell_ref)?,
+            &global.state_root,
+        )
+        .with_persistent_host_lifetime(),
+        global,
+    );
+    if let Some(source) = &global.workspace_source {
+        config = config.with_workspace_source(source);
+    }
+    let mut channels = BTreeSet::from(["logs:run".to_owned(), "artifacts:run".to_owned()]);
+    channels.extend(additional_channels);
+    config.artifact_channels = channels.into_iter().collect();
+    let config = config.with_native_material_executable(env::current_exe().map_err(|e| {
+        WorkcellError::OperationFailed(format!("read native material executable: {e}"))
+    })?);
+    epilogos_workcell_cli::DurableCollapsedLocalWorkcell::new(config)
+}
+
+fn durable_local_for_run(
+    global: &GlobalArgs,
+    record: &Value,
+) -> Result<epilogos_workcell_cli::DurableCollapsedLocalWorkcell, WorkcellError> {
+    if record["rung"] != "local" || record["material_owner"] != "workcell.durable-local-run/v1" {
+        return Err(WorkcellError::Unsupported(
+            "this local Run predates durable material admission; retain its receipt and use a newly prepared Run for execution".into(),
+        ));
+    }
+    let receipt = record["world_receipt"].as_str().ok_or_else(|| {
+        WorkcellError::OperationFailed("durable local Run has no world receipt".into())
+    })?;
+    let world = load_world_receipt_path(Path::new(receipt))?;
+    if world.world_ref != run_world_ref(record)?
+        || world.workcell_ref != parse_workcell_ref(&global.workcell_ref)?
+    {
+        return Err(WorkcellError::InvalidDemand(
+            "local Run receipt changed its World or Workcell".into(),
+        ));
+    }
+    let workcell = new_durable_local(global, world_artifact_channels(&world))?;
+    // Release publishes canonical lifecycle state before its compatibility
+    // receipt. After interruption that receipt can legitimately lag. Compare
+    // every immutable World/binding field; only presence/health/state belong
+    // to current native lifecycle readback. Never register caller material.
+    let mut immutable = workcell.inspect(&world.world_ref)?;
+    immutable.state = world.state.clone();
+    for (retained, supplied) in immutable
+        .binding_graph
+        .bindings
+        .iter_mut()
+        .zip(&world.binding_graph.bindings)
+    {
+        retained.presence = supplied.presence.clone();
+        retained.health = supplied.health.clone();
+    }
+    if immutable != world {
+        return Err(WorkcellError::InvalidDemand(
+            "local Run receipt changed immutable retained material".into(),
+        ));
+    }
+    Ok(workcell)
+}
+
+fn with_local_material_client<T>(
+    global: &GlobalArgs,
+    record: &Value,
+    operation: impl FnOnce(
+        &mut ControlClient<
+            DirectTransport<'_, epilogos_workcell_cli::DurableCollapsedLocalWorkcell>,
+        >,
+    ) -> Result<T, ControlClientError>,
+) -> Result<T, WorkcellError> {
+    let workcell = durable_local_for_run(global, record)?;
+    let grants = ConnectionGrants::new(
+        &global.state_root,
+        parse_workcell_ref(&global.workcell_ref)?,
+    );
+    let mut service = ControlService::new(workcell).with_connection_grants(grants);
+    let mut client = ControlClient::new(DirectTransport::new(&mut service));
+    if let Ok(credential) = env::var("WORKCELL_CONTROL_TOKEN") {
+        client = client.with_authorization(credential);
+    }
+    // The credential authenticates this client against the canonical native
+    // registry. It does not become a server-wide authorization bypass.
+    operation(&mut client).map_err(|e| {
+        WorkcellError::OperationFailed(format!("local admitted material control: {e}"))
+    })
+}
+
+/// Correlate the admitted owner's retained material result to the existing Run.
 /// Transport uncertainty never authorises repeating a consequential operation.
 fn run_execute_material(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
     let (ledger, mut record) = require_run(global, args)?;
     let original = record.clone();
-    if record["rung"].as_str() != Some("remote") {
-        return Err(WorkcellError::Unsupported(
-            "bounded material execution currently uses the admitted remote control route".into(),
-        ));
-    }
     if !matches!(
         record["execution_status"].as_str(),
         Some("running" | "blocked")
@@ -2705,10 +2797,19 @@ fn run_execute_material(global: &GlobalArgs, args: &[String]) -> Result<(), Work
             "material request belongs to a different Run World".into(),
         ));
     }
-    let mut client = remote_client_for_record(global, &record)?;
-    let reading = client
-        .execute(&request)
-        .map_err(remote_error("execute exact admitted remote material"))?;
+    let reading = match record["rung"].as_str() {
+        Some("remote") => remote_client_for_record(global, &record)?
+            .execute(&request)
+            .map_err(remote_error("execute exact admitted remote material"))?,
+        Some("local") => {
+            with_local_material_client(global, &record, |client| client.execute(&request))?
+        }
+        _ => {
+            return Err(WorkcellError::Unsupported(
+                "bounded material execution requires an admitted local or remote Run".into(),
+            ))
+        }
+    };
     let parsed = epilogos_workcell_wire::decode_material_operation_reading(&reading)?;
     if parsed.world_ref != request.world_ref
         || parsed.operation_id != request.operation_id
@@ -2716,7 +2817,7 @@ fn run_execute_material(global: &GlobalArgs, args: &[String]) -> Result<(), Work
             != epilogos_workcell_wire::material_operation_request_fingerprint(&request)?
     {
         return Err(WorkcellError::OperationFailed(
-            "remote material execution returned a different operation".into(),
+            "material execution returned a different operation".into(),
         ));
     }
     run_append_correlation(
@@ -2732,15 +2833,23 @@ fn run_read_material_operation(global: &GlobalArgs, args: &[String]) -> Result<(
         WorkcellError::InvalidDemand("run operation-read requires --operation-id ID".into())
     })?;
     let world = run_world_ref(&record)?;
-    let mut client = remote_client_for_record(global, &record)?;
-    let reading = epilogos_workcell_wire::decode_material_operation_reading(
-        &client
+    let value = match record["rung"].as_str() {
+        Some("remote") => remote_client_for_record(global, &record)?
             .operation_read(&world, &id)
             .map_err(remote_error("read exact retained remote operation"))?,
-    )?;
+        Some("local") => with_local_material_client(global, &record, |client| {
+            client.operation_read(&world, &id)
+        })?,
+        _ => {
+            return Err(WorkcellError::Unsupported(
+                "material operation read requires an admitted local or remote Run".into(),
+            ))
+        }
+    };
+    let reading = epilogos_workcell_wire::decode_material_operation_reading(&value)?;
     if reading.world_ref != world || reading.operation_id != id {
         return Err(WorkcellError::OperationFailed(
-            "remote operation read changed identity".into(),
+            "material operation read changed identity".into(),
         ));
     }
     emit_material_reading(global, &reading)
@@ -2805,6 +2914,20 @@ fn run_observe(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError
                     reason = error.to_string();
                     false
                 }
+            }
+        }
+        (Some("local"), _) if record["material_owner"] == "workcell.durable-local-run/v1" => {
+            let workcell = durable_local_for_run(global, &record)?;
+            let bundle = workcell.observe(&run_world_ref(&record)?)?;
+            if let Some(observation) = bundle
+                .observations
+                .iter()
+                .find(|o| o.state != HealthState::Healthy)
+            {
+                reason = format!("material `{}` is unhealthy", observation.logical_ref);
+                false
+            } else {
+                true
             }
         }
         (_, Some(receipt)) => {
@@ -2913,6 +3036,14 @@ fn run_collect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError
                 .collect(&run_world_ref(&record)?)
                 .map_err(remote_error("collect run outputs from the remote machine"))?
         }
+        Some("local") if record["material_owner"] == "workcell.durable-local-run/v1" => {
+            let workcell = durable_local_for_run(global, &record)?;
+            let collection = workcell.collect(&run_world_ref(&record)?)?;
+            json!({"outputs": collection.outputs.iter().map(|output| json!({
+                "logical_ref": output.logical_ref,
+                "material_locator": output.material_locator,
+            })).collect::<Vec<_>>()})
+        }
         _ => {
             let receipt = record["world_receipt"]
                 .as_str()
@@ -2993,6 +3124,20 @@ fn run_release(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError
                 },
                 changed: value["changed"].as_bool() == Some(true),
             })
+        }
+        Some("local") if record["material_owner"] == "workcell.durable-local-run/v1" => {
+            let mut workcell = durable_local_for_run(global, &record)?;
+            let result = workcell.release(&run_world_ref(&record)?);
+            // Keep the compatibility receipt aligned with the existing durable
+            // tombstone, including any successfully retired prefix on refusal.
+            let world = workcell.inspect(&run_world_ref(&record)?)?;
+            write_receipt(
+                Path::new(record["world_receipt"].as_str().ok_or_else(|| {
+                    WorkcellError::OperationFailed("durable Run has no receipt".into())
+                })?),
+                &world,
+            )?;
+            result
         }
         _ => {
             let receipt = record["world_receipt"]
