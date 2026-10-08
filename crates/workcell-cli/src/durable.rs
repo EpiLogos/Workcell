@@ -1,7 +1,8 @@
 use epilogos_workcell_control::codec::demand_value;
 use epilogos_workcell_core::{
     BindingPresence, CollectionBundle, DesiredMaterialState, Discovery, ExecutionDemand,
-    ExposureBundle, MaterialisationPlan, MaterialisedExecutionWorld, ObservationBundle,
+    ExposureBundle, MaterialOperationGrant, MaterialOperationReading, MaterialOperationRequest,
+    MaterialOperationState, MaterialisationPlan, MaterialisedExecutionWorld, ObservationBundle,
     ReconciliationResult, ReleaseResult, Result, WorkcellControlPlane, WorkcellError, WorldRef,
 };
 use epilogos_workcell_runtime::{CollapsedLocalConfig, CollapsedLocalWorkcell};
@@ -143,6 +144,23 @@ impl DurableCollapsedLocalWorkcell {
                 path.extension().and_then(|e| e.to_str()),
                 Some("pending" | "writing")
             ) {
+                // Cancellation may retire only the exact uncertain execution
+                // World. Other interrupted effects still require reconciliation.
+                if operation == "release"
+                    && path.extension().and_then(|e| e.to_str()) == Some("pending")
+                {
+                    let intent: serde_json::Value = serde_json::from_slice(
+                        &fs::read(&path).map_err(io_error("read cancellation intent"))?,
+                    )
+                    .map_err(|e| {
+                        WorkcellError::InvalidDemand(format!("decode cancellation intent: {e}"))
+                    })?;
+                    if intent["operation"] == "execute"
+                        && intent["payload"]["request"]["world_ref"] == payload["world_ref"]
+                    {
+                        continue;
+                    }
+                }
                 return Err(WorkcellError::OperationFailed("unreconciled material intent/publication; inspect receipts and journal before any new effect".into()));
             }
         }
@@ -199,6 +217,43 @@ impl DurableCollapsedLocalWorkcell {
         file.sync_all().map_err(io_error("sync material receipt"))?;
         fs::rename(&temporary, &destination).map_err(io_error("publish material receipt"))?;
         sync_directory(&self.receipt_root)
+    }
+    fn material_operation_key(world: &WorldRef, operation_id: &str) -> String {
+        format!("material-operation:{}:{}", world.as_str(), operation_id)
+    }
+    fn operation_path(&self, world: &WorldRef, operation_id: &str) -> PathBuf {
+        self.receipt_root.join(format!(
+            "{}.operation",
+            key(&Self::material_operation_key(world, operation_id))
+        ))
+    }
+    fn persist_operation(&self, reading: &MaterialOperationReading) -> Result<()> {
+        Self::persist_operation_at(&self.receipt_root, reading)
+    }
+    fn persist_operation_at(receipt_root: &Path, reading: &MaterialOperationReading) -> Result<()> {
+        let destination = receipt_root.join(format!(
+            "{}.operation",
+            key(&Self::material_operation_key(
+                &reading.world_ref,
+                &reading.operation_id
+            ))
+        ));
+        let temporary = destination.with_extension("writing");
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(io_error("create material operation publication"))?;
+        file.write_all(
+            epilogos_workcell_wire::material_operation_reading_value(reading)
+                .to_string()
+                .as_bytes(),
+        )
+        .map_err(io_error("write material operation"))?;
+        file.sync_all()
+            .map_err(io_error("sync material operation"))?;
+        fs::rename(temporary, destination).map_err(io_error("publish material operation"))?;
+        sync_directory(receipt_root)
     }
     fn mutable_world(&self, world: &WorldRef) -> Result<MaterialisedExecutionWorld> {
         let value = self.inner.inspect(world)?;
@@ -294,6 +349,128 @@ impl WorkcellControlPlane for DurableCollapsedLocalWorkcell {
     fn collect(&self, world: &WorldRef) -> Result<CollectionBundle> {
         self.inner.collect(world)
     }
+    fn operation_read(
+        &self,
+        world: &WorldRef,
+        operation_id: &str,
+    ) -> Result<MaterialOperationReading> {
+        if operation_id.trim().is_empty() {
+            return Err(WorkcellError::InvalidDemand("operation ID is empty".into()));
+        }
+        self.inner.inspect(world)?;
+        let path = self.operation_path(world, operation_id);
+        let value = if path.exists() {
+            serde_json::from_slice(
+                &fs::read(path).map_err(io_error("read retained material operation"))?,
+            )
+        } else {
+            let pending = self.intent_path(&Self::material_operation_key(world, operation_id));
+            let intent: serde_json::Value = serde_json::from_slice(
+                &fs::read(pending).map_err(io_error("read material operation intent"))?,
+            )
+            .map_err(|e| WorkcellError::InvalidDemand(format!("decode material intent: {e}")))?;
+            if intent["operation"] != "execute" {
+                return Err(WorkcellError::InvalidDemand(
+                    "retained intent is not an execution".into(),
+                ));
+            }
+            Ok(intent["payload"]["reading"].clone())
+        }
+        .map_err(|e: serde_json::Error| {
+            WorkcellError::InvalidDemand(format!("decode retained operation: {e}"))
+        })?;
+        let reading = epilogos_workcell_wire::decode_material_operation_reading(&value)?;
+        if reading.world_ref != *world || reading.operation_id != operation_id {
+            return Err(WorkcellError::InvalidDemand(
+                "operation journal identity changed".into(),
+            ));
+        }
+        Ok(reading)
+    }
+    fn execute(
+        &mut self,
+        request: &MaterialOperationRequest,
+        grant: &MaterialOperationGrant,
+    ) -> Result<MaterialOperationReading> {
+        let fingerprint = epilogos_workcell_wire::material_operation_request_fingerprint(request)?;
+        let id = Self::material_operation_key(&request.world_ref, &request.operation_id);
+        if self
+            .operation_path(&request.world_ref, &request.operation_id)
+            .exists()
+            || self.intent_path(&id).exists()
+        {
+            let retained = self.operation_read(&request.world_ref, &request.operation_id)?;
+            if retained.request_fingerprint != fingerprint {
+                return Err(WorkcellError::InvalidDemand(
+                    "operation ID reused with changed material input".into(),
+                ));
+            }
+            return Ok(retained); // retained result or uncertainty, never execution
+        }
+        // Pure admission precedes the durable intent; immediate revalidation
+        // before execution remains at the physical owner.
+        self.inner.validate_admitted_material(request, grant)?;
+        let mut reading = MaterialOperationReading {
+            world_ref: request.world_ref.clone(),
+            binding_ref: request.binding_ref.clone(),
+            operation_id: request.operation_id.clone(),
+            request_fingerprint: fingerprint,
+            state: MaterialOperationState::Pending,
+            grant_ref: grant.grant_ref.clone(),
+            authority_ref: grant.authority_ref.clone(),
+            provider_ref: grant.provider_ref.clone(),
+            material_ref: grant.material_ref.clone(),
+            result: None,
+            failure_kind: None,
+            failure_observation: BTreeMap::new(),
+        };
+        self.begin(
+            &id,
+            "execute",
+            json!({"request":epilogos_workcell_wire::material_operation_request_value(request),
+            "reading":epilogos_workcell_wire::material_operation_reading_value(&reading)}),
+        )?;
+        self.persist_operation(&reading)?;
+        let mut recorder =
+            |identity: &epilogos_workcell_runtime::MaterialProcessIdentity| -> Result<()> {
+                let name = match identity.role {
+                    epilogos_workcell_runtime::MaterialProcessRole::Guardian => "guardian_identity",
+                    epilogos_workcell_runtime::MaterialProcessRole::Command => "command_identity",
+                };
+                if reading.failure_observation.contains_key(name) {
+                    return Err(WorkcellError::InvalidDemand(
+                        "native command identity cannot be replaced after admission".into(),
+                    ));
+                }
+                reading
+                    .failure_observation
+                    .insert(name.into(), identity.value().to_string());
+                // The existing pending reading is published and fsynced before
+                // ACK allows this trusted waiting process to execute its command.
+                Self::persist_operation_at(&receipt_root, &reading)
+            };
+        let execution =
+            self.inner
+                .execute_admitted_material_with_recorder(request, grant, &mut recorder);
+        match execution {
+            Ok(completed) => {
+                let identities = reading.failure_observation;
+                reading = completed;
+                reading.failure_observation.extend(identities);
+                self.persist_operation(&reading)?;
+                self.finish(&id)?;
+            }
+            Err(error) => {
+                reading.state = MaterialOperationState::Uncertain;
+                reading.failure_kind = Some(error_kind_name(&error).into());
+                reading
+                    .failure_observation
+                    .insert("native_error".into(), error.to_string());
+                self.persist_operation(&reading)?; // uncertain intent remains
+            }
+        }
+        Ok(reading)
+    }
     fn recover(&mut self, world: &WorldRef) -> Result<MaterialisedExecutionWorld> {
         let before = self.mutable_world(world)?;
         if before
@@ -348,12 +525,83 @@ impl WorkcellControlPlane for DurableCollapsedLocalWorkcell {
             "release",
             json!({"world_ref":world.as_str()}),
         )?;
+        let before = self.inner.observe(world)?;
         let result = self.inner.release(world);
         // Persist a successfully observed prefix even if a later release fails.
         // Tombstones prevent a lost response from recreating released work.
         self.persist_world(&self.inner.inspect(world)?)?;
         if result.is_ok() {
             self.finish(world.as_str())?;
+            let after = self.inner.observe(world)?;
+            for entry in
+                fs::read_dir(&self.receipt_root).map_err(io_error("read cancellation history"))?
+            {
+                let path = entry
+                    .map_err(io_error("read cancellation history entry"))?
+                    .path();
+                if path.extension().and_then(|s| s.to_str()) != Some("pending") {
+                    continue;
+                }
+                let intent: serde_json::Value = serde_json::from_slice(
+                    &fs::read(&path).map_err(io_error("read execution cancellation"))?,
+                )
+                .map_err(|e| {
+                    WorkcellError::InvalidDemand(format!("decode execution cancellation: {e}"))
+                })?;
+                if intent["operation"] != "execute"
+                    || intent["payload"]["request"]["world_ref"] != world.as_str()
+                {
+                    continue;
+                }
+                let operation_id = intent["payload"]["request"]["operation_id"]
+                    .as_str()
+                    .ok_or_else(|| {
+                        WorkcellError::InvalidDemand(
+                            "cancelled execution has no operation ID".into(),
+                        )
+                    })?;
+                let mut reading = self.operation_read(world, operation_id)?;
+                reading.state = MaterialOperationState::Uncertain;
+                reading.failure_observation.insert(
+                    "release_before".into(),
+                    epilogos_workcell_control::codec::observation_value(&before).to_string(),
+                );
+                reading.failure_observation.insert(
+                    "release_after".into(),
+                    epilogos_workcell_control::codec::observation_value(&after).to_string(),
+                );
+                reading.failure_observation.insert(
+                    "release_result".into(),
+                    epilogos_workcell_control::codec::release_value(
+                        result.as_ref().expect("checked successful release"),
+                    )
+                    .to_string(),
+                );
+                self.persist_operation(&reading)?;
+                // Guardian absence alone cannot prove command extinction.
+                // Require both the retained command identity and its original
+                // group to be absent. A live command can leave that group;
+                // birth mismatch never grants a signal to a recycled PID.
+                if let Some(encoded) = reading.failure_observation.get("command_identity") {
+                    let value = serde_json::from_str(encoded).map_err(|e| {
+                        WorkcellError::InvalidDemand(format!(
+                            "decode retained command identity: {e}"
+                        ))
+                    })?;
+                    let identity =
+                        epilogos_workcell_runtime::MaterialProcessIdentity::from_value(&value)?;
+                    let observation =
+                        epilogos_workcell_runtime::material_process_identity_state(&identity)?;
+                    reading.failure_observation.insert("command_release_readback".into(), json!({"identity_state":format!("{:?}", observation.identity_state), "original_group_absent":observation.original_group_absent}).to_string());
+                    self.persist_operation(&reading)?;
+                    if observation.identity_state
+                        == epilogos_workcell_runtime::MaterialProcessIdentityState::Absent
+                        && observation.original_group_absent
+                    {
+                        self.finish(&Self::material_operation_key(world, operation_id))?;
+                    }
+                }
+            }
         }
         result
     }
@@ -428,7 +676,18 @@ mod tests {
         ))
     }
     fn config(root: &Path) -> CollapsedLocalConfig {
-        CollapsedLocalConfig::new(WorkcellRef::new("workcell:durable").unwrap(), root)
+        let config = CollapsedLocalConfig::new(WorkcellRef::new("workcell:durable").unwrap(), root);
+        let executable = std::env::var_os("WORKCELL_TEST_NATIVE_EXECUTABLE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent()?.parent().map(|parent| parent.join("workcell")))
+            });
+        match executable.filter(|p| p.is_file()) {
+            Some(path) => config.with_native_material_executable(path),
+            None => config,
+        }
     }
     fn demand() -> ExecutionDemand {
         let mut d = ExecutionDemand::new(DemandRef::new("demand:durable").unwrap());
@@ -436,6 +695,255 @@ mod tests {
             .required
             .push(AffordanceRequirement::new("shell").unwrap());
         d
+    }
+    fn admitted(
+        host: &mut DurableCollapsedLocalWorkcell,
+        root: &Path,
+        script: &str,
+        timeout_ms: u64,
+    ) -> (MaterialOperationRequest, MaterialOperationGrant) {
+        let world = host.prepare(&demand()).unwrap();
+        let binding = world
+            .binding_graph
+            .bindings
+            .iter()
+            .find(|b| b.port == epilogos_workcell_core::ProviderPortKind::Execution)
+            .unwrap();
+        let operation = epilogos_workcell_core::ProviderOperation {
+            key: "process".into(),
+            parameters: BTreeMap::from([
+                ("program".into(), "/bin/sh".into()),
+                ("arg.0".into(), "-c".into()),
+                ("arg.1".into(), script.into()),
+                ("cwd".into(), root.display().to_string()),
+            ]),
+        };
+        let request = MaterialOperationRequest {
+            world_ref: world.world_ref.clone(),
+            binding_ref: binding.binding_ref.clone(),
+            expected_world_revision: epilogos_workcell_wire::material_world_revision(&world)
+                .unwrap(),
+            operation_id: "operation:bounded-real-shell".into(),
+            grant_ref: "grant:durable-native-operation".into(),
+            operation: operation.clone(),
+            timeout_ms,
+            output_limit_bytes: 4096,
+        };
+        let grant = MaterialOperationGrant {
+            grant_ref: request.grant_ref.clone(),
+            authority_ref: "authority:test-owned-directory".into(),
+            world_ref: world.world_ref,
+            binding_ref: binding.binding_ref.clone(),
+            expected_world_revision: request.expected_world_revision.clone(),
+            provider_ref: binding.provider_ref.clone(),
+            material_ref: binding.material_ref.clone(),
+            operation_id: request.operation_id.clone(),
+            operation,
+            timeout_ms,
+            output_limit_bytes: 4096,
+            expires_at_unix_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+                + 300_000,
+        };
+        (request, grant)
+    }
+    #[test]
+    fn material_control_uses_actual_server_grant_and_never_request_authority() {
+        use epilogos_workcell_control::{
+            ConnectionGrants, ControlClient, ControlService, DirectTransport,
+        };
+        let root = root();
+        let mut host = DurableCollapsedLocalWorkcell::new(config(&root)).unwrap();
+        let (request, grant) = admitted(&mut host, &root, "printf exactly-once >> effect", 1000);
+        let mut service = ControlService::new(host);
+        {
+            let mut client = ControlClient::new(DirectTransport::new(&mut service));
+            assert!(client.execute(&request).is_err());
+        }
+        assert!(!root.join("effect").exists());
+        let registry = ConnectionGrants::new(&root, WorkcellRef::new("workcell:durable").unwrap());
+        let connection = epilogos_workcell_wire::ConnectionGrant {
+            grant_ref: "grant:actual-serving-relation".into(),
+            client_label: "material-test".into(),
+            protocol: epilogos_workcell_control::CONTROL_PROTOCOL_VERSION.into(),
+            operations: vec!["execute".into(), "operation-read".into()],
+            execution_grants: vec![grant.clone()],
+            advertise: Vec::new(),
+            credential_sha256: epilogos_workcell_control::credential_sha256(
+                "controlled-native-owner-token",
+            ),
+            credential_ref: None,
+            created_at_unix_ms: grant.expires_at_unix_ms - 300_000,
+            expires_at_unix_ms: Some(grant.expires_at_unix_ms),
+            state: "active".into(),
+            revoked_at_unix_ms: None,
+            provenance: BTreeMap::new(),
+        };
+        registry.create(connection).unwrap();
+        service = service.with_connection_grants(registry);
+        {
+            let mut client = ControlClient::new(DirectTransport::new(&mut service))
+                .with_authorization("controlled-native-owner-token");
+            let completed = client.execute(&request).unwrap();
+            assert_eq!(completed["state"], "completed");
+            assert_eq!(
+                client
+                    .operation_read(&request.world_ref, &request.operation_id)
+                    .unwrap(),
+                completed
+            );
+            assert_eq!(client.execute(&request).unwrap(), completed);
+            let mut changed = request.clone();
+            changed.timeout_ms += 1;
+            assert!(client.execute(&changed).is_err());
+        }
+        assert_eq!(fs::read(root.join("effect")).unwrap(), b"exactly-once");
+        ConnectionGrants::new(&root, WorkcellRef::new("workcell:durable").unwrap())
+            .revoke("grant:actual-serving-relation")
+            .unwrap();
+        {
+            let mut client = ControlClient::new(DirectTransport::new(&mut service))
+                .with_authorization("controlled-native-owner-token");
+            assert!(client.execute(&request).is_err());
+        }
+        assert_eq!(fs::read(root.join("effect")).unwrap(), b"exactly-once");
+        service.control_mut().release(&request.world_ref).unwrap();
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn material_completed_native_effect_survives_restart_without_duplicate() {
+        let root = root();
+        let mut host = DurableCollapsedLocalWorkcell::new(config(&root)).unwrap();
+        let (request, grant) = admitted(
+            &mut host,
+            &root,
+            "printf x >> effect; printf substantive",
+            1000,
+        );
+        let reading = host.execute(&request, &grant).unwrap();
+        assert_eq!(reading.state, MaterialOperationState::Completed);
+        assert!(reading
+            .result
+            .as_ref()
+            .unwrap()
+            .output
+            .values()
+            .any(|v| v.contains("substantive")));
+        assert_eq!(fs::read(root.join("effect")).unwrap(), b"x");
+        drop(host);
+        let mut host = DurableCollapsedLocalWorkcell::new(config(&root)).unwrap();
+        assert_eq!(
+            host.operation_read(&request.world_ref, &request.operation_id)
+                .unwrap(),
+            reading
+        );
+        assert_eq!(host.execute(&request, &grant).unwrap(), reading);
+        assert_eq!(fs::read(root.join("effect")).unwrap(), b"x");
+        let mut changed = request.clone();
+        changed
+            .operation
+            .parameters
+            .insert("arg.1".into(), "printf wrong >> effect".into());
+        assert!(host.execute(&changed, &grant).is_err());
+        host.release(&request.world_ref).unwrap();
+        drop(host);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn material_native_timeout_retains_uncertainty_and_allows_exact_cancellation() {
+        let root = root();
+        let mut host = DurableCollapsedLocalWorkcell::new(config(&root)).unwrap();
+        let (request, grant) = admitted(&mut host, &root, "printf started >> effect; sleep 8", 80);
+        let reading = host.execute(&request, &grant).unwrap();
+        assert_eq!(reading.state, MaterialOperationState::Uncertain);
+        assert!(reading.result.is_none());
+        assert_eq!(fs::read(root.join("effect")).unwrap(), b"started");
+        drop(host);
+        let mut host = DurableCollapsedLocalWorkcell::new(config(&root)).unwrap();
+        assert_eq!(host.execute(&request, &grant).unwrap(), reading);
+        assert!(host.recover(&request.world_ref).is_err());
+        host.release(&request.world_ref).unwrap();
+        let cancelled = host
+            .operation_read(&request.world_ref, &request.operation_id)
+            .unwrap();
+        assert_eq!(cancelled.state, MaterialOperationState::Uncertain);
+        assert!(cancelled.failure_observation.contains_key("release_after"));
+        assert_eq!(fs::read(root.join("effect")).unwrap(), b"started");
+        assert_eq!(host.execute(&request, &grant).unwrap(), cancelled);
+        drop(host);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn material_pending_native_effect_checkpoint_never_reexecutes_after_owner_teardown() {
+        let root = root();
+        let mut host = DurableCollapsedLocalWorkcell::new(config(&root)).unwrap();
+        let (request, grant) = admitted(&mut host, &root, "printf once >> effect", 1000);
+        let mut pending = MaterialOperationReading {
+            world_ref: request.world_ref.clone(),
+            binding_ref: request.binding_ref.clone(),
+            operation_id: request.operation_id.clone(),
+            request_fingerprint: epilogos_workcell_wire::material_operation_request_fingerprint(
+                &request,
+            )
+            .unwrap(),
+            state: MaterialOperationState::Pending,
+            grant_ref: grant.grant_ref.clone(),
+            authority_ref: grant.authority_ref.clone(),
+            provider_ref: grant.provider_ref.clone(),
+            material_ref: grant.material_ref.clone(),
+            result: None,
+            failure_kind: None,
+            failure_observation: BTreeMap::new(),
+        };
+        let id = DurableCollapsedLocalWorkcell::material_operation_key(
+            &request.world_ref,
+            &request.operation_id,
+        );
+        host.begin(
+            &id,
+            "execute",
+            json!({"request":epilogos_workcell_wire::material_operation_request_value(&request),
+            "reading":epilogos_workcell_wire::material_operation_reading_value(&pending)}),
+        )
+        .unwrap();
+        // Execute the real physical owner, then terminate this owner at the
+        // pre-receipt checkpoint. No simulated result or provider is involved.
+        let receipt_root = host.receipt_root.clone();
+        let mut recorder = |identity: &epilogos_workcell_runtime::MaterialProcessIdentity| {
+            let name = match identity.role {
+                epilogos_workcell_runtime::MaterialProcessRole::Guardian => "guardian_identity",
+                epilogos_workcell_runtime::MaterialProcessRole::Command => "command_identity",
+            };
+            pending
+                .failure_observation
+                .insert(name.into(), identity.value().to_string());
+            DurableCollapsedLocalWorkcell::persist_operation_at(&receipt_root, &pending)
+        };
+        host.inner
+            .execute_admitted_material_with_recorder(&request, &grant, &mut recorder)
+            .unwrap();
+        assert_eq!(fs::read(root.join("effect")).unwrap(), b"once");
+        drop(host);
+        let mut successor = DurableCollapsedLocalWorkcell::new(config(&root)).unwrap();
+        assert_eq!(
+            successor
+                .operation_read(&request.world_ref, &request.operation_id)
+                .unwrap(),
+            pending
+        );
+        assert_eq!(successor.execute(&request, &grant).unwrap(), pending);
+        assert_eq!(fs::read(root.join("effect")).unwrap(), b"once");
+        successor.release(&request.world_ref).unwrap();
+        pending = successor
+            .operation_read(&request.world_ref, &request.operation_id)
+            .unwrap();
+        assert_eq!(pending.state, MaterialOperationState::Uncertain);
+        assert!(pending.result.is_none());
+        drop(successor);
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn restart_lost_response_inspect_and_release_tombstone() {

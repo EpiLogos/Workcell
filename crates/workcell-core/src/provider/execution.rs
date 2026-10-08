@@ -17,7 +17,7 @@ pub struct ExecutionMaterialRequest {
     pub retention: RetentionExpectation,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ProviderOperation {
     pub key: String,
     pub parameters: BTreeMap<String, String>,

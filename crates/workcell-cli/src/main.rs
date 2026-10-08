@@ -238,10 +238,7 @@ fn command_status(global: &GlobalArgs) -> Result<(), WorkcellError> {
             "capacity: task budget {}B, committed {}B, waiting {}",
             budget["memory_task_bytes"],
             committed["memory_bytes"],
-            admission["waiting"]
-                .as_array()
-                .map(Vec::len)
-                .unwrap_or(0)
+            admission["waiting"].as_array().map(Vec::len).unwrap_or(0)
         );
         println!("persisted worlds: {receipts}");
         if connections.is_empty() {
@@ -2250,7 +2247,7 @@ fn command_sandboxes(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
 // refusal surfaces as run `blocked` — never deletion.
 // ---------------------------------------------------------------------------
 
-const RUN_USAGE: &str = "usage: workcell run start --run SLUG [--demand-json PATH | demand flags] [--rung local|remote|sandbox] [--machine LABEL] [--correlation FILE...] | observe --run SLUG [--correlate FILE] | collect --run SLUG | release --run SLUG | list | show --run SLUG | scope --run SLUG --write-boundary PATH --expected-demand-digest DIGEST [--source-seat LOGICAL_REF] [--policy-revision REV] [--scope-out PATH]";
+const RUN_USAGE: &str = "usage: workcell run start --run SLUG [--demand-json PATH | demand flags] [--rung local|remote|sandbox] [--machine LABEL] [--correlation FILE...] | execute --run SLUG --request PATH | operation-read --run SLUG --operation-id ID | observe --run SLUG [--correlate FILE] | collect --run SLUG | release --run SLUG | list | show --run SLUG | scope --run SLUG --write-boundary PATH --expected-demand-digest DIGEST [--source-seat LOGICAL_REF] [--policy-revision REV] [--scope-out PATH]";
 
 fn command_run(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
     let Some(subcommand) = args.first().map(String::as_str) else {
@@ -2259,6 +2256,8 @@ fn command_run(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError
     let rest = &args[1..];
     match subcommand {
         "start" => run_start(global, rest),
+        "execute" => run_execute_material(global, rest),
+        "operation-read" => run_read_material_operation(global, rest),
         "observe" => run_observe(global, rest),
         "collect" => run_collect(global, rest),
         "release" => run_release(global, rest),
@@ -2675,6 +2674,107 @@ fn remote_error(context: &'static str) -> impl Fn(ControlClientError) -> Workcel
         )),
         other => WorkcellError::OperationFailed(format!("{context}: {other}")),
     }
+}
+
+/// Correlate the remote owner's retained material result to the existing Run.
+/// Transport uncertainty never authorises repeating a consequential operation.
+fn run_execute_material(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    let (ledger, mut record) = require_run(global, args)?;
+    let original = record.clone();
+    if record["rung"].as_str() != Some("remote") {
+        return Err(WorkcellError::Unsupported(
+            "bounded material execution currently uses the admitted remote control route".into(),
+        ));
+    }
+    if !matches!(
+        record["execution_status"].as_str(),
+        Some("running" | "blocked")
+    ) {
+        return Err(WorkcellError::InvalidDemand(
+            "material execution requires a live Run".into(),
+        ));
+    }
+    let path = run_flag(args, "--request")?.ok_or_else(|| {
+        WorkcellError::InvalidDemand("run execute requires --request PATH".into())
+    })?;
+    let request = epilogos_workcell_wire::decode_material_operation_request(&read_json_file(
+        Path::new(&path),
+    )?)?;
+    if request.world_ref != run_world_ref(&record)? {
+        return Err(WorkcellError::InvalidDemand(
+            "material request belongs to a different Run World".into(),
+        ));
+    }
+    let mut client = remote_client_for_record(global, &record)?;
+    let reading = client
+        .execute(&request)
+        .map_err(remote_error("execute exact admitted remote material"))?;
+    let parsed = epilogos_workcell_wire::decode_material_operation_reading(&reading)?;
+    if parsed.world_ref != request.world_ref
+        || parsed.operation_id != request.operation_id
+        || parsed.request_fingerprint
+            != epilogos_workcell_wire::material_operation_request_fingerprint(&request)?
+    {
+        return Err(WorkcellError::OperationFailed(
+            "remote material execution returned a different operation".into(),
+        ));
+    }
+    run_append_correlation(
+        &mut record,
+        json!({"schema":"workcell.correlated-observation/v1","kind":"material-operation","reading":reading}),
+    )?;
+    ledger.update_if_unchanged(&original, &record)?;
+    emit_material_reading(global, &parsed)
+}
+fn run_read_material_operation(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    let (_, record) = require_run(global, args)?;
+    let id = run_flag(args, "--operation-id")?.ok_or_else(|| {
+        WorkcellError::InvalidDemand("run operation-read requires --operation-id ID".into())
+    })?;
+    let world = run_world_ref(&record)?;
+    let mut client = remote_client_for_record(global, &record)?;
+    let reading = epilogos_workcell_wire::decode_material_operation_reading(
+        &client
+            .operation_read(&world, &id)
+            .map_err(remote_error("read exact retained remote operation"))?,
+    )?;
+    if reading.world_ref != world || reading.operation_id != id {
+        return Err(WorkcellError::OperationFailed(
+            "remote operation read changed identity".into(),
+        ));
+    }
+    emit_material_reading(global, &reading)
+}
+fn emit_material_reading(
+    global: &GlobalArgs,
+    reading: &epilogos_workcell_core::MaterialOperationReading,
+) -> Result<(), WorkcellError> {
+    let value = epilogos_workcell_wire::material_operation_reading_value(reading);
+    if global.json {
+        emit_json(json!({"ok":true,"operation":value}));
+    } else {
+        println!(
+            "material operation {}: {}",
+            reading.operation_id,
+            value["state"].as_str().unwrap_or("unreadable")
+        );
+        println!(
+            "world: {}\nbinding: {}\nprovider: {}\nmaterial: {}",
+            reading.world_ref, reading.binding_ref, reading.provider_ref, reading.material_ref
+        );
+        if let Some(result) = &reading.result {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result.output).map_err(|e| {
+                    WorkcellError::OperationFailed(format!("render material result: {e}"))
+                })?
+            );
+        }
+        if let Some(failure) = &reading.failure_kind {
+            println!("failure: {failure}; read retained evidence before another effect");
+        }
+    }
+    Ok(())
 }
 
 fn run_observe(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
@@ -3192,15 +3292,13 @@ fn run_scope(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> 
                 || (binding.material_ref.starts_with("storage:directory:")
                     && binding.properties.get("access").map(String::as_str) == Some("writable"));
             material
-                && source_seat
-                    .as_ref()
-                    .is_none_or(|selected| {
-                        selected
-                            == binding
-                                .properties
-                                .get("logical_ref")
-                                .unwrap_or(&binding.logical_ref)
-                    })
+                && source_seat.as_ref().is_none_or(|selected| {
+                    selected
+                        == binding
+                            .properties
+                            .get("logical_ref")
+                            .unwrap_or(&binding.logical_ref)
+                })
         })
         .collect::<Vec<_>>();
     let selected = if source_seat.is_none() {
@@ -3448,6 +3546,9 @@ fn command_serve(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellErr
     if let Some(source) = &global.workspace_source {
         config = config.with_workspace_source(source);
     }
+    let config = config.with_native_material_executable(env::current_exe().map_err(|e| {
+        WorkcellError::OperationFailed(format!("read native material executable: {e}"))
+    })?);
     let workcell = epilogos_workcell_cli::DurableCollapsedLocalWorkcell::new(config)?;
     // The serving cell answers `system` with the same descriptor this host
     // prints, so `workcell --endpoint … system` reads the machine's own
@@ -3825,6 +3926,7 @@ fn command_authorise(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
     let mut advertise: Vec<String> = Vec::new();
     let mut expires_in: Option<String> = None;
     let mut store_credential = false;
+    let mut execution_grants = Vec::new();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -3842,6 +3944,13 @@ fn command_authorise(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
             }
             "--expires-in" => {
                 expires_in = Some(require_value(args, index, "--expires-in")?.to_owned());
+                index += 2;
+            }
+            "--execution-grant" => {
+                let path = require_value(args, index, "--execution-grant")?;
+                execution_grants.push(epilogos_workcell_wire::decode_material_operation_grant(
+                    &read_json_file(Path::new(path))?,
+                )?);
                 index += 2;
             }
             "--store-credential" => {
@@ -3890,6 +3999,22 @@ fn command_authorise(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
         ),
     };
 
+    if !execution_grants.is_empty()
+        && (!operations.iter().any(|op| op == "execute") || expires_at_unix_ms.is_none())
+    {
+        return Err(WorkcellError::InvalidDemand(
+            "--execution-grant requires --allow execute and a finite --expires-in".into(),
+        ));
+    }
+    let mut effects = std::collections::BTreeSet::new();
+    for grant in &execution_grants {
+        if grant.expires_at_unix_ms <= now_unix_ms()
+            || expires_at_unix_ms.is_none_or(|expiry| grant.expires_at_unix_ms > expiry)
+            || !effects.insert((&grant.world_ref, &grant.operation_id))
+        {
+            return Err(WorkcellError::InvalidDemand("execution grant is expired, extends the connection lifetime or repeats an operation".into()));
+        }
+    }
     let credential = generate_credential()?;
     let credential_ref = if store_credential {
         Some(store_connection_credential(&label, &credential)?)
@@ -3904,6 +4029,7 @@ fn command_authorise(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
         client_label: label.clone(),
         protocol: CONTROL_PROTOCOL_VERSION.to_owned(),
         operations: operations.clone(),
+        execution_grants,
         advertise: advertise.clone(),
         credential_sha256: credential_sha256(&credential),
         credential_ref: credential_ref.clone(),

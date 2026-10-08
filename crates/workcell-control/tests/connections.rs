@@ -58,6 +58,7 @@ fn grant_for(
         client_label: label.to_owned(),
         protocol: CONTROL_PROTOCOL_VERSION.to_owned(),
         operations: operations.iter().map(|value| value.to_string()).collect(),
+        execution_grants: Vec::new(),
         advertise: advertise.iter().map(|value| value.to_string()).collect(),
         credential_sha256: credential_sha256(credential),
         credential_ref: None,

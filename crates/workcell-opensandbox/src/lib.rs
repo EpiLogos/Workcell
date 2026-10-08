@@ -3,6 +3,7 @@ use std::{
     env,
     io::{Read, Write},
     net::TcpStream,
+    time::{Duration, Instant},
 };
 
 use epilogos_workcell_core::{
@@ -241,6 +242,19 @@ pub struct OpenSandboxHttpResponse {
 /// implement this seam without changing OpenSandbox/Workcell semantics.
 pub trait OpenSandboxTransport {
     fn request(&self, request: OpenSandboxHttpRequest) -> Result<OpenSandboxHttpResponse>;
+    /// Bounded material operations require an actual transport deadline. A
+    /// third-party transport must implement it deliberately, never silently
+    /// fall back to an unbounded request.
+    fn request_before(
+        &self,
+        _request: OpenSandboxHttpRequest,
+        _deadline: Instant,
+        _response_limit: usize,
+    ) -> Result<OpenSandboxHttpResponse> {
+        Err(WorkcellError::Unsupported(
+            "this OpenSandbox transport has no bounded material-operation route".into(),
+        ))
+    }
 }
 
 /// Lean HTTP/1.1 transport for the reference local OpenSandbox server.
@@ -252,6 +266,100 @@ pub trait OpenSandboxTransport {
 pub struct StdHttpOpenSandboxTransport;
 
 impl OpenSandboxTransport for StdHttpOpenSandboxTransport {
+    fn request_before(
+        &self,
+        request: OpenSandboxHttpRequest,
+        deadline: Instant,
+        response_limit: usize,
+    ) -> Result<OpenSandboxHttpResponse> {
+        let parsed = parse_http_url(&request.url).map_err(|_| {
+            WorkcellError::InvalidDemand(
+                "bounded OpenSandbox URL is invalid or unsupported; no connection attempted".into(),
+            )
+        })?;
+        let ip = if parsed.host == "localhost" {
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+        } else {
+            parsed.host.parse::<std::net::IpAddr>().map_err(|_| {
+            WorkcellError::Unsupported("bounded OpenSandbox transport requires a literal IP or localhost; no unbounded DNS resolution attempted".into())
+        })?
+        };
+        if request.body.len() > 1_048_576 || response_limit == 0 || response_limit > 2_097_152 {
+            return Err(WorkcellError::InvalidDemand(
+                "bounded OpenSandbox request/response limits refused".into(),
+            ));
+        }
+        let remaining = || {
+            deadline.checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero()).ok_or_else(|| WorkcellError::OperationFailed(
+                "bounded OpenSandbox operation deadline elapsed; reconcile original operation".into()))
+        };
+        let mut stream =
+            TcpStream::connect_timeout(&std::net::SocketAddr::new(ip, parsed.port), remaining()?)
+                .map_err(|error| {
+                WorkcellError::Unavailable(format!(
+                    "bounded OpenSandbox connection failed: kind={:?}, os={:?}",
+                    error.kind(),
+                    error.raw_os_error()
+                ))
+            })?;
+        let mut head = format!(
+            "{} {} HTTP/1.1\r\nHost: {}:{}\r\nConnection: close\r\n",
+            request.method, parsed.path_and_query, parsed.host, parsed.port
+        );
+        for (name, value) in &request.headers {
+            if name.contains(['\r', '\n', ':']) || value.contains(['\r', '\n']) {
+                return Err(WorkcellError::InvalidDemand(
+                    "invalid OpenSandbox HTTP header framing".into(),
+                ));
+            }
+            head.push_str(&format!("{name}: {value}\r\n"));
+        }
+        if !request.body.is_empty() {
+            head.push_str("Content-Type: application/json\r\n");
+        }
+        head.push_str(&format!("Content-Length: {}\r\n\r\n", request.body.len()));
+        let mut encoded = head.into_bytes();
+        encoded.extend_from_slice(&request.body);
+        let mut offset = 0;
+        while offset < encoded.len() {
+            stream
+                .set_write_timeout(Some(remaining()?))
+                .map_err(bounded_http_error)?;
+            match stream.write(&encoded[offset..]) {
+                Ok(0) => {
+                    return Err(WorkcellError::OperationFailed(
+                        "bounded OpenSandbox write returned zero; reconcile original operation"
+                            .into(),
+                    ))
+                }
+                Ok(n) => offset += n,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(bounded_http_error(error)),
+            }
+        }
+        let mut bytes = Vec::new();
+        let mut chunk = [0u8; 8192];
+        loop {
+            stream
+                .set_read_timeout(Some(remaining()?))
+                .map_err(bounded_http_error)?;
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if n > response_limit.saturating_sub(bytes.len()) {
+                        return Err(WorkcellError::OperationFailed("bounded OpenSandbox response exceeds admitted byte budget; reconcile original operation".into()));
+                    }
+                    bytes.extend_from_slice(&chunk[..n]);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(bounded_http_error(error)),
+            }
+        }
+        remaining()?;
+        parse_bounded_http_response(&bytes)
+    }
+
     fn request(&self, request: OpenSandboxHttpRequest) -> Result<OpenSandboxHttpResponse> {
         let parsed = parse_http_url(&request.url)?;
         let mut stream =
@@ -297,6 +405,14 @@ impl OpenSandboxTransport for StdHttpOpenSandboxTransport {
         })?;
         parse_http_response(&bytes)
     }
+}
+
+fn bounded_http_error(error: std::io::Error) -> WorkcellError {
+    WorkcellError::OperationFailed(format!(
+        "bounded OpenSandbox HTTP failed: kind={:?}, os={:?}; original operation requires readback",
+        error.kind(),
+        error.raw_os_error()
+    ))
 }
 
 /// `Clone` so a runtime composition (e.g. `CollapsedLocalWorkcell`) can hold
@@ -431,6 +547,176 @@ where
             }
         };
         Ok(ResolvedEndpoint { endpoint, headers })
+    }
+
+    /// Execute through the same native execd interface, carrying one deadline
+    /// through endpoint resolution and command response. Endpoint credentials
+    /// are never included in a returned refusal.
+    pub fn execute_bounded_operation(
+        &self,
+        allocation: &ProviderAllocation,
+        operation: &ProviderOperation,
+        timeout: Duration,
+        output_limit: usize,
+    ) -> Result<ProviderOperationResult> {
+        self.require_allocation(allocation)?;
+        if operation.key != "command"
+            || timeout.is_zero()
+            || timeout > Duration::from_secs(60)
+            || output_limit == 0
+            || output_limit > 1_048_576
+        {
+            return Err(WorkcellError::InvalidDemand(
+                "bounded OpenSandbox operation/key limits refused before effect".into(),
+            ));
+        }
+        let command = operation
+            .parameters
+            .get("command")
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| {
+                WorkcellError::InvalidDemand("OpenSandbox operation requires exact command".into())
+            })?;
+        if operation
+            .parameters
+            .keys()
+            .any(|k| !matches!(k.as_str(), "command" | "cwd"))
+        {
+            return Err(WorkcellError::InvalidDemand(
+                "bounded OpenSandbox operation contains unknown parameters".into(),
+            ));
+        }
+        let deadline = Instant::now() + timeout;
+        let mut headers = BTreeMap::new();
+        if let Some(env_name) = &self.config.api_key_env {
+            headers.insert(
+                OPENSANDBOX_API_KEY_HEADER.into(),
+                env::var(env_name).map_err(|_| {
+                    WorkcellError::Unavailable(
+                        "OpenSandbox configured lifecycle credential is unavailable".into(),
+                    )
+                })?,
+            );
+        }
+        let path = format!(
+            "/sandboxes/{}/endpoints/{OPENSANDBOX_EXECD_PORT}?use_server_proxy={}",
+            allocation.material_ref, self.config.use_server_proxy
+        );
+        let endpoint = self.transport.request_before(
+            OpenSandboxHttpRequest {
+                method: "GET".into(),
+                url: join_url(&self.config.lifecycle_base_url, &path),
+                headers,
+                body: Vec::new(),
+            },
+            deadline,
+            65_536,
+        )?;
+        if !(200..300).contains(&endpoint.status) {
+            return Err(WorkcellError::OperationFailed(format!(
+                "bounded OpenSandbox endpoint lookup failed: HTTP {}",
+                endpoint.status
+            )));
+        }
+        let value: Value = serde_json::from_slice(&endpoint.body).map_err(|_| {
+            WorkcellError::OperationFailed("invalid bounded OpenSandbox endpoint response".into())
+        })?;
+        let object = value.as_object().ok_or_else(|| {
+            WorkcellError::OperationFailed(
+                "bounded OpenSandbox endpoint response must be an object".into(),
+            )
+        })?;
+        let base = normalize_endpoint_url(string_field(object, "endpoint")?);
+        let headers = match object.get("headers") {
+            None | Some(Value::Null) => BTreeMap::new(),
+            Some(Value::Object(values)) => values
+                .iter()
+                .map(|(name, value)| {
+                    value
+                        .as_str()
+                        .map(|value| (name.clone(), value.to_owned()))
+                        .ok_or_else(|| {
+                            WorkcellError::OperationFailed(
+                                "invalid bounded endpoint auth header".into(),
+                            )
+                        })
+                })
+                .collect::<Result<BTreeMap<_, _>>>()?,
+            _ => {
+                return Err(WorkcellError::OperationFailed(
+                    "invalid bounded endpoint headers".into(),
+                ))
+            }
+        };
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())
+            .ok_or_else(|| {
+                WorkcellError::OperationFailed(
+                    "OpenSandbox deadline elapsed before command; no command request issued".into(),
+                )
+            })?;
+        let mut body = serde_json::Map::new();
+        body.insert("command".into(), Value::String(command.clone()));
+        body.insert("background".into(), Value::Bool(false));
+        body.insert("timeout".into(), json!(remaining.as_millis().max(1)));
+        if let Some(cwd) = operation.parameters.get("cwd") {
+            body.insert("cwd".into(), Value::String(cwd.clone()));
+        }
+        let response = self.transport.request_before(
+            OpenSandboxHttpRequest {
+                method: "POST".into(),
+                url: join_url(&base, "/command"),
+                headers,
+                body: serde_json::to_vec(&Value::Object(body)).map_err(|_| {
+                    WorkcellError::InvalidDemand("OpenSandbox command cannot be encoded".into())
+                })?,
+            },
+            deadline,
+            output_limit.saturating_add(131_072),
+        )?;
+        if !(200..300).contains(&response.status) {
+            return Err(WorkcellError::OperationFailed(format!(
+                "bounded OpenSandbox command returned HTTP {}; execution requires reconciliation",
+                response.status
+            )));
+        }
+        let stream = parse_execd_stream(&response.body)?;
+        if !stream.complete {
+            return Err(WorkcellError::OperationFailed("OpenSandbox command stream did not establish completion; reconcile original operation".into()));
+        }
+        let mut output = BTreeMap::new();
+        if let Some(id) = stream.execution_id {
+            output.insert("execution_id".into(), id);
+        }
+        output.insert("stdout".into(), stream.stdout);
+        output.insert("stderr".into(), stream.stderr);
+        if !stream.results.is_empty() {
+            output.insert("result".into(), stream.results.join("\n"));
+        }
+        if let Some(error) = stream.error {
+            output.insert("error".into(), error);
+        }
+        if let Some(code) = stream.exit_code {
+            output.insert("exit_code".into(), code.to_string());
+        }
+        output.insert("complete".into(), "true".into());
+        if serde_json::to_vec(&output)
+            .map_err(|_| {
+                WorkcellError::OperationFailed("cannot encode bounded command result".into())
+            })?
+            .len()
+            > output_limit
+        {
+            return Err(WorkcellError::OperationFailed("OpenSandbox command result exceeded admitted output budget; completion not returned".into()));
+        }
+        Ok(ProviderOperationResult {
+            provider_ref: self.config.provider_ref.clone(),
+            material_ref: allocation.material_ref.clone(),
+            operation: "command".into(),
+            output,
+            provenance: provider_provenance(),
+        })
     }
 
     fn run_command(
@@ -1292,6 +1578,78 @@ fn normalize_endpoint_url(endpoint: &str) -> String {
     }
 }
 
+// The material operation cannot infer full capture from a semantic terminator
+// inside an incompletely framed response. Legacy SDK parsing stays unchanged.
+fn parse_bounded_http_response(bytes: &[u8]) -> Result<OpenSandboxHttpResponse> {
+    let refusal = || {
+        WorkcellError::OperationFailed(
+        "bounded OpenSandbox HTTP framing is incomplete or invalid; reconcile original operation".into())
+    };
+    let split = bytes
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(refusal)?;
+    let head = std::str::from_utf8(&bytes[..split]).map_err(|_| refusal())?;
+    let mut lengths = Vec::new();
+    let mut encodings = Vec::new();
+    for line in head.split("\r\n").skip(1) {
+        let (name, value) = line.split_once(':').ok_or_else(refusal)?;
+        if name.eq_ignore_ascii_case("content-length") {
+            lengths.push(value.trim().parse::<usize>().map_err(|_| refusal())?);
+        }
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            encodings.push(value.trim());
+        }
+    }
+    let body = &bytes[split + 4..];
+    if lengths.len() > 1 || encodings.len() > 1 || (!lengths.is_empty() && !encodings.is_empty()) {
+        return Err(refusal());
+    }
+    if let Some(length) = lengths.first() {
+        if body.len() != *length {
+            return Err(refusal());
+        }
+    }
+    if let Some(encoding) = encodings.first() {
+        if !encoding.eq_ignore_ascii_case("chunked") {
+            return Err(refusal());
+        }
+        let mut rest = body;
+        loop {
+            let end = rest
+                .windows(2)
+                .position(|w| w == b"\r\n")
+                .ok_or_else(refusal)?;
+            let line = std::str::from_utf8(&rest[..end]).map_err(|_| refusal())?;
+            let size = usize::from_str_radix(line.split(';').next().unwrap_or("").trim(), 16)
+                .map_err(|_| refusal())?;
+            rest = &rest[end + 2..];
+            if size == 0 {
+                if rest == b"\r\n" {
+                    break;
+                }
+                // Only a complete, bounded trailer block may terminate chunks.
+                if !rest.ends_with(b"\r\n\r\n")
+                    || !std::str::from_utf8(rest).is_ok_and(|text| {
+                        text[..text.len() - 4]
+                            .split("\r\n")
+                            .all(|line| line.contains(':'))
+                    })
+                {
+                    return Err(refusal());
+                }
+                break;
+            }
+            let complete = size.checked_add(2).ok_or_else(refusal)?;
+            if rest.len() < complete || &rest[size..complete] != b"\r\n" {
+                return Err(refusal());
+            }
+            rest = &rest[complete..];
+        }
+    }
+    parse_http_response(bytes).map_err(|_| refusal())
+}
+
 fn parse_http_response(bytes: &[u8]) -> Result<OpenSandboxHttpResponse> {
     let split = bytes
         .windows(4)
@@ -1869,5 +2227,208 @@ mod tests {
             error.to_string().contains("default-deny"),
             "unexpected error: {error}"
         );
+    }
+
+    fn native_request(stream: &mut std::net::TcpStream) -> (String, Vec<u8>) {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut encoded = Vec::new();
+        let mut byte = [0u8; 1];
+        while !encoded.ends_with(b"\r\n\r\n") {
+            assert!(encoded.len() < 65_536);
+            stream.read_exact(&mut byte).unwrap();
+            encoded.push(byte[0]);
+        }
+        let head = String::from_utf8(encoded).unwrap();
+        let count = head
+            .lines()
+            .find_map(|line| line.strip_prefix("Content-Length: "))
+            .unwrap()
+            .trim()
+            .parse::<usize>()
+            .unwrap();
+        let mut body = vec![0u8; count];
+        stream.read_exact(&mut body).unwrap();
+        (head, body)
+    }
+
+    #[test]
+    fn actual_bounded_http_caps_response_and_a_continuous_slow_peer() {
+        for oversized in [true, false] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let peer = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let _ = native_request(&mut stream);
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n");
+                if oversized {
+                    let _ = stream.write_all(&[b'x'; 8192]);
+                } else {
+                    for _ in 0..300 {
+                        if stream.write_all(&[b'x'; 32]).is_err() {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                }
+            });
+            let start = Instant::now();
+            let error = StdHttpOpenSandboxTransport
+                .request_before(
+                    OpenSandboxHttpRequest {
+                        method: "GET".into(),
+                        url: format!("http://{address}/actual-bounded-read"),
+                        headers: BTreeMap::new(),
+                        body: Vec::new(),
+                    },
+                    Instant::now() + Duration::from_millis(250),
+                    if oversized { 1024 } else { 65_536 },
+                )
+                .unwrap_err();
+            assert!(start.elapsed() < Duration::from_secs(2));
+            assert!(
+                error.to_string().contains(if oversized {
+                    "byte budget"
+                } else {
+                    "HTTP failed"
+                }) || error.to_string().contains("deadline elapsed")
+            );
+            peer.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn actual_endpoint_and_command_share_one_deadline_and_native_execd_timeout() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = std::thread::spawn(move || {
+            let (mut endpoint, _) = listener.accept().unwrap();
+            let (head, body) = native_request(&mut endpoint);
+            assert!(head.starts_with("GET /sandboxes/actual-sandbox/endpoints/44772?"));
+            assert!(body.is_empty());
+            std::thread::sleep(Duration::from_millis(450));
+            let payload =
+                serde_json::to_vec(&json!({"endpoint":format!("http://{address}"),"headers":{}}))
+                    .unwrap();
+            endpoint
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        payload.len()
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+            endpoint.write_all(&payload).unwrap();
+            drop(endpoint);
+            let (mut command, _) = listener.accept().unwrap();
+            let (head, body) = native_request(&mut command);
+            assert!(head.starts_with("POST /command "));
+            let packet: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(packet["command"], "printf source-bound-native-return");
+            assert_eq!(packet["background"], false);
+            let timeout = packet["timeout"].as_u64().unwrap();
+            assert!(
+                timeout > 0 && timeout < 700,
+                "endpoint time must consume original operation budget"
+            );
+            std::thread::sleep(Duration::from_millis(900));
+            // A late complete stream cannot redeem the expired operation.
+            let _=command.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\ndata: {\"type\":\"execution_complete\",\"exit_code\":0}\n\n");
+        });
+        let mut cfg = config();
+        cfg.lifecycle_base_url = format!("http://{address}");
+        let provider = OpenSandboxExecutionProvider::new(cfg, StdHttpOpenSandboxTransport).unwrap();
+        let allocation = ProviderAllocation {
+            provider_ref: provider.config.provider_ref.clone(),
+            port: ProviderPortKind::Execution,
+            material_ref: "actual-sandbox".into(),
+            health: HealthState::Healthy,
+            properties: BTreeMap::new(),
+            provenance: BTreeMap::new(),
+        };
+        let operation = ProviderOperation {
+            key: "command".into(),
+            parameters: BTreeMap::from([(
+                "command".into(),
+                "printf source-bound-native-return".into(),
+            )]),
+        };
+        let start = Instant::now();
+        let error = provider
+            .execute_bounded_operation(&allocation, &operation, Duration::from_secs(1), 4096)
+            .unwrap_err();
+        assert!(start.elapsed() < Duration::from_millis(1300));
+        assert!(
+            error.to_string().contains("HTTP failed")
+                || error.to_string().contains("deadline elapsed")
+        );
+        peer.join().unwrap();
+    }
+    #[test]
+    fn actual_bounded_http_refuses_truncated_material_and_private_url_errors() {
+        for payload in [
+            br#"{"endpoint":"http://127.0.0.1:44772","headers":{}}"#.as_slice(),
+            b"data: {\"type\":\"execution_complete\",\"exit_code\":0}\n\n".as_slice(),
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let payload = payload.to_vec();
+            let peer = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let _ = native_request(&mut stream);
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            payload.len() + 1
+                        )
+                        .as_bytes(),
+                    )
+                    .unwrap();
+                stream.write_all(&payload).unwrap();
+            });
+            let error = StdHttpOpenSandboxTransport
+                .request_before(
+                    OpenSandboxHttpRequest {
+                        method: "GET".into(),
+                        url: format!("http://{address}/native-framing"),
+                        headers: BTreeMap::new(),
+                        body: vec![],
+                    },
+                    Instant::now() + Duration::from_secs(2),
+                    4096,
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("framing"));
+            peer.join().unwrap();
+        }
+        let canary = "PRIVATE-URL-CREDENTIAL-DO-NOT-DISCLOSE";
+        for url in [
+            format!("https://127.0.0.1:9/?token={canary}"),
+            format!("http://127.0.0.1:{canary}/"),
+        ] {
+            let error = StdHttpOpenSandboxTransport
+                .request_before(
+                    OpenSandboxHttpRequest {
+                        method: "GET".into(),
+                        url,
+                        headers: BTreeMap::new(),
+                        body: vec![],
+                    },
+                    Instant::now() + Duration::from_secs(1),
+                    4096,
+                )
+                .unwrap_err();
+            assert!(!format!("{error:?} {error}").contains(canary));
+            assert!(error.to_string().contains("no connection attempted"));
+        }
+        for wire in [
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n".as_slice(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\n{}".as_slice(),
+        ] {
+            assert!(parse_bounded_http_response(wire).is_err());
+        }
     }
 }

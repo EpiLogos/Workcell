@@ -20,6 +20,13 @@ pub use directory_storage::{
 };
 mod external_service;
 mod host;
+mod material_process;
+pub use material_process::{
+    material_process_command_main, material_process_guardian_main, material_process_identity_state,
+    MaterialProcessIdentity, MaterialProcessIdentityState, MaterialProcessObservation,
+    MaterialProcessRole, MATERIAL_PROCESS_COMMAND_FLAG, MATERIAL_PROCESS_GUARDIAN_FLAG,
+};
+
 mod instance_projection;
 mod instance_publication;
 mod instance_registry;

@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 
-use epilogos_workcell_core::{Result, WorkcellError};
+use epilogos_workcell_core::{MaterialOperationGrant, Result, WorkcellError};
 use serde_json::{json, Map, Value};
 
 pub const CONNECTION_WIRE_VERSION: &str = "workcell.connection/v1";
@@ -80,6 +80,8 @@ pub struct ConnectionGrant {
     /// Control operations the grant permits. Capability advertisement is
     /// separate: advertising is not authorisation.
     pub operations: Vec<String>,
+    /// Exact finite material effects authorised by this serving registry.
+    pub execution_grants: Vec<MaterialOperationGrant>,
     /// Provider ports advertised to this client in discovery; empty means
     /// the cell's whole advertisement is visible to the grant.
     pub advertise: Vec<String>,
@@ -189,6 +191,7 @@ pub fn grant_value(grant: &ConnectionGrant) -> Result<Value> {
         "client_label": grant.client_label,
         "protocol": grant.protocol,
         "operations": grant.operations,
+        "execution_grants": grant.execution_grants.iter().map(crate::material_operation_grant_value).collect::<Vec<_>>(),
         "advertise": grant.advertise,
         "credential_sha256": grant.credential_sha256,
         "credential_ref": grant.credential_ref,
@@ -219,6 +222,14 @@ pub fn decode_grant_value(value: &Value) -> Result<ConnectionGrant> {
         client_label: string_field(grant, "client_label")?.to_owned(),
         protocol: string_field(grant, "protocol")?.to_owned(),
         operations: string_array(grant, "operations")?,
+        execution_grants: match grant.get("execution_grants") {
+            None => Vec::new(),
+            Some(Value::Array(rows)) => rows
+                .iter()
+                .map(crate::decode_material_operation_grant)
+                .collect::<Result<Vec<_>>>()?,
+            Some(_) => return Err(invalid("execution_grants must be an array")),
+        },
         advertise: string_array(grant, "advertise")?,
         credential_sha256: string_field(grant, "credential_sha256")?.to_owned(),
         credential_ref: optional_string_field(grant, "credential_ref")?.map(str::to_owned),
@@ -401,6 +412,7 @@ mod tests {
             client_label: "home-client".into(),
             protocol: "workcell.control/v1".into(),
             operations: vec!["status".into(), "discover".into(), "prepare".into()],
+            execution_grants: Vec::new(),
             advertise: vec!["service".into()],
             credential_sha256: "64-hex-digest".into(),
             credential_ref: None,
@@ -476,6 +488,7 @@ mod tests {
             client_label: "home-client".into(),
             protocol: "workcell.control/v1".into(),
             operations: vec!["status".into()],
+            execution_grants: Vec::new(),
             advertise: Vec::new(),
             credential_sha256: "64-hex-digest".into(),
             credential_ref: None,

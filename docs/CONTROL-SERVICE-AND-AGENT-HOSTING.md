@@ -50,6 +50,42 @@ The canonical semantic operations remain:
 
 Transport, authentication, fabric provider and service-process identity remain below that contract.
 
+## Bounded operations on admitted material
+
+`execute` and `operation-read` address an existing execution binding. The
+request pins its World, binding, material revision, operation ID and exact
+program/arguments or sandbox command. The serving operator supplies a finite
+`MaterialOperationGrant` in the existing connection registry; advertising
+`execute`, knowing a connection credential or naming a grant in a request does
+not create that authority. Legacy grants decode with no execution grants.
+Even the static-token route must resolve an active, exact serving grant.
+
+The Control Service retains intent before invoking the selected provider in
+its existing `control-worlds` journal, under the existing exclusive host lock.
+A repeated operation ID returns the original reading. Changed inputs are
+refused; pending or uncertain readings never repeat execution. Exact World
+release retains its outcome and observations before and after release. A
+logical release cannot clear an execution fence without native proof that
+the exact owned process or container has stopped. It cannot bypass interrupted
+preparation, recovery or another World's effects.
+
+The existing remote Run route exposes the same operation:
+
+```bash
+workcell run execute --run <existing-run> --request <exact-request.json>
+workcell run operation-read --run <existing-run> --operation-id <retained-id>
+workcell run release --run <existing-run>
+```
+
+The issuer uses `workcell authorise --client <label> --allow execute --allow
+operation-read --expires-in <duration> --execution-grant <exact-grant.json>`.
+The grant pins one operation, authority, provider/material allocation, deadline,
+output cap and expiry. Host processes and OpenSandbox command streams carry
+bounded capture and cleanup; a provider without that bounded operation refuses
+before execution. Agent identity, selected repertoire and Factory attempt
+history stay with their semantic owners; Run correlations carry the retained
+material reading without becoming another execution journal.
+
 ## Executable identity is not a control operation
 
 Selecting a remote Workcell does not move every question about the command to the remote side. Which `workcell` binary is running is a fact about the local executable, and it is answered locally:
