@@ -588,9 +588,7 @@ impl WorkcellControlPlane for DurableCollapsedLocalWorkcell {
                             ))
                         })?;
                         let identity =
-                            epilogos_workcell_runtime::MaterialProcessIdentity::from_value(
-                                &value,
-                            )?;
+                            epilogos_workcell_runtime::MaterialProcessIdentity::from_value(&value)?;
                         let observation =
                             epilogos_workcell_runtime::material_process_identity_state(&identity)?;
                         reading.failure_observation.insert(
