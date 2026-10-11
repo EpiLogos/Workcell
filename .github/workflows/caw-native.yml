@@ -44,10 +44,24 @@ jobs:
         run: |
           cargo fmt --all -- --check
           cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Build native operations
+        run: |
+          # Guardian material regressions execute the actual CLI (see verify.sh).
+          cargo build --locked -p epilogos-workcell-cli --bins
+          cp target/debug/workcell target/debug/workcell-control-service target/debug/workcell-write-boundary evidence/
+          sha256sum evidence/workcell evidence/workcell-control-service evidence/workcell-write-boundary > evidence/binary-sha256.txt
+          printf 'WORKCELL_TEST_NATIVE_EXECUTABLE=%s\n' "$(python3 - <<'PY'
+          import os, pathlib
+          root = pathlib.Path(os.environ.get('CARGO_TARGET_DIR', 'target')).resolve(strict=True)
+          print((root / 'debug/workcell').resolve(strict=True))
+          PY
+          )" >> "$GITHUB_ENV"
       - name: Native workspace tests
         shell: bash
         run: |
           set -o pipefail
+          test -n "${WORKCELL_TEST_NATIVE_EXECUTABLE:-}"
+          test -x "$WORKCELL_TEST_NATIVE_EXECUTABLE"
           cargo test --locked --workspace --all-targets 2>&1 | tee evidence/native-tests.txt
       - name: Required positive kernel confinement
         env:
@@ -58,11 +72,6 @@ jobs:
           cargo test --locked -p epilogos-workcell-runtime --test write_boundary -- --nocapture 2>&1 | tee evidence/write-boundary.txt
           grep -q WRITE_BOUNDARY_EXECUTED evidence/write-boundary.txt
           grep -q PROTECTED_SOURCE_EXECUTED evidence/write-boundary.txt
-      - name: Build native operations
-        run: |
-          cargo build --locked -p epilogos-workcell-cli --bins
-          cp target/debug/workcell target/debug/workcell-control-service target/debug/workcell-write-boundary evidence/
-          sha256sum evidence/workcell evidence/workcell-control-service evidence/workcell-write-boundary > evidence/binary-sha256.txt
       - name: Current readonly input and Task-owned runtime kernel cases
         timeout-minutes: 10
         shell: bash
