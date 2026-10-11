@@ -378,6 +378,23 @@ pub fn validate_grant(grant: &ConnectionGrant) -> Result<()> {
             )));
         }
     }
+    let mut identities = std::collections::BTreeSet::new();
+    for effect in &grant.execution_grants {
+        if !grant.operations.iter().any(|op| op == "execute")
+            || effect.authority_ref.trim().is_empty()
+            || effect.grant_ref.trim().is_empty()
+            || effect.operation_id.trim().is_empty()
+            || effect.timeout_ms == 0
+            || effect.output_limit_bytes == 0
+            || effect.expires_at_unix_ms == 0
+            || grant
+                .expires_at_unix_ms
+                .is_none_or(|end| effect.expires_at_unix_ms > end)
+            || !identities.insert((&effect.world_ref, &effect.operation_id))
+        {
+            return Err(WorkcellError::InvalidDemand("execution grants require finite connection expiry, exact authority/bounds and unique World operation IDs".into()));
+        }
+    }
     Ok(())
 }
 
@@ -503,6 +520,7 @@ mod tests {
             client_label: label.to_owned(),
             protocol: crate::CONTROL_PROTOCOL_VERSION.to_owned(),
             operations: operations.iter().map(|value| value.to_string()).collect(),
+            execution_grants: Vec::new(),
             advertise: Vec::new(),
             credential_sha256: credential_sha256(credential),
             credential_ref: None,

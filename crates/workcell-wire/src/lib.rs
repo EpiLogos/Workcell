@@ -1,4 +1,7 @@
 pub mod connection;
+mod material_operation;
+
+pub use material_operation::*;
 
 pub use connection::{
     connection_value, decode_connection, decode_connection_value, decode_grant_value,

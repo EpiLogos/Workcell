@@ -11,6 +11,15 @@ const DEFAULT_LISTEN: &str = "127.0.0.1:7777";
 const DEFAULT_WORKCELL_REF: &str = "workcell:local";
 
 fn main() -> Result<(), Box<dyn Error>> {
+    match env::args().skip(1).collect::<Vec<_>>().as_slice() {
+        [flag] if flag == epilogos_workcell_runtime::MATERIAL_PROCESS_GUARDIAN_FLAG => {
+            return epilogos_workcell_runtime::material_process_guardian_main().map_err(Into::into)
+        }
+        [flag] if flag == epilogos_workcell_runtime::MATERIAL_PROCESS_COMMAND_FLAG => {
+            return epilogos_workcell_runtime::material_process_command_main().map_err(Into::into)
+        }
+        _ => {}
+    }
     let mut listen = DEFAULT_LISTEN.to_owned();
     let mut state_root = env::var_os("WORKCELL_STATE_ROOT")
         .map(PathBuf::from)
@@ -60,7 +69,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let workcell_ref = WorkcellRef::new(workcell_ref.clone())?;
     let mut config = CollapsedLocalConfig::new(workcell_ref.clone(), &state_root)
-        .with_persistent_host_lifetime();
+        .with_persistent_host_lifetime()
+        .with_native_material_executable(env::current_exe()?);
     if let Some(path) = services {
         config = config.with_service_declaration_file(path);
     }

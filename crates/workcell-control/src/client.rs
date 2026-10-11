@@ -186,6 +186,27 @@ where
         self.invoke("inspect", codec::world_ref_value(world_ref))
     }
 
+    pub fn execute(
+        &mut self,
+        request: &epilogos_workcell_core::MaterialOperationRequest,
+    ) -> Result<Value, ControlClientError> {
+        self.invoke(
+            "execute",
+            epilogos_workcell_wire::material_operation_request_value(request),
+        )
+    }
+
+    pub fn operation_read(
+        &mut self,
+        world_ref: &WorldRef,
+        operation_id: &str,
+    ) -> Result<Value, ControlClientError> {
+        self.invoke(
+            "operation-read",
+            json!({"world_ref":world_ref.as_str(),"operation_id":operation_id}),
+        )
+    }
+
     pub fn recover(&mut self, world_ref: &WorldRef) -> Result<Value, ControlClientError> {
         self.invoke("recover", codec::world_ref_value(world_ref))
     }

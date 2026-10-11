@@ -320,6 +320,35 @@ where
                 let world = self.control.inspect(&world_ref)?;
                 codec::prepared_world_value(&world)
             }
+            "execute" => {
+                let request = epilogos_workcell_wire::decode_material_operation_request(payload)?;
+                // Scope selects a credential relation; material authority is an
+                // exact grant freshly read from the serving registry.
+                let registry = self.grants.as_ref().ok_or_else(|| WorkcellError::InvalidDemand("material execution requires a serving-side grant registry".into()))?;
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|e| WorkcellError::OperationFailed(format!("read material grant clock: {e}")))?.as_millis() as u64;
+                let grants = registry.list()?;
+                let mut selected = grants.iter().filter(|relation| relation.is_active() && !relation.is_expired_at(now)
+                    && scope.is_none_or(|scope| relation.grant_ref == scope.grant_ref)
+                    && relation.operations.iter().any(|op| op == "execute"))
+                    .flat_map(|relation| relation.execution_grants.iter())
+                    .filter(|grant| grant.grant_ref == request.grant_ref);
+                let grant = selected.next().ok_or_else(|| WorkcellError::InvalidDemand("no active serving grant admits this exact material effect".into()))?.clone();
+                if selected.next().is_some() { return Err(WorkcellError::InvalidDemand("ambiguous material effect grant".into())); }
+                grant.validate_request(&request, now)?;
+                self.control.execute(&request, &grant).map(|r| epilogos_workcell_wire::material_operation_reading_value(&r))
+            }
+            "operation-read" => {
+                let world = codec::decode_world_ref(payload)?;
+                let operation_id = payload.get("operation_id").and_then(Value::as_str)
+                    .filter(|v| !v.trim().is_empty()).ok_or_else(|| WorkcellError::InvalidDemand("operation-read requires an exact operation_id".into()))?;
+                // A scoped relation can only read operations belonging to its
+                // retained material grants, including expired effect grants.
+                if scope.is_some_and(|scope| !scope.execution_grants.iter().any(|g| g.world_ref == world && g.operation_id == operation_id)) {
+                    return Err(WorkcellError::InvalidDemand("operation read is outside this connection's material scope".into()));
+                }
+                self.control.operation_read(&world, operation_id).map(|r| epilogos_workcell_wire::material_operation_reading_value(&r))
+            }
             "recover" => {
                 let world_ref = codec::decode_world_ref(payload)?;
                 let world = self.control.recover(&world_ref)?;

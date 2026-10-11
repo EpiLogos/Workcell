@@ -1,5 +1,6 @@
 use crate::{
     CollectionBundle, DesiredMaterialState, Discovery, ExecutionDemand, ExposureBundle,
+    MaterialOperationGrant, MaterialOperationReading, MaterialOperationRequest,
     MaterialisationPlan, MaterialisedExecutionWorld, ObservationBundle, ReconciliationResult,
     ReleaseResult, Result, WorkcellError, WorldRef,
 };
@@ -30,6 +31,29 @@ pub trait WorkcellControlPlane {
     fn recover(&mut self, _world: &WorldRef) -> Result<MaterialisedExecutionWorld> {
         Err(WorkcellError::Unsupported(
             "material recovery is not supported by this control plane".into(),
+        ))
+    }
+
+    /// Execute only against an exact operator-issued admission resolved by the
+    /// serving host. The request's grant reference is never itself authority.
+    fn execute(
+        &mut self,
+        _request: &MaterialOperationRequest,
+        _grant: &MaterialOperationGrant,
+    ) -> Result<MaterialOperationReading> {
+        Err(WorkcellError::Unsupported(
+            "bounded material execution is not supported by this control plane".into(),
+        ))
+    }
+
+    /// Inspect the original retained operation; this never repeats its effect.
+    fn operation_read(
+        &self,
+        _world: &WorldRef,
+        _operation_id: &str,
+    ) -> Result<MaterialOperationReading> {
+        Err(WorkcellError::Unsupported(
+            "material operation readback is not supported by this control plane".into(),
         ))
     }
 

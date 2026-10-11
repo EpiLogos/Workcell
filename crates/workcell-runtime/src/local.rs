@@ -5,13 +5,14 @@ use epilogos_workcell_core::{
     compose_world, rebind_material_world, ArtifactChannelRequest, ArtifactStorageProvider,
     AttachedStorageRequest, BindingPresence, CollectionBundle, DesiredMaterialState, Discovery,
     ExecutionDemand, ExecutionMaterialRequest, ExecutionProvider, ExposureBundle, HealthState,
-    LogicalConnectionRequirement, MaterialisationPlan, MaterialisedExecutionWorld,
-    ObservationBundle, PlanStatus, PlannedAllocation, PreparedWorldControlPlane,
-    ProviderAllocation, ProviderObservation, ProviderPort, ProviderPortKind, ProviderRef,
-    ProviderReleaseResult, ReconciliationResult, ReleaseResult, Result, RetentionExpectation,
-    ServiceMaterialRequest, ServiceProvider, StorageProvider, WorkcellControlPlane, WorkcellError,
-    WorkcellRef, WorkspaceAccess, WorkspaceMaterialRequest, WorkspaceMaterialSource,
-    WorkspaceProvider, WorldRef,
+    LogicalConnectionRequirement, MaterialOperationGrant, MaterialOperationReading,
+    MaterialOperationRequest, MaterialOperationState, MaterialisationPlan,
+    MaterialisedExecutionWorld, ObservationBundle, PlanStatus, PlannedAllocation,
+    PreparedWorldControlPlane, ProviderAllocation, ProviderObservation, ProviderPort,
+    ProviderPortKind, ProviderRef, ProviderReleaseResult, ReconciliationResult, ReleaseResult,
+    Result, RetentionExpectation, ServiceMaterialRequest, ServiceProvider, StorageProvider,
+    WorkcellControlPlane, WorkcellError, WorkcellRef, WorkspaceAccess, WorkspaceMaterialRequest,
+    WorkspaceMaterialSource, WorkspaceProvider, WorldRef,
 };
 use epilogos_workcell_docker::DockerExecutionProvider;
 use epilogos_workcell_opensandbox::{
@@ -96,6 +97,9 @@ pub struct CollapsedLocalConfig {
     /// Defaults to `OneShotCommand`: the honest assumption unless a persistent
     /// host explicitly says otherwise. See [`HostLifetime`].
     pub host_lifetime: HostLifetime,
+    /// Trusted native binary with both internal material process entrypoints.
+    /// Absent refuses bounded Host operations before durable intent or effect.
+    pub native_material_executable: Option<PathBuf>,
     /// Explicit existing NOW/state paths, not semantic allocation instructions.
     pub directories: Vec<DirectoryStorage>,
     /// An OpenSandbox lifecycle deployment this Workcell materialises sandbox
@@ -138,6 +142,10 @@ impl std::fmt::Debug for CollapsedLocalConfig {
             .field("services", &self.services)
             .field("service_declaration", &self.service_declaration)
             .field("host_lifetime", &self.host_lifetime)
+            .field(
+                "native_material_executable",
+                &self.native_material_executable,
+            )
             .field("directories", &self.directories)
             .field("opensandbox", &self.opensandbox)
             .field("external_execution", &self.external_execution.len())
@@ -157,6 +165,7 @@ impl CollapsedLocalConfig {
             services: DeclaredServices::default(),
             service_declaration: ServiceDeclarationSource::StateRoot,
             host_lifetime: HostLifetime::OneShotCommand,
+            native_material_executable: None,
             directories: Vec::new(),
             opensandbox: None,
             docker: None,
@@ -170,6 +179,11 @@ impl CollapsedLocalConfig {
     /// Register an external execution provider factory. Every provider the
     /// factories construct joins discovery like the built-in ports; a
     /// duplicate identity or a failing construction refuses the composition.
+    pub fn with_native_material_executable(mut self, executable: impl Into<PathBuf>) -> Self {
+        self.native_material_executable = Some(executable.into());
+        self
+    }
+
     pub fn with_external_execution_provider(
         mut self,
         factory: ExternalExecutionProviderFactory,
@@ -466,6 +480,7 @@ where
 /// boundary.
 pub struct CollapsedLocalWorkcell {
     workcell_ref: WorkcellRef,
+    native_material_executable: Option<PathBuf>,
     workspace_source: Option<PathBuf>,
     control: PreparedWorldControlPlane,
     workspace: SharedProvider<DirectoryWorkspaceProvider>,
@@ -675,6 +690,7 @@ impl CollapsedLocalWorkcell {
         let (budget, budget_observation_error) = budget;
         let admission = AdmissionLedger::load(&config.state_root)?;
         Ok(Self {
+            native_material_executable: config.native_material_executable,
             workcell_ref: config.workcell_ref,
             workspace_source: config.workspace_source,
             control,
@@ -690,6 +706,256 @@ impl CollapsedLocalWorkcell {
             budget,
             budget_observation_error,
             admission,
+        })
+    }
+
+    /// Dispatch one server-admitted bounded operation through the provider that
+    /// already owns this exact binding. Durable intent/replay is the serving
+    /// material owner's concern; this method never invents authority or a Run.
+    /// Pure exact admission check before the durable owner retains intent.
+    pub fn validate_admitted_material(
+        &self,
+        request: &MaterialOperationRequest,
+        grant: &MaterialOperationGrant,
+    ) -> Result<ProviderAllocation> {
+        let world = self.inspect(&request.world_ref)?;
+        let revision = epilogos_workcell_wire::material_world_revision(&world)?;
+        let now = crate::run::now_unix_ms();
+        if request.operation_id.trim().is_empty()
+            || request.grant_ref.trim().is_empty()
+            || grant.authority_ref.trim().is_empty()
+            || request.timeout_ms == 0
+            || request.timeout_ms > 60_000
+            || request.output_limit_bytes == 0
+            || request.output_limit_bytes > 1_048_576
+            || request.expected_world_revision != revision
+            || grant.expected_world_revision != revision
+            || request.world_ref != grant.world_ref
+            || request.binding_ref != grant.binding_ref
+            || request.operation_id != grant.operation_id
+            || request.grant_ref != grant.grant_ref
+            || request.operation != grant.operation
+            || request.timeout_ms != grant.timeout_ms
+            || request.output_limit_bytes != grant.output_limit_bytes
+            || grant.expires_at_unix_ms <= now
+            || grant.expires_at_unix_ms.saturating_sub(now) < request.timeout_ms
+            || world.provenance.contains_key("superseded_by")
+        {
+            return Err(WorkcellError::InvalidDemand("material operation does not match exact current finite server admission; no effect".into()));
+        }
+        let binding = world
+            .binding_graph
+            .bindings
+            .iter()
+            .find(|binding| binding.binding_ref == request.binding_ref)
+            .ok_or_else(|| {
+                WorkcellError::NotFound("selected material binding is absent; no effect".into())
+            })?;
+        if binding.port != ProviderPortKind::Execution
+            || binding.presence != BindingPresence::Present
+            || binding.health != HealthState::Healthy
+            || binding.provider_ref != grant.provider_ref
+            || binding.material_ref != grant.material_ref
+        {
+            return Err(WorkcellError::InvalidDemand("selected execution allocation is stale, unhealthy, released, or differs from server admission; no effect".into()));
+        }
+        let params = &request.operation.parameters;
+        if binding.provider_ref == *self.execution.provider_ref() {
+            if self
+                .native_material_executable
+                .as_ref()
+                .is_none_or(|path| !path.is_absolute() || !path.is_file())
+            {
+                return Err(WorkcellError::Unavailable(
+                    "trusted native guardian executable is unavailable; no intent or effect".into(),
+                ));
+            }
+            if !cfg!(any(target_os = "linux", target_os = "macos")) {
+                return Err(WorkcellError::Unsupported("native owned process-tree execution is unavailable on this platform; no effect".into()));
+            }
+            if request.operation.key != "process"
+                || params.get("program").is_none_or(|p| p.trim().is_empty())
+                || params.keys().any(|key| {
+                    !matches!(key.as_str(), "program" | "cwd") && !key.starts_with("arg.")
+                })
+            {
+                return Err(WorkcellError::InvalidDemand(
+                    "bounded host parameters/key refused before intent or effect".into(),
+                ));
+            }
+            let mut indexes = params
+                .keys()
+                .filter_map(|key| key.strip_prefix("arg."))
+                .map(|key| key.parse::<usize>().map(|index| (key, index)))
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|_| {
+                    WorkcellError::InvalidDemand("invalid host argument index; no effect".into())
+                })?;
+            indexes.sort_by_key(|(_, index)| *index);
+            if indexes
+                .iter()
+                .enumerate()
+                .any(|(expected, (key, actual))| expected != *actual || *key != actual.to_string())
+            {
+                return Err(WorkcellError::InvalidDemand(
+                    "host arguments require canonical contiguous indexes; no effect".into(),
+                ));
+            }
+        } else if self
+            .opensandbox
+            .as_ref()
+            .is_some_and(|p| binding.provider_ref == *p.provider_ref())
+        {
+            if request.operation.key != "command"
+                || params.get("command").is_none_or(|p| p.trim().is_empty())
+                || params
+                    .keys()
+                    .any(|key| !matches!(key.as_str(), "command" | "cwd"))
+            {
+                return Err(WorkcellError::InvalidDemand(
+                    "bounded OpenSandbox parameters/key refused before intent or effect".into(),
+                ));
+            }
+        } else {
+            return Err(WorkcellError::Unsupported(
+                "selected provider has no bounded execution route; no intent or effect".into(),
+            ));
+        }
+        if serde_json::to_vec(params)
+            .map_err(|_| {
+                WorkcellError::InvalidDemand(
+                    "material operation parameters cannot be encoded".into(),
+                )
+            })?
+            .len()
+            > 65_536
+        {
+            return Err(WorkcellError::InvalidDemand(
+                "material operation parameters exceed bounded request budget; no effect".into(),
+            ));
+        }
+        Ok(allocation_of(binding))
+    }
+
+    pub fn execute_admitted_material(
+        &mut self,
+        request: &MaterialOperationRequest,
+        grant: &MaterialOperationGrant,
+    ) -> Result<MaterialOperationReading> {
+        self.execute_admitted_material_with_recorder(request,grant,&mut |_|Err(WorkcellError::InvalidDemand("bounded Host operation requires the existing durable identity recorder; no command effect".into())))
+    }
+
+    pub fn execute_admitted_material_with_recorder(
+        &mut self,
+        request: &MaterialOperationRequest,
+        grant: &MaterialOperationGrant,
+        recorder: &mut dyn FnMut(&crate::MaterialProcessIdentity) -> Result<()>,
+    ) -> Result<MaterialOperationReading> {
+        let allocation = self.validate_admitted_material(request, grant)?;
+        let timeout = std::time::Duration::from_millis(request.timeout_ms);
+        let limit = request.output_limit_bytes as usize;
+        let result = if allocation.provider_ref == *self.execution.provider_ref() {
+            let params = &request.operation.parameters;
+            if request.operation.key != "process"
+                || params.keys().any(|key| {
+                    !matches!(key.as_str(), "program" | "cwd") && !key.starts_with("arg.")
+                })
+            {
+                return Err(WorkcellError::InvalidDemand(
+                    "bounded host operation parameters/key refused before effect".into(),
+                ));
+            }
+            let program = params
+                .get("program")
+                .filter(|p| !p.trim().is_empty())
+                .ok_or_else(|| {
+                    WorkcellError::InvalidDemand("bounded host operation requires a program".into())
+                })?;
+            let mut indexed = params
+                .iter()
+                .filter_map(|(key, value)| {
+                    key.strip_prefix("arg.")
+                        .map(|index| index.parse::<usize>().map(|index| (index, value.clone())))
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|_| {
+                    WorkcellError::InvalidDemand("invalid host argument index; no effect".into())
+                })?;
+            indexed.sort_by_key(|(index, _)| *index);
+            if indexed
+                .iter()
+                .enumerate()
+                .any(|(expected, (actual, _))| expected != *actual)
+            {
+                return Err(WorkcellError::InvalidDemand(
+                    "host argument indexes must be contiguous from zero; no effect".into(),
+                ));
+            }
+            self.execution.register_operation_grant(
+                &allocation,
+                crate::HostProcessOperationGrant {
+                    grant_ref: grant.grant_ref.clone(),
+                    authority_ref: grant.authority_ref.clone(),
+                    material_ref: grant.material_ref.clone(),
+                    operation_key: "process".into(),
+                    program: program.clone(),
+                    args: indexed.into_iter().map(|(_, value)| value).collect(),
+                    cwd: params.get("cwd").cloned(),
+                    expires_at_unix_ms: grant.expires_at_unix_ms,
+                    max_uses: 1,
+                },
+            )?;
+            let mut operation = request.operation.clone();
+            operation
+                .parameters
+                .insert("authority_ref".into(), grant.grant_ref.clone());
+            operation
+                .parameters
+                .insert("operation_id".into(), request.operation_id.clone());
+            self.execution.execute_guarded_operation(
+                &allocation,
+                &operation,
+                timeout,
+                limit,
+                self.native_material_executable.as_deref().ok_or_else(|| {
+                    WorkcellError::Unavailable("native material guardian is not configured".into())
+                })?,
+                recorder,
+            )?
+        } else if let Some(provider) = self
+            .opensandbox
+            .as_ref()
+            .filter(|provider| allocation.provider_ref == *provider.provider_ref())
+        {
+            provider.execute_bounded_operation(&allocation, &request.operation, timeout, limit)?
+        } else {
+            return Err(WorkcellError::Unsupported("selected provider has no admitted bounded operation route; native owner must implement it before execution".into()));
+        };
+        if serde_json::to_vec(&result.output).map_err(|_|WorkcellError::OperationFailed(
+            "bounded provider output could not be encoded; original effect requires reconciliation".into()))?.len()>limit {
+            return Err(WorkcellError::OperationFailed("provider result exceeds admitted aggregate output budget; original effect requires reconciliation".into()));
+        }
+        if result.provider_ref != allocation.provider_ref
+            || result.material_ref != allocation.material_ref
+            || result.operation != request.operation.key
+        {
+            return Err(WorkcellError::OperationFailed("provider returned a different material/operation identity; original effect requires reconciliation".into()));
+        }
+        Ok(MaterialOperationReading {
+            world_ref: request.world_ref.clone(),
+            binding_ref: request.binding_ref.clone(),
+            operation_id: request.operation_id.clone(),
+            request_fingerprint: epilogos_workcell_wire::material_operation_request_fingerprint(
+                request,
+            )?,
+            state: MaterialOperationState::Completed,
+            grant_ref: grant.grant_ref.clone(),
+            authority_ref: grant.authority_ref.clone(),
+            provider_ref: grant.provider_ref.clone(),
+            material_ref: grant.material_ref.clone(),
+            result: Some(result),
+            failure_kind: None,
+            failure_observation: BTreeMap::new(),
         })
     }
 
@@ -1251,6 +1517,14 @@ impl WorkcellControlPlane for CollapsedLocalWorkcell {
         }
         self.control.register_world(recovered.clone())?;
         Ok(recovered)
+    }
+
+    fn execute(
+        &mut self,
+        request: &MaterialOperationRequest,
+        grant: &MaterialOperationGrant,
+    ) -> Result<MaterialOperationReading> {
+        self.execute_admitted_material(request, grant)
     }
 
     fn observe(&self, world: &WorldRef) -> Result<ObservationBundle> {

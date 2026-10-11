@@ -522,6 +522,7 @@ dependencies = [
  "epilogos-workcell-docker",
  "epilogos-workcell-fabric",
  "epilogos-workcell-opensandbox",
+ "epilogos-workcell-wire",
  "epilogos-workcell-workspace",
  "libc",
  "serde_json",
@@ -566,6 +567,7 @@ version = "0.1.0"
 dependencies = [
  "epilogos-workcell-core",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

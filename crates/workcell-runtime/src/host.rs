@@ -15,6 +15,11 @@ use crate::{support::stable_key, PreparedWriteBoundary};
 
 const HOST_AFFORDANCES: &[&str] = &["shell", "process-execution", "execution:host-process"];
 
+type GuardedProcessRecorder<'a> = (
+    &'a std::path::Path,
+    &'a mut dyn FnMut(&crate::MaterialProcessIdentity) -> Result<()>,
+);
+
 /// Finite material capability for one already-allocated trusted host-process body.
 ///
 /// This is deliberately not semantic Action/Agency authority. The Workcell control
@@ -153,6 +158,365 @@ impl HostProcessExecutionProvider {
     }
 }
 
+impl HostProcessExecutionProvider {
+    /// The native material-operation route supplies limits from an exact
+    /// server-owned grant. Legacy SDK operations keep their existing policy.
+    pub fn execute_bounded_operation(
+        &mut self,
+        allocation: &ProviderAllocation,
+        operation: &ProviderOperation,
+        timeout: std::time::Duration,
+        output_limit: usize,
+    ) -> Result<ProviderOperationResult> {
+        if timeout.is_zero()
+            || timeout > std::time::Duration::from_secs(60)
+            || output_limit == 0
+            || output_limit > 1_048_576
+        {
+            return Err(WorkcellError::InvalidDemand(
+                "bounded host operation limits refused before effect".into(),
+            ));
+        }
+        self.execute_process(allocation, operation, Some((timeout, output_limit)), None)
+    }
+
+    /// Existing durable material owner retains both trusted waiting identities
+    /// before opening the command gate. Grant validation still happens here.
+    pub fn execute_guarded_operation(
+        &mut self,
+        allocation: &ProviderAllocation,
+        operation: &ProviderOperation,
+        timeout: std::time::Duration,
+        output_limit: usize,
+        executable: &std::path::Path,
+        recorder: &mut dyn FnMut(&crate::MaterialProcessIdentity) -> Result<()>,
+    ) -> Result<ProviderOperationResult> {
+        if timeout.is_zero()
+            || timeout > std::time::Duration::from_secs(60)
+            || output_limit == 0
+            || output_limit > 1_048_576
+        {
+            return Err(WorkcellError::InvalidDemand(
+                "bounded guardian limits refused before effect".into(),
+            ));
+        }
+        self.execute_process(
+            allocation,
+            operation,
+            Some((timeout, output_limit)),
+            Some((executable, recorder)),
+        )
+    }
+
+    fn execute_process(
+        &mut self,
+        allocation: &ProviderAllocation,
+        operation: &ProviderOperation,
+        limits: Option<(std::time::Duration, usize)>,
+        guarded: Option<GuardedProcessRecorder<'_>>,
+    ) -> Result<ProviderOperationResult> {
+        validate_allocation(self, allocation)?;
+        if operation.key != "process" {
+            return Err(WorkcellError::Unsupported(format!(
+                "host-process provider does not implement operation `{}`",
+                operation.key
+            )));
+        }
+
+        let grant_ref = operation.parameters.get("authority_ref").ok_or_else(|| {
+            WorkcellError::OperationFailed(
+                "host-process execution denied before side effect: explicit material authority is required"
+                    .into(),
+            )
+        })?;
+        let operation_id = operation.parameters.get("operation_id").ok_or_else(|| {
+            WorkcellError::OperationFailed(
+                "host-process execution denied before side effect: operation_id is required".into(),
+            )
+        })?;
+        let program = operation.parameters.get("program").ok_or_else(|| {
+            WorkcellError::InvalidDemand("process operation requires `program`".into())
+        })?;
+        let mut indexed_args = operation
+            .parameters
+            .iter()
+            .filter_map(|(key, value)| {
+                key.strip_prefix("arg.")
+                    .and_then(|index| index.parse::<usize>().ok())
+                    .map(|index| (index, value))
+            })
+            .collect::<Vec<_>>();
+        indexed_args.sort_by_key(|(index, _)| *index);
+        for pair in indexed_args.windows(2) {
+            if pair[0].0 == pair[1].0 {
+                return Err(WorkcellError::InvalidDemand(
+                    "process operation contains duplicate argument indexes".into(),
+                ));
+            }
+        }
+        let args = indexed_args
+            .iter()
+            .map(|(_, value)| (*value).clone())
+            .collect::<Vec<_>>();
+        let cwd = operation.parameters.get("cwd").cloned();
+        let fingerprint = operation_fingerprint(program, &args, cwd.as_deref());
+        let now = now_unix_ms()?;
+
+        let stored = self.operation_grants.get_mut(grant_ref).ok_or_else(|| {
+            WorkcellError::OperationFailed(format!(
+                "host-process execution denied before side effect: unknown material authority `{grant_ref}`"
+            ))
+        })?;
+        if stored.revoked {
+            return Err(WorkcellError::OperationFailed(format!(
+                "host-process material authority `{grant_ref}` is revoked"
+            )));
+        }
+        if stored.grant.material_ref != allocation.material_ref
+            || stored.grant.operation_key != operation.key
+            || stored.grant.program != *program
+            || stored.grant.args != args
+            || stored.grant.cwd != cwd
+        {
+            return Err(WorkcellError::OperationFailed(
+                "host-process execution denied before side effect: operation does not match exact material authority"
+                    .into(),
+            ));
+        }
+        if now >= stored.grant.expires_at_unix_ms {
+            return Err(WorkcellError::OperationFailed(format!(
+                "host-process material authority `{grant_ref}` is expired"
+            )));
+        }
+        if let Some(previous) = stored.operations.get(operation_id) {
+            if previous == &fingerprint {
+                return Err(WorkcellError::OperationFailed(format!(
+                    "host-process operation `{operation_id}` was already consumed and is not declared retry-safe"
+                )));
+            }
+            return Err(WorkcellError::OperationFailed(format!(
+                "host-process operation `{operation_id}` conflicts with an already consumed request"
+            )));
+        }
+        if stored.uses >= stored.grant.max_uses {
+            return Err(WorkcellError::OperationFailed(format!(
+                "host-process material authority `{grant_ref}` is exhausted"
+            )));
+        }
+
+        // Consume before the side effect. A spawn/exec failure does not restore
+        // authority and therefore cannot be turned into an amplification loop.
+        stored.uses += 1;
+        stored.operations.insert(operation_id.clone(), fingerprint);
+        let external_authority_ref = stored.grant.authority_ref.clone();
+        let authority_expiry_unix_ms = stored.grant.expires_at_unix_ms;
+        let boundary = stored.boundary.clone();
+        let required_digest = operation.parameters.get("write_boundary_digest");
+        if required_digest.is_some() && boundary.is_none() {
+            return Err(WorkcellError::OperationFailed(
+                "required material write boundary has not been bound; execution refused".into(),
+            ));
+        }
+        if let Some(boundary) = &boundary {
+            if required_digest != Some(&boundary.requirements().digest()) {
+                return Err(WorkcellError::OperationFailed(
+                    "material write boundary digest missing or changed".into(),
+                ));
+            }
+        }
+
+        let mut command = if guarded.is_some() {
+            // The trusted gated trampoline reconstructs native protection; a
+            // serialized Command cannot carry a Linux pre_exec closure.
+            Command::new(program)
+        } else if let Some(boundary) = &boundary {
+            let current_revision =
+                operation.parameters.get("policy_revision").ok_or_else(|| {
+                    WorkcellError::OperationFailed(
+                        "current policy revision is required for bounded execution".into(),
+                    )
+                })?;
+            boundary.command(program, current_revision)?
+        } else {
+            Command::new(program)
+        };
+        command.args(indexed_args.iter().map(|(_, value)| value.as_str()));
+        if let Some(cwd) = operation.parameters.get("cwd") {
+            command.current_dir(cwd);
+        }
+        let (status, stdout, stderr, output_complete, output_truncated, cleanup_observation) =
+            match limits {
+                Some((timeout, output_limit)) if guarded.is_some() => {
+                    let (executable, recorder) = guarded.expect("matched guarded route");
+                    let protected = boundary.as_ref().map(|boundary| {
+                        operation.parameters.get("policy_revision").map(|revision|(boundary,revision.as_str())).ok_or_else(||WorkcellError::OperationFailed("current policy revision is required for guarded write protection".into()))
+                    }).transpose()?;
+                    let result = crate::material_process::execute_guarded(
+                        executable,
+                        command,
+                        timeout,
+                        output_limit,
+                        recorder,
+                        protected,
+                        Some(authority_expiry_unix_ms),
+                    )?;
+                    #[cfg(unix)]
+                    let status = {
+                        use std::os::unix::process::ExitStatusExt;
+                        let raw = if let Some(code) = result["exit_code"]
+                            .as_i64()
+                            .filter(|code| *code >= 0 && *code <= 255)
+                        {
+                            (code as i32) << 8
+                        } else if let Some(signal) = result["exit_signal"]
+                            .as_i64()
+                            .filter(|signal| *signal > 0 && *signal < 128)
+                        {
+                            signal as i32
+                        } else {
+                            return Err(WorkcellError::OperationFailed("guardian native status is absent or invalid; original effect requires reconciliation".into()));
+                        };
+                        std::process::ExitStatus::from_raw(raw)
+                    };
+                    #[cfg(not(unix))]
+                    return Err(WorkcellError::Unsupported(
+                        "native guardian status is unsupported on this platform".into(),
+                    ));
+                    #[cfg(unix)]
+                    (
+                        status,
+                        result["stdout"]
+                            .as_str()
+                            .ok_or_else(|| {
+                                WorkcellError::OperationFailed(
+                                    "guardian stdout is unreadable".into(),
+                                )
+                            })?
+                            .as_bytes()
+                            .to_vec(),
+                        result["stderr"]
+                            .as_str()
+                            .ok_or_else(|| {
+                                WorkcellError::OperationFailed(
+                                    "guardian stderr is unreadable".into(),
+                                )
+                            })?
+                            .as_bytes()
+                            .to_vec(),
+                        result["output_complete"].as_bool().ok_or_else(|| {
+                            WorkcellError::OperationFailed(
+                                "guardian completeness is unreadable".into(),
+                            )
+                        })?,
+                        result["output_truncated"].as_bool().ok_or_else(|| {
+                            WorkcellError::OperationFailed(
+                                "guardian truncation is unreadable".into(),
+                            )
+                        })?,
+                        result["cleanup_observation"].as_str().map(str::to_owned),
+                    )
+                }
+                Some((timeout, output_limit)) => {
+                    command
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped());
+                    let captured = crate::bounded_process::capture_owned_bounded_process(
+                        command,
+                        timeout,
+                        output_limit / 2,
+                    )
+                    .map_err(|failure| {
+                        WorkcellError::OperationFailed(format!(
+                            "owned host execution remains unreconciled: {}",
+                            failure.observation()
+                        ))
+                    })?;
+                    (
+                        captured.status,
+                        captured.stdout,
+                        captured.stderr,
+                        captured.output_complete,
+                        captured.output_truncated,
+                        captured.cleanup_observation.map(str::to_owned),
+                    )
+                }
+                None => {
+                    let result = command.output().map_err(|error| {
+                        WorkcellError::OperationFailed(format!(
+                            "execute host process `{program}`: {error}"
+                        ))
+                    })?;
+                    (
+                        result.status,
+                        result.stdout,
+                        result.stderr,
+                        true,
+                        false,
+                        None,
+                    )
+                }
+            };
+
+        let mut output = BTreeMap::new();
+        output.insert(
+            "exit_code".into(),
+            status
+                .code()
+                .map_or_else(|| "signal".into(), |code| code.to_string()),
+        );
+        output.insert("success".into(), status.success().to_string());
+        output.insert("stdout".into(), match limits {
+            Some(_) => String::from_utf8(stdout).map_err(|_| WorkcellError::OperationFailed(
+                "bounded host output is not UTF-8; original completed effect requires reconciliation".into()))?,
+            None => String::from_utf8_lossy(&stdout).into_owned(),
+        });
+        output.insert("stderr".into(), match limits {
+            Some(_) => String::from_utf8(stderr).map_err(|_| WorkcellError::OperationFailed(
+                "bounded host error output is not UTF-8; original completed effect requires reconciliation".into()))?,
+            None => String::from_utf8_lossy(&stderr).into_owned(),
+        });
+        output.insert("complete".into(), output_complete.to_string());
+        output.insert("output_truncated".into(), output_truncated.to_string());
+        let mut provenance = allocation.provenance.clone();
+        provenance.insert("operation".into(), "process".into());
+        if let Some(observation) = cleanup_observation {
+            provenance.insert("native_cleanup_observation".into(), observation);
+        }
+        provenance.insert("material_authority_ref".into(), grant_ref.clone());
+        provenance.insert("external_authority_ref".into(), external_authority_ref);
+        provenance.insert("operation_id".into(), operation_id.clone());
+        provenance.insert(
+            "write_boundary".into(),
+            boundary
+                .as_ref()
+                .map_or_else(|| "none".into(), |b| b.requirements().digest()),
+        );
+        if let Some(boundary) = &boundary {
+            provenance.insert(
+                "policy_ref".into(),
+                boundary.requirements().policy_ref.clone(),
+            );
+            provenance.insert(
+                "policy_revision".into(),
+                boundary.requirements().policy_revision.clone(),
+            );
+            provenance.insert(
+                "write_coverage".into(),
+                crate::WRITE_BOUNDARY_COVERAGE.join(","),
+            );
+        }
+
+        Ok(ProviderOperationResult {
+            provider_ref: self.provider_ref.clone(),
+            material_ref: allocation.material_ref.clone(),
+            operation: operation.key.clone(),
+            output,
+            provenance,
+        })
+    }
+}
+
 impl ProviderPort for HostProcessExecutionProvider {
     fn provider_ref(&self) -> &ProviderRef {
         &self.provider_ref
@@ -273,184 +637,7 @@ impl ExecutionProvider for HostProcessExecutionProvider {
         allocation: &ProviderAllocation,
         operation: &ProviderOperation,
     ) -> Result<ProviderOperationResult> {
-        validate_allocation(self, allocation)?;
-        if operation.key != "process" {
-            return Err(WorkcellError::Unsupported(format!(
-                "host-process provider does not implement operation `{}`",
-                operation.key
-            )));
-        }
-
-        let grant_ref = operation.parameters.get("authority_ref").ok_or_else(|| {
-            WorkcellError::OperationFailed(
-                "host-process execution denied before side effect: explicit material authority is required"
-                    .into(),
-            )
-        })?;
-        let operation_id = operation.parameters.get("operation_id").ok_or_else(|| {
-            WorkcellError::OperationFailed(
-                "host-process execution denied before side effect: operation_id is required".into(),
-            )
-        })?;
-        let program = operation.parameters.get("program").ok_or_else(|| {
-            WorkcellError::InvalidDemand("process operation requires `program`".into())
-        })?;
-        let mut indexed_args = operation
-            .parameters
-            .iter()
-            .filter_map(|(key, value)| {
-                key.strip_prefix("arg.")
-                    .and_then(|index| index.parse::<usize>().ok())
-                    .map(|index| (index, value))
-            })
-            .collect::<Vec<_>>();
-        indexed_args.sort_by_key(|(index, _)| *index);
-        for pair in indexed_args.windows(2) {
-            if pair[0].0 == pair[1].0 {
-                return Err(WorkcellError::InvalidDemand(
-                    "process operation contains duplicate argument indexes".into(),
-                ));
-            }
-        }
-        let args = indexed_args
-            .iter()
-            .map(|(_, value)| (*value).clone())
-            .collect::<Vec<_>>();
-        let cwd = operation.parameters.get("cwd").cloned();
-        let fingerprint = operation_fingerprint(program, &args, cwd.as_deref());
-        let now = now_unix_ms()?;
-
-        let stored = self.operation_grants.get_mut(grant_ref).ok_or_else(|| {
-            WorkcellError::OperationFailed(format!(
-                "host-process execution denied before side effect: unknown material authority `{grant_ref}`"
-            ))
-        })?;
-        if stored.revoked {
-            return Err(WorkcellError::OperationFailed(format!(
-                "host-process material authority `{grant_ref}` is revoked"
-            )));
-        }
-        if stored.grant.material_ref != allocation.material_ref
-            || stored.grant.operation_key != operation.key
-            || stored.grant.program != *program
-            || stored.grant.args != args
-            || stored.grant.cwd != cwd
-        {
-            return Err(WorkcellError::OperationFailed(
-                "host-process execution denied before side effect: operation does not match exact material authority"
-                    .into(),
-            ));
-        }
-        if now >= stored.grant.expires_at_unix_ms {
-            return Err(WorkcellError::OperationFailed(format!(
-                "host-process material authority `{grant_ref}` is expired"
-            )));
-        }
-        if let Some(previous) = stored.operations.get(operation_id) {
-            if previous == &fingerprint {
-                return Err(WorkcellError::OperationFailed(format!(
-                    "host-process operation `{operation_id}` was already consumed and is not declared retry-safe"
-                )));
-            }
-            return Err(WorkcellError::OperationFailed(format!(
-                "host-process operation `{operation_id}` conflicts with an already consumed request"
-            )));
-        }
-        if stored.uses >= stored.grant.max_uses {
-            return Err(WorkcellError::OperationFailed(format!(
-                "host-process material authority `{grant_ref}` is exhausted"
-            )));
-        }
-
-        // Consume before the side effect. A spawn/exec failure does not restore
-        // authority and therefore cannot be turned into an amplification loop.
-        stored.uses += 1;
-        stored.operations.insert(operation_id.clone(), fingerprint);
-        let external_authority_ref = stored.grant.authority_ref.clone();
-        let boundary = stored.boundary.clone();
-        let required_digest = operation.parameters.get("write_boundary_digest");
-        if required_digest.is_some() && boundary.is_none() {
-            return Err(WorkcellError::OperationFailed(
-                "required material write boundary has not been bound; execution refused".into(),
-            ));
-        }
-        if let Some(boundary) = &boundary {
-            if required_digest != Some(&boundary.requirements().digest()) {
-                return Err(WorkcellError::OperationFailed(
-                    "material write boundary digest missing or changed".into(),
-                ));
-            }
-        }
-
-        let mut command = if let Some(boundary) = &boundary {
-            let current_revision =
-                operation.parameters.get("policy_revision").ok_or_else(|| {
-                    WorkcellError::OperationFailed(
-                        "current policy revision is required for bounded execution".into(),
-                    )
-                })?;
-            boundary.command(program, current_revision)?
-        } else {
-            Command::new(program)
-        };
-        command.args(indexed_args.iter().map(|(_, value)| value.as_str()));
-        if let Some(cwd) = operation.parameters.get("cwd") {
-            command.current_dir(cwd);
-        }
-        let result = command.output().map_err(|error| {
-            WorkcellError::OperationFailed(format!("execute host process `{program}`: {error}"))
-        })?;
-
-        let mut output = BTreeMap::new();
-        output.insert(
-            "exit_code".into(),
-            result
-                .status
-                .code()
-                .map_or_else(|| "signal".into(), |code| code.to_string()),
-        );
-        output.insert("success".into(), result.status.success().to_string());
-        output.insert(
-            "stdout".into(),
-            String::from_utf8_lossy(&result.stdout).into_owned(),
-        );
-        output.insert(
-            "stderr".into(),
-            String::from_utf8_lossy(&result.stderr).into_owned(),
-        );
-        let mut provenance = allocation.provenance.clone();
-        provenance.insert("operation".into(), "process".into());
-        provenance.insert("material_authority_ref".into(), grant_ref.clone());
-        provenance.insert("external_authority_ref".into(), external_authority_ref);
-        provenance.insert("operation_id".into(), operation_id.clone());
-        provenance.insert(
-            "write_boundary".into(),
-            boundary
-                .as_ref()
-                .map_or_else(|| "none".into(), |b| b.requirements().digest()),
-        );
-        if let Some(boundary) = &boundary {
-            provenance.insert(
-                "policy_ref".into(),
-                boundary.requirements().policy_ref.clone(),
-            );
-            provenance.insert(
-                "policy_revision".into(),
-                boundary.requirements().policy_revision.clone(),
-            );
-            provenance.insert(
-                "write_coverage".into(),
-                crate::WRITE_BOUNDARY_COVERAGE.join(","),
-            );
-        }
-
-        Ok(ProviderOperationResult {
-            provider_ref: self.provider_ref.clone(),
-            material_ref: allocation.material_ref.clone(),
-            operation: operation.key.clone(),
-            output,
-            provenance,
-        })
+        self.execute_process(allocation, operation, None, None)
     }
 
     fn observe_execution(&self, allocation: &ProviderAllocation) -> Result<ProviderObservation> {

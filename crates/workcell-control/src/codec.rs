@@ -222,7 +222,9 @@ pub fn plan_value(plan: &MaterialisationPlan) -> Value {
 pub fn prepared_world_value(
     world: &epilogos_workcell_core::MaterialisedExecutionWorld,
 ) -> Result<Value, WorkcellError> {
-    world_value(world)
+    let mut value = world_value(world)?;
+    value["material_revision"] = json!(epilogos_workcell_wire::material_world_revision(world)?);
+    Ok(value)
 }
 
 pub fn observation_value(bundle: &ObservationBundle) -> Value {

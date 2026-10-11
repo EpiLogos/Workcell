@@ -36,6 +36,24 @@ fn version_requested(args: &[String]) -> bool {
 
 fn main() -> ExitCode {
     let args = env::args().skip(1).collect::<Vec<_>>();
+    let internal = match args.as_slice() {
+        [flag] if flag == epilogos_workcell_runtime::MATERIAL_PROCESS_GUARDIAN_FLAG => {
+            Some(epilogos_workcell_runtime::material_process_guardian_main())
+        }
+        [flag] if flag == epilogos_workcell_runtime::MATERIAL_PROCESS_COMMAND_FLAG => {
+            Some(epilogos_workcell_runtime::material_process_command_main())
+        }
+        _ => None,
+    };
+    if let Some(result) = internal {
+        return match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(_) => {
+                eprintln!("workcell: native owned material helper failed; retained operation requires readback");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if version_requested(&args) {
         println!(
             "workcell {} ({})",

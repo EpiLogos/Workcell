@@ -13,6 +13,8 @@ pub struct BoundedProcessOutput {
     pub stderr: Vec<u8>,
     pub output_truncated: bool,
     pub output_complete: bool,
+    /// Native owned completion facts; generic captures do not claim tree retirement.
+    pub cleanup_observation: Option<&'static str>,
 }
 /// Consume only pipes (never pre-open writable files). Drain beyond the bounded
 /// returned prefix so excessive output cannot deadlock execution. Every pipe
@@ -33,6 +35,7 @@ pub enum BoundedCaptureFailureKind {
     WaitFailed,
     DeadlineElapsed,
     CleanupFailed,
+    Cancelled,
 }
 
 /// Actual bounded capture facts. This is neither a native Return nor authority
@@ -258,6 +261,35 @@ pub fn capture_bounded_process(
     }
 }
 
+/// Explicit material operations own their finite process tree. Generic capture
+/// deliberately keeps its existing completed-background-process behaviour.
+pub fn capture_owned_bounded_process(
+    command: Command,
+    timeout: Duration,
+    output_limit: usize,
+) -> std::result::Result<BoundedProcessOutput, BoundedProcessFailure> {
+    if timeout.is_zero() || timeout > Duration::from_secs(60) || output_limit > 1_048_576 {
+        return Err(BoundedProcessFailure::contract(
+            BoundedCaptureFailureKind::InvalidLimits,
+            "validate owned limits",
+            "owned operation requires 0 < timeout <= 60s and output <= 1 MiB",
+        ));
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        native::run_owned(command, timeout, output_limit)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = command;
+        Err(BoundedProcessFailure::contract(
+            BoundedCaptureFailureKind::UnsupportedPlatform,
+            "owned operation admission",
+            "process-tree ownership requires native Linux/macOS waitid; no command spawned",
+        ))
+    }
+}
+
 /// Crate-private legacy command route. Output is actually sent to the OS null
 /// device; it is neither piped and discarded nor represented as observed EOF.
 /// Spawn/wait/retirement remain owned by the same native Child driver.
@@ -292,6 +324,18 @@ pub(crate) fn run_status_only(
     })
 }
 
+/// The trusted material guardian already owns this exact gated Child. Lifeline
+/// EOF cancels it; only this dedicated guardian adopts/reaps its descendants.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn capture_material_child(
+    child: std::process::Child,
+    deadline: std::time::Instant,
+    limit: usize,
+    lifeline: std::os::fd::RawFd,
+) -> std::result::Result<BoundedProcessOutput, BoundedProcessFailure> {
+    native::capture_material_child(child, deadline, limit, lifeline)
+}
+
 pub fn run_bounded_process(
     command: Command,
     timeout: Duration,
@@ -313,6 +357,7 @@ pub fn run_bounded_process(
                     stderr: failure.inner.stderr,
                     output_truncated: failure.inner.output_truncated,
                     output_complete: failure.inner.stdout_eof && failure.inner.stderr_eof,
+                    cleanup_observation: None,
                 });
             }
             _ => {}
@@ -589,6 +634,208 @@ mod native {
         }
     }
 
+    // WNOWAIT keeps the retained leader unreaped while any group effect is
+    // issued. A numeric group is never signalled after this owner reaps it.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn owned_exit_observed(child: &Child, deadline: Instant) -> io::Result<bool> {
+        loop {
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            let rc = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    child.id(),
+                    &mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            if rc == 0 {
+                return Ok(unsafe { info.si_pid() } == child.id() as i32);
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted || Instant::now() >= deadline {
+                return Err(error);
+            }
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn retire_owned_tree(child: &mut Child, deadline: Instant, reap_adopted: bool) -> Cleanup {
+        let mut result = Cleanup::none();
+        match owned_exit_observed(child, deadline) {
+            Ok(_) => {}
+            Err(error) => {
+                result.wait_refusal(error);
+                return result;
+            }
+        }
+        let mut reconciled_eperm = false;
+        let pid = child.id() as libc::pid_t;
+        let actual_group = unsafe { libc::getpgid(pid) };
+        let group_error = (actual_group < 0).then(io::Error::last_os_error);
+        // Darwin may stop exposing a completed leader through getpgid before
+        // the actual owner has reaped it. Both callers established this exact
+        // initial group at spawn. WNOWAIT still holds the leader PID against
+        // reuse, so its original group remains the owned cancellation target.
+        // A live moved leader never supplies this completion proof.
+        let completed_original_leader = if group_error
+            .as_ref()
+            .is_some_and(|error| error.raw_os_error() == Some(libc::ESRCH))
+        {
+            match owned_exit_observed(child, deadline) {
+                Ok(exited) => exited,
+                Err(error) => {
+                    result.wait_refusal(error);
+                    return result;
+                }
+            }
+        } else {
+            false
+        };
+        if actual_group == pid || completed_original_leader {
+            // Revalidate the still-unreaped Child immediately before delivery.
+            let exited = match owned_exit_observed(child, deadline) {
+                Ok(exited) => exited,
+                Err(error) => {
+                    result.wait_refusal(error);
+                    return result;
+                }
+            };
+            result.requested = true;
+            if unsafe { libc::kill(-pid, libc::SIGKILL) } == 0 {
+                result.accepted = true;
+            } else {
+                let error = io::Error::last_os_error();
+                let absent = error.raw_os_error() == Some(libc::ESRCH);
+                // Darwin can retire the group after the last WNOWAIT read.
+                // Re-observe the exact still-unreaped leader on EPERM; only an
+                // actual completed leader + later ESRCH reconciles this race.
+                let completed_darwin =
+                    if cfg!(target_os = "macos") && error.raw_os_error() == Some(libc::EPERM) {
+                        match owned_exit_observed(child, deadline) {
+                            Ok(observed) => exited || observed,
+                            Err(error) => {
+                                result.wait_refusal(error);
+                                return result;
+                            }
+                        }
+                    } else {
+                        false
+                    };
+                reconciled_eperm = completed_darwin;
+                if !absent && !completed_darwin {
+                    result.error = Some(error);
+                }
+            }
+        } else {
+            // A retained leader can move to another group. Do not signal that
+            // foreign group: terminate only the actual still-owned Child.
+            if actual_group < 0 {
+                result.error = group_error;
+            }
+        }
+        let still_running = match owned_exit_observed(child, deadline) {
+            Ok(exited) => !exited,
+            Err(error) => {
+                result.wait_refusal(error);
+                return result;
+            }
+        };
+        if still_running {
+            result.requested = true;
+            if let Err(error) = child.kill() {
+                // A completion race can make native delivery fail. Revalidate
+                // and reap that real completion; never return before trying.
+                match owned_exit_observed(child, deadline) {
+                    Ok(true) => {}
+                    Ok(false) => result.error = Some(error),
+                    Err(error) => {
+                        result.wait_refusal(error);
+                        return result;
+                    }
+                }
+            } else {
+                result.accepted = true;
+            }
+        }
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    result.status = Some(status);
+                    result.reaped = true;
+                    break;
+                }
+                Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(2)),
+                Ok(None) => {
+                    result.observation = "owned-leader-retirement-unconfirmed";
+                    result.error = Some(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "owned leader retirement deadline elapsed",
+                    ));
+                    return result;
+                }
+                Err(error) => {
+                    result.wait_refusal(error);
+                    return result;
+                }
+            }
+        }
+        // Read-only extinction observation after reap. Even an accepted signal
+        // or Darwin EPERM is not evidence that the owned group is absent.
+        loop {
+            #[cfg(target_os = "linux")]
+            if reap_adopted {
+                // Only the dedicated native material guardian is a subreaper.
+                // The direct leader is already reaped; these are its actual
+                // adopted original-group descendants, never another owner.
+                loop {
+                    let rc = unsafe { libc::waitpid(-pid, std::ptr::null_mut(), libc::WNOHANG) };
+                    if rc <= 0 {
+                        break;
+                    }
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            let _ = reap_adopted;
+            if unsafe { libc::kill(-pid, 0) } < 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::ESRCH) {
+                    result.observation = if reconciled_eperm {
+                        "owned-child-reaped-original-group-observed-absent-after-native-eperm"
+                    } else {
+                        "owned-child-reaped-original-group-observed-absent"
+                    };
+                    return result;
+                }
+                if error.raw_os_error() != Some(libc::EPERM) {
+                    result.error = Some(error);
+                    break;
+                }
+            }
+            if Instant::now() >= deadline {
+                result.error = Some(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "original owned group retirement unconfirmed",
+                ));
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        result.observation = "owned-child-reaped-group-retirement-unconfirmed";
+        result
+    }
+
+    fn retire(child: &mut Child, deadline: Instant, owned_tree: bool) -> Cleanup {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if owned_tree {
+            return retire_owned_tree(child, deadline, false);
+        }
+        let _ = owned_tree;
+        retire_owned(child, deadline)
+    }
+
     struct Captured {
         out: Option<Capture<std::process::ChildStdout>>,
         err: Option<Capture<std::process::ChildStderr>>,
@@ -709,6 +956,38 @@ mod native {
         capture(child, deadline, limit)
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(super) fn run_owned(
+        command: Command,
+        timeout: Duration,
+        limit: usize,
+    ) -> std::result::Result<BoundedProcessOutput, BoundedProcessFailure> {
+        let (child, deadline) = spawn_owned(command, timeout, OutputIntent::Capture(limit))?;
+        match drive(child, deadline, OutputIntent::Capture(limit), true, None)? {
+            NativeOutput::Captured(output) => Ok(output),
+            NativeOutput::Status(_) => unreachable!("owned capture requested pipes"),
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(super) fn capture_material_child(
+        child: Child,
+        deadline: Instant,
+        limit: usize,
+        lifeline: std::os::fd::RawFd,
+    ) -> std::result::Result<BoundedProcessOutput, BoundedProcessFailure> {
+        match drive(
+            child,
+            deadline,
+            OutputIntent::Capture(limit),
+            true,
+            Some(lifeline),
+        )? {
+            NativeOutput::Captured(output) => Ok(output),
+            NativeOutput::Status(_) => unreachable!("material capture requires pipes"),
+        }
+    }
+
     pub(super) fn run_status_only(
         command: Command,
         timeout: Duration,
@@ -724,7 +1003,7 @@ mod native {
         deadline: Instant,
         limit: usize,
     ) -> std::result::Result<BoundedProcessOutput, BoundedProcessFailure> {
-        match drive(child, deadline, OutputIntent::Capture(limit))? {
+        match drive(child, deadline, OutputIntent::Capture(limit), false, None)? {
             NativeOutput::Captured(output) => Ok(output),
             NativeOutput::Status(_) => {
                 unreachable!("closed capture intent returned status-only output")
@@ -736,7 +1015,7 @@ mod native {
         child: Child,
         deadline: Instant,
     ) -> std::result::Result<ExitStatus, BoundedProcessFailure> {
-        match drive(child, deadline, OutputIntent::NullStatus)? {
+        match drive(child, deadline, OutputIntent::NullStatus, false, None)? {
             NativeOutput::Status(status) => Ok(status),
             NativeOutput::Captured(_) => {
                 unreachable!("closed null intent returned captured output")
@@ -755,6 +1034,8 @@ mod native {
         mut child: Child,
         deadline: Instant,
         intent: OutputIntent,
+        owned_tree: bool,
+        lifeline: Option<i32>,
     ) -> std::result::Result<NativeOutput, BoundedProcessFailure> {
         let output_capture_requested = matches!(intent, OutputIntent::Capture(_));
         let (mut out, mut err) = match intent {
@@ -763,7 +1044,8 @@ mod native {
                 let (out, err) = match (child.stdout.take(), child.stderr.take()) {
                     (Some(out), Some(err)) => (out, err),
                     _ => {
-                        let cleanup = retire_owned(&mut child, Instant::now() + CLEANUP_GRACE);
+                        let cleanup =
+                            retire(&mut child, Instant::now() + CLEANUP_GRACE, owned_tree);
                         return Err(failure(
                             BoundedCaptureFailureKind::MissingPipes,
                             "pipe admission",
@@ -776,7 +1058,8 @@ mod native {
                 let out = match Capture::new(out, limit) {
                     Ok(out) => out,
                     Err(cause) => {
-                        let cleanup = retire_owned(&mut child, Instant::now() + CLEANUP_GRACE);
+                        let cleanup =
+                            retire(&mut child, Instant::now() + CLEANUP_GRACE, owned_tree);
                         return Err(failure(
                             BoundedCaptureFailureKind::PipeAdmissionFailed,
                             "stdout native pipe admission",
@@ -789,7 +1072,8 @@ mod native {
                 let err = match Capture::new(err, limit) {
                     Ok(err) => err,
                     Err(cause) => {
-                        let cleanup = retire_owned(&mut child, Instant::now() + CLEANUP_GRACE);
+                        let cleanup =
+                            retire(&mut child, Instant::now() + CLEANUP_GRACE, owned_tree);
                         return Err(failure(
                             BoundedCaptureFailureKind::PipeAdmissionFailed,
                             "stderr native pipe admission",
@@ -804,12 +1088,37 @@ mod native {
         };
         let mut status = None;
         let mut capture_deadline = deadline;
+        let mut cleanup_observation = None;
         loop {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            if let Some(fd) = lifeline {
+                let mut byte = 0u8;
+                let rc = unsafe { libc::read(fd, (&mut byte as *mut u8).cast(), 1) };
+                let cancelled = rc >= 0
+                    || (rc < 0
+                        && !matches!(
+                            io::Error::last_os_error().kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                        ));
+                if cancelled && status.is_none() {
+                    let cleanup =
+                        retire_owned_tree(&mut child, Instant::now() + CLEANUP_GRACE, true);
+                    return Err(failure(
+                        BoundedCaptureFailureKind::Cancelled,
+                        "material owner lifeline closed",
+                        None,
+                        captured_for_intent(out, err, status, false, output_capture_requested),
+                        cleanup,
+                    ));
+                }
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            let _ = lifeline;
             let drained = out
                 .as_mut()
                 .map_or(Ok(()), |stream| stream.drain(capture_deadline));
             if let Err(cause) = drained {
-                let cleanup = retire_owned(&mut child, Instant::now() + CLEANUP_GRACE);
+                let cleanup = retire(&mut child, Instant::now() + CLEANUP_GRACE, owned_tree);
                 return Err(failure(
                     BoundedCaptureFailureKind::ReadFailed,
                     "stdout native read",
@@ -822,7 +1131,7 @@ mod native {
                 .as_mut()
                 .map_or(Ok(()), |stream| stream.drain(capture_deadline));
             if let Err(cause) = drained {
-                let cleanup = retire_owned(&mut child, Instant::now() + CLEANUP_GRACE);
+                let cleanup = retire(&mut child, Instant::now() + CLEANUP_GRACE, owned_tree);
                 return Err(failure(
                     BoundedCaptureFailureKind::ReadFailed,
                     "stderr native read",
@@ -831,8 +1140,64 @@ mod native {
                     cleanup,
                 ));
             }
+            if status.is_none() && owned_tree {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                match owned_exit_observed(&child, deadline) {
+                    Ok(true) if Instant::now() < deadline => {
+                        let cleanup = retire_owned_tree(
+                            &mut child,
+                            Instant::now() + CLEANUP_GRACE,
+                            lifeline.is_some(),
+                        );
+                        if cleanup.error.is_some() || !cleanup.reaped {
+                            return Err(failure(
+                                BoundedCaptureFailureKind::CleanupFailed,
+                                "owned completion retirement",
+                                None,
+                                captured_for_intent(
+                                    out,
+                                    err,
+                                    status,
+                                    false,
+                                    output_capture_requested,
+                                ),
+                                cleanup,
+                            ));
+                        }
+                        cleanup_observation = Some(cleanup.observation);
+                        status = cleanup.status;
+                        capture_deadline = (Instant::now() + OUTPUT_GRACE).min(deadline);
+                    }
+                    Ok(_) => {}
+                    Err(cause) => {
+                        let mut cleanup = Cleanup::none();
+                        cleanup.wait_refusal(io::Error::from_raw_os_error(
+                            cause.raw_os_error().unwrap_or(libc::EIO),
+                        ));
+                        return Err(failure(
+                            BoundedCaptureFailureKind::WaitFailed,
+                            "owned completion observation",
+                            Some(cause),
+                            captured_for_intent(out, err, status, false, output_capture_requested),
+                            cleanup,
+                        ));
+                    }
+                }
+            }
             if status.is_none() {
-                match child.try_wait() {
+                let observed = if owned_tree {
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    {
+                        owned_exit_observed(&child, deadline).map(|_| None)
+                    }
+                    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                    {
+                        child.try_wait()
+                    }
+                } else {
+                    child.try_wait()
+                };
+                match observed {
                     Ok(Some(observed)) => {
                         status = Some(observed);
                         capture_deadline = (Instant::now() + OUTPUT_GRACE).min(deadline);
@@ -840,7 +1205,14 @@ mod native {
                     Ok(None) if Instant::now() < deadline => {}
                     Ok(None) => {
                         let cleanup_deadline = Instant::now() + CLEANUP_GRACE;
-                        let cleanup = retire_owned(&mut child, cleanup_deadline);
+                        #[cfg(any(target_os = "linux", target_os = "macos"))]
+                        let cleanup = if lifeline.is_some() {
+                            retire_owned_tree(&mut child, cleanup_deadline, true)
+                        } else {
+                            retire(&mut child, cleanup_deadline, owned_tree)
+                        };
+                        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                        let cleanup = retire(&mut child, cleanup_deadline, owned_tree);
                         let mut capture_cause = None;
                         while output_capture_requested
                             && Instant::now() < cleanup_deadline
@@ -926,6 +1298,7 @@ mod native {
                     stderr: err.output,
                     output_truncated: out.truncated || err.truncated,
                     output_complete,
+                    cleanup_observation,
                 }))
             }
         }
@@ -2272,5 +2645,177 @@ sys.exit(int(sys.argv[1]))
         )
         .unwrap();
         fixture.finish();
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod owned_operation_tests {
+    use super::status_test_support::{isolated, Fixture};
+    use super::*;
+    use std::{fs, process::Stdio, time::Instant};
+
+    fn command(fixture: &Fixture, body: &str) -> Command {
+        let mut command = Command::new("python3");
+        command
+            .args(["-S", "-c", body])
+            .env("OWNED_CASE_ROOT", &fixture.root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command
+    }
+    fn reaped(pid: i32) {
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+    }
+
+    #[test]
+    fn actual_moved_group_leader_is_cancelled_and_reaped_within_original_budget() {
+        let fixture = Fixture::new("owned-moved-group");
+        let start = Instant::now();
+        let result=capture_owned_bounded_process(command(&fixture,r#"import json,os,pathlib,time
+os.setpgid(0,os.getpgid(os.getppid()))
+p=pathlib.Path(os.environ['OWNED_CASE_ROOT'])/'pid.json'
+stage=p.with_suffix('.stage')
+with stage.open('x') as out:json.dump({'pid':os.getpid(),'pgid':os.getpgrp()},out);out.flush();os.fsync(out.fileno())
+os.rename(stage,p)
+time.sleep(20)
+"#),Duration::from_secs(1),4096).unwrap_err();
+        assert!(start.elapsed() < Duration::from_secs(5));
+        assert_eq!(result.kind(), BoundedCaptureFailureKind::DeadlineElapsed);
+        assert!(result.timed_out());
+        assert_eq!(result.observation()["reaped_by_owner"], true);
+        let actual = fixture.document("pid.json", Instant::now() + Duration::from_secs(1));
+        let pid = actual["pid"].as_i64().unwrap() as i32;
+        assert_ne!(actual["pgid"], pid);
+        reaped(pid);
+        fs::write(
+            fixture.root.join("actual-owner-result.json"),
+            result.observation().to_string(),
+        )
+        .unwrap();
+        fixture.finish();
+    }
+
+    #[test]
+    fn actual_completion_deadline_race_always_reaps_the_retained_leader() {
+        for delay in ["0.90", "1.00", "1.10"] {
+            let fixture = Fixture::new("owned-deadline-race");
+            let mut cmd = command(
+                &fixture,
+                r#"import json,os,pathlib,time
+p=pathlib.Path(os.environ['OWNED_CASE_ROOT'])/'pid.json'
+stage=p.with_suffix('.stage')
+with stage.open('x') as out:json.dump({'pid':os.getpid()},out);out.flush();os.fsync(out.fileno())
+os.rename(stage,p)
+time.sleep(float(os.environ['OWNED_CASE_DELAY']))
+"#,
+            );
+            cmd.env("OWNED_CASE_DELAY", delay);
+            let start = Instant::now();
+            let result = capture_owned_bounded_process(cmd, Duration::from_secs(1), 4096);
+            assert!(start.elapsed() < Duration::from_secs(5));
+            match result {
+                Ok(output) => {
+                    assert!(output.status.success() && output.output_complete && !output.timed_out);
+                }
+                Err(failure) => {
+                    assert_eq!(failure.kind(), BoundedCaptureFailureKind::DeadlineElapsed);
+                    assert!(failure.timed_out());
+                    assert_eq!(failure.observation()["reaped_by_owner"], true);
+                    assert!(failure.status().is_some());
+                }
+            }
+            let actual = fixture.document("pid.json", Instant::now() + Duration::from_secs(1));
+            reaped(actual["pid"].as_i64().unwrap() as i32);
+            fixture.finish();
+        }
+    }
+
+    #[test]
+    fn actual_owned_completion_retires_closed_and_inherited_stream_descendants() {
+        let name="bounded_process::owned_operation_tests::actual_owned_completion_retires_closed_and_inherited_stream_descendants";
+        if !isolated(name, Duration::from_secs(15)) {
+            return;
+        }
+        for closed in [false, true] {
+            let fixture = Fixture::new("owned-child-streams");
+            let root = fixture.root.clone();
+            // This isolated native test owns only its actual adopted helper.
+            // It never waits for the direct Child retained by the capture owner.
+            let reaper = std::thread::spawn(move || {
+                let path = root.join("pids.json");
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !path.exists() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                let facts: serde_json::Value =
+                    serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+                let pid = facts["child"].as_i64().unwrap() as i32;
+                #[cfg(target_os = "linux")]
+                loop {
+                    let mut status = 0;
+                    let observed = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+                    if observed == pid {
+                        assert!(libc::WIFSIGNALED(status));
+                        break;
+                    }
+                    if observed < 0 {
+                        assert_eq!(
+                            std::io::Error::last_os_error().raw_os_error(),
+                            Some(libc::ECHILD)
+                        );
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "actual adopted child was not reaped"
+                    );
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                pid
+            });
+            let mut cmd = command(
+                &fixture,
+                r#"import json,os,pathlib,time
+child=os.fork()
+if child==0:
+ if os.environ['OWNED_CASE_CLOSED']=='1':
+  dev=os.open(os.devnull,os.O_WRONLY);os.dup2(dev,1);os.dup2(dev,2);os.close(dev)
+ time.sleep(20);os._exit(0)
+p=pathlib.Path(os.environ['OWNED_CASE_ROOT'])/'pids.json'
+stage=p.with_suffix('.stage')
+with stage.open('x') as out:json.dump({'leader':os.getpid(),'child':child,'group':os.getpgrp()},out);out.flush();os.fsync(out.fileno())
+os.rename(stage,p)
+print('actual-parent-result',flush=True)
+"#,
+            );
+            cmd.env("OWNED_CASE_CLOSED", if closed { "1" } else { "0" });
+            let start = Instant::now();
+            let output = capture_owned_bounded_process(cmd, Duration::from_secs(3), 4096).unwrap();
+            assert!(start.elapsed() < Duration::from_secs(5));
+            assert!(output.status.success() && output.output_complete && !output.output_truncated);
+            assert_eq!(output.stdout, b"actual-parent-result\n");
+            let child = reaper.join().unwrap();
+            let facts = fixture.document("pids.json", Instant::now() + Duration::from_secs(1));
+            reaped(facts["leader"].as_i64().unwrap() as i32);
+            assert_eq!(unsafe { libc::kill(child, 0) }, -1);
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH)
+            );
+            fixture.finish();
+        }
     }
 }
