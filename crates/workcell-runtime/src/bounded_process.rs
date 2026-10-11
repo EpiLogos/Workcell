@@ -1094,8 +1094,7 @@ mod native {
             if let Some(fd) = lifeline {
                 let mut byte = 0u8;
                 let rc = unsafe { libc::read(fd, (&mut byte as *mut u8).cast(), 1) };
-                let cancelled = rc == 0
-                    || rc > 0
+                let cancelled = rc >= 0
                     || (rc < 0
                         && !matches!(
                             io::Error::last_os_error().kind(),

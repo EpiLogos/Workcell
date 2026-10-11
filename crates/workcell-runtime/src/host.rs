@@ -15,6 +15,11 @@ use crate::{support::stable_key, PreparedWriteBoundary};
 
 const HOST_AFFORDANCES: &[&str] = &["shell", "process-execution", "execution:host-process"];
 
+type GuardedProcessRecorder<'a> = (
+    &'a std::path::Path,
+    &'a mut dyn FnMut(&crate::MaterialProcessIdentity) -> Result<()>,
+);
+
 /// Finite material capability for one already-allocated trusted host-process body.
 ///
 /// This is deliberately not semantic Action/Agency authority. The Workcell control
@@ -208,10 +213,7 @@ impl HostProcessExecutionProvider {
         allocation: &ProviderAllocation,
         operation: &ProviderOperation,
         limits: Option<(std::time::Duration, usize)>,
-        guarded: Option<(
-            &std::path::Path,
-            &mut dyn FnMut(&crate::MaterialProcessIdentity) -> Result<()>,
-        )>,
+        guarded: Option<GuardedProcessRecorder<'_>>,
     ) -> Result<ProviderOperationResult> {
         validate_allocation(self, allocation)?;
         if operation.key != "process" {
