@@ -828,11 +828,7 @@ mod tests {
                     // would keep original_group_absent=false for the dead guardian.
                     for candidate in identities {
                         let rc = unsafe {
-                            libc::waitpid(
-                                candidate.pid as i32,
-                                std::ptr::null_mut(),
-                                libc::WNOHANG,
-                            )
+                            libc::waitpid(candidate.pid as i32, std::ptr::null_mut(), libc::WNOHANG)
                         };
                         if rc < 0 {
                             assert_eq!(
