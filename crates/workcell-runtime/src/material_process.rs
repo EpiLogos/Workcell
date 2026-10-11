@@ -815,7 +815,10 @@ mod tests {
         }
     }
     fn wait_groups_absent(identities: &[MaterialProcessIdentity]) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // Hosted Linux CI can retain a recycled PGID observation briefly after
+        // the guardian body is Absent; give the kernel/reaper more than a tight
+        // local five-second budget before declaring the group still live.
+        let deadline = Instant::now() + Duration::from_secs(20);
         for identity in identities {
             loop {
                 #[cfg(target_os = "linux")]
