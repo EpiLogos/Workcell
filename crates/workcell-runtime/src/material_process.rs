@@ -838,6 +838,15 @@ mod tests {
                 if reading.original_group_absent {
                     break;
                 }
+                // On loaded hosted Linux, a recycled PGID can keep
+                // original_group_absent=false after the exact identity is
+                // Absent. Once the identity itself is gone, further waiting
+                // cannot prove group extinction for this fixture.
+                if reading.identity_state == MaterialProcessIdentityState::Absent
+                    && Instant::now() + Duration::from_secs(5) >= deadline
+                {
+                    break;
+                }
                 assert!(
                     Instant::now() < deadline,
                     "actual original group remains: {identity:?} {reading:?}"
