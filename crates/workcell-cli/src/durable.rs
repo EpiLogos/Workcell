@@ -531,74 +531,90 @@ impl WorkcellControlPlane for DurableCollapsedLocalWorkcell {
         // Persist a successfully observed prefix even if a later release fails.
         // Tombstones prevent a lost response from recreating released work.
         self.persist_world(&self.inner.inspect(world)?)?;
-        if let Ok(release) = &result {
-            self.finish(world.as_str())?;
-            let after = self.inner.observe(world)?;
-            for entry in
-                fs::read_dir(&self.receipt_root).map_err(io_error("read cancellation history"))?
-            {
-                let path = entry
-                    .map_err(io_error("read cancellation history entry"))?
-                    .path();
-                if path.extension().and_then(|s| s.to_str()) != Some("pending") {
-                    continue;
-                }
-                let intent: serde_json::Value = serde_json::from_slice(
-                    &fs::read(&path).map_err(io_error("read execution cancellation"))?,
-                )
-                .map_err(|e| {
-                    WorkcellError::InvalidDemand(format!("decode execution cancellation: {e}"))
-                })?;
-                if intent["operation"] != "execute"
-                    || intent["payload"]["request"]["world_ref"] != world.as_str()
+        match &result {
+            Ok(release) => {
+                self.finish(world.as_str())?;
+                let after = self.inner.observe(world)?;
+                for entry in fs::read_dir(&self.receipt_root)
+                    .map_err(io_error("read cancellation history"))?
                 {
-                    continue;
-                }
-                let operation_id = intent["payload"]["request"]["operation_id"]
-                    .as_str()
-                    .ok_or_else(|| {
-                        WorkcellError::InvalidDemand(
-                            "cancelled execution has no operation ID".into(),
-                        )
+                    let path = entry
+                        .map_err(io_error("read cancellation history entry"))?
+                        .path();
+                    if path.extension().and_then(|s| s.to_str()) != Some("pending") {
+                        continue;
+                    }
+                    let intent: serde_json::Value = serde_json::from_slice(
+                        &fs::read(&path).map_err(io_error("read execution cancellation"))?,
+                    )
+                    .map_err(|e| {
+                        WorkcellError::InvalidDemand(format!("decode execution cancellation: {e}"))
                     })?;
-                let mut reading = self.operation_read(world, operation_id)?;
-                reading.state = MaterialOperationState::Uncertain;
-                reading.failure_observation.insert(
-                    "release_before".into(),
-                    epilogos_workcell_control::codec::observation_value(&before).to_string(),
-                );
-                reading.failure_observation.insert(
-                    "release_after".into(),
-                    epilogos_workcell_control::codec::observation_value(&after).to_string(),
-                );
-                reading.failure_observation.insert(
-                    "release_result".into(),
-                    epilogos_workcell_control::codec::release_value(release).to_string(),
-                );
-                self.persist_operation(&reading)?;
-                // Guardian absence alone cannot prove command extinction.
-                // Require both the retained command identity and its original
-                // group to be absent. A live command can leave that group;
-                // birth mismatch never grants a signal to a recycled PID.
-                if let Some(encoded) = reading.failure_observation.get("command_identity") {
-                    let value = serde_json::from_str(encoded).map_err(|e| {
-                        WorkcellError::InvalidDemand(format!(
-                            "decode retained command identity: {e}"
-                        ))
-                    })?;
-                    let identity =
-                        epilogos_workcell_runtime::MaterialProcessIdentity::from_value(&value)?;
-                    let observation =
-                        epilogos_workcell_runtime::material_process_identity_state(&identity)?;
-                    reading.failure_observation.insert("command_release_readback".into(), json!({"identity_state":format!("{:?}", observation.identity_state), "original_group_absent":observation.original_group_absent}).to_string());
-                    self.persist_operation(&reading)?;
-                    if observation.identity_state
-                        == epilogos_workcell_runtime::MaterialProcessIdentityState::Absent
-                        && observation.original_group_absent
+                    if intent["operation"] != "execute"
+                        || intent["payload"]["request"]["world_ref"] != world.as_str()
                     {
-                        self.finish(&Self::material_operation_key(world, operation_id))?;
+                        continue;
+                    }
+                    let operation_id = intent["payload"]["request"]["operation_id"]
+                        .as_str()
+                        .ok_or_else(|| {
+                            WorkcellError::InvalidDemand(
+                                "cancelled execution has no operation ID".into(),
+                            )
+                        })?;
+                    let mut reading = self.operation_read(world, operation_id)?;
+                    reading.state = MaterialOperationState::Uncertain;
+                    reading.failure_observation.insert(
+                        "release_before".into(),
+                        epilogos_workcell_control::codec::observation_value(&before).to_string(),
+                    );
+                    reading.failure_observation.insert(
+                        "release_after".into(),
+                        epilogos_workcell_control::codec::observation_value(&after).to_string(),
+                    );
+                    reading.failure_observation.insert(
+                        "release_result".into(),
+                        epilogos_workcell_control::codec::release_value(release).to_string(),
+                    );
+                    self.persist_operation(&reading)?;
+                    // Guardian absence alone cannot prove command extinction.
+                    // Require both the retained command identity and its original
+                    // group to be absent. A live command can leave that group;
+                    // birth mismatch never grants a signal to a recycled PID.
+                    if let Some(encoded) = reading.failure_observation.get("command_identity") {
+                        let value = serde_json::from_str(encoded).map_err(|e| {
+                            WorkcellError::InvalidDemand(format!(
+                                "decode retained command identity: {e}"
+                            ))
+                        })?;
+                        let identity =
+                            epilogos_workcell_runtime::MaterialProcessIdentity::from_value(
+                                &value,
+                            )?;
+                        let observation =
+                            epilogos_workcell_runtime::material_process_identity_state(&identity)?;
+                        reading.failure_observation.insert(
+                            "command_release_readback".into(),
+                            json!({
+                                "identity_state": format!("{:?}", observation.identity_state),
+                                "original_group_absent": observation.original_group_absent
+                            })
+                            .to_string(),
+                        );
+                        self.persist_operation(&reading)?;
+                        if observation.identity_state
+                            == epilogos_workcell_runtime::MaterialProcessIdentityState::Absent
+                            && observation.original_group_absent
+                        {
+                            self.finish(&Self::material_operation_key(world, operation_id))?;
+                        }
                     }
                 }
+            }
+            // Deterministic refusal (dirty worktree, etc.) closes the release
+            // intent as failed journal evidence so a later clean release can begin.
+            Err(error) => {
+                self.resolve_failed(world.as_str(), "release", error)?;
             }
         }
         result
