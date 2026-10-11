@@ -675,6 +675,7 @@ mod tests {
     use epilogos_workcell_core::{
         AffordanceRequirement, DemandRef, ReleaseDisposition, WorkcellRef,
     };
+    use std::time::{Duration, Instant};
     fn root() -> PathBuf {
         static TEST_ROOT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         std::env::temp_dir().join(format!(
@@ -872,7 +873,14 @@ mod tests {
         let reading = host.execute(&request, &grant).unwrap();
         assert_eq!(reading.state, MaterialOperationState::Uncertain);
         assert!(reading.result.is_none());
-        assert_eq!(fs::read(root.join("effect")).unwrap(), b"started");
+        // Hosted runners can schedule the admitted printf after the timeout
+        // fire; wait briefly for the side effect the command was admitted to write.
+        let effect = root.join("effect");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !effect.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(fs::read(&effect).unwrap(), b"started");
         drop(host);
         let mut host = DurableCollapsedLocalWorkcell::new(config(&root)).unwrap();
         assert_eq!(host.execute(&request, &grant).unwrap(), reading);
