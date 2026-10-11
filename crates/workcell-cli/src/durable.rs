@@ -869,7 +869,9 @@ mod tests {
     fn material_native_timeout_retains_uncertainty_and_allows_exact_cancellation() {
         let root = root();
         let mut host = DurableCollapsedLocalWorkcell::new(config(&root)).unwrap();
-        let (request, grant) = admitted(&mut host, &root, "printf started >> effect; sleep 8", 80);
+        // Give the admitted printf time to land before the sleep is cut short —
+        // hosted CI process start can exceed a tight 80ms budget.
+        let (request, grant) = admitted(&mut host, &root, "printf started >> effect; sleep 8", 500);
         let reading = host.execute(&request, &grant).unwrap();
         assert_eq!(reading.state, MaterialOperationState::Uncertain);
         assert!(reading.result.is_none());
