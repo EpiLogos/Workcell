@@ -531,7 +531,7 @@ impl WorkcellControlPlane for DurableCollapsedLocalWorkcell {
         // Persist a successfully observed prefix even if a later release fails.
         // Tombstones prevent a lost response from recreating released work.
         self.persist_world(&self.inner.inspect(world)?)?;
-        if result.is_ok() {
+        if let Ok(release) = &result {
             self.finish(world.as_str())?;
             let after = self.inner.observe(world)?;
             for entry in
@@ -573,10 +573,7 @@ impl WorkcellControlPlane for DurableCollapsedLocalWorkcell {
                 );
                 reading.failure_observation.insert(
                     "release_result".into(),
-                    epilogos_workcell_control::codec::release_value(
-                        result.as_ref().expect("checked successful release"),
-                    )
-                    .to_string(),
+                    epilogos_workcell_control::codec::release_value(release).to_string(),
                 );
                 self.persist_operation(&reading)?;
                 // Guardian absence alone cannot prove command extinction.
