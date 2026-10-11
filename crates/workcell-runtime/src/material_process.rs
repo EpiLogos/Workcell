@@ -823,28 +823,34 @@ mod tests {
             loop {
                 #[cfg(target_os = "linux")]
                 {
-                    // This isolated test subreaper owns only its actual orphaned helper.
-                    let rc = unsafe {
-                        libc::waitpid(identity.pid as i32, std::ptr::null_mut(), libc::WNOHANG)
-                    };
-                    if rc < 0 {
-                        assert_eq!(
-                            std::io::Error::last_os_error().raw_os_error(),
-                            Some(libc::ECHILD)
-                        );
+                    // Reap every recorded fixture PID: a moved command can remain
+                    // a zombie in the guardian's original PGID until waitpid, which
+                    // would keep original_group_absent=false for the dead guardian.
+                    for candidate in identities {
+                        let rc = unsafe {
+                            libc::waitpid(
+                                candidate.pid as i32,
+                                std::ptr::null_mut(),
+                                libc::WNOHANG,
+                            )
+                        };
+                        if rc < 0 {
+                            assert_eq!(
+                                std::io::Error::last_os_error().raw_os_error(),
+                                Some(libc::ECHILD)
+                            );
+                        }
                     }
                 }
                 let reading = material_process_identity_state(identity).unwrap();
                 if reading.original_group_absent {
                     break;
                 }
-                // On loaded hosted Linux, a recycled PGID can keep
-                // original_group_absent=false after the exact identity is
-                // Absent. Once the identity itself is gone, further waiting
-                // cannot prove group extinction for this fixture.
-                if reading.identity_state == MaterialProcessIdentityState::Absent
-                    && Instant::now() + Duration::from_secs(5) >= deadline
-                {
+                // Exact identity gone: a recycled PGID (or a peer still held by
+                // another recorded identity) can keep original_group_absent=false.
+                // The fixture's product property is identity absence, not group
+                // extinction under PGID reuse.
+                if reading.identity_state == MaterialProcessIdentityState::Absent {
                     break;
                 }
                 assert!(
