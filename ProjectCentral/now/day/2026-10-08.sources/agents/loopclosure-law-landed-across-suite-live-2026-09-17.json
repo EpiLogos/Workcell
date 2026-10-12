@@ -1,0 +1,11 @@
+{
+  "schema": "central.project-now.handoff/v1",
+  "id": "loopclosure-law-landed-across-suite-live-2026-09-17",
+  "provenance": "agent-authored-bounded-return",
+  "actor": "zcode-session",
+  "kind": "handoff",
+  "recorded_at_unix_seconds": 1789604598,
+  "subject": "loop-closure law landed across suite; live probe developed; both PRs merged and pushed",
+  "result": "Owner ruling adopted: no more design decisions or loose ends pushed out of development loops. Landed: (1) Control/agents/governance/engineering/loop-closure.md authored, registered in Control/relations/source-relations.json, added to ctrl ENGINEERING_GROUND_STATEMENTS, compiled into foundational-prompt.md and rendered into AGENTS.md; ctrl change landed as PR EpiLogos/Central#190 (squash-merged, all checks green; ctrl rebuilt 0.1.0 c7018cc). (2) Open probe question resolved per the new law instead of carried: workcell-fileshare probe module (probe_live_share, SshProbeTransport) names served/loopback-only/not-listening/unreachable, evidence-probe-not-control-API decision recorded in module doc and runbook; 4 tests incl. the exact trap LISTEN line. (3) Workcell landed as PR EpiLogos/Workcell#89 squash-merged 55d673a after one CI flake rerun (connections_lifecycle disconnect test, known-flaky suite, second run success); local mains synced to origin. Carried with owner path, not narrated: EpiLogos/Central#189 (local_endpoints occupancy probe red on this Mac on clean tree, pre-existing). Gate at merge: Workcell verify CI green on rerun; Central verify CI green.",
+  "status": "active"
+}
