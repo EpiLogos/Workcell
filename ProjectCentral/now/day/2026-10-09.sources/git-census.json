@@ -1,0 +1,320 @@
+{
+  "attention": [
+    {
+      "branch": "feat/native-team-material-498",
+      "kind": "unattributed_worktree",
+      "path": "/Users/admin/Central/worktrees/env-1/workcell",
+      "repo": "Work/Workcell"
+    },
+    {
+      "kind": "detached_head",
+      "path": "/Users/admin/Central/worktrees/env-2/workcell",
+      "repo": "Work/Workcell"
+    },
+    {
+      "branch": null,
+      "kind": "unattributed_worktree",
+      "path": "/Users/admin/Central/worktrees/env-2/workcell",
+      "repo": "Work/Workcell"
+    },
+    {
+      "kind": "detached_head",
+      "path": "/Users/admin/Central/worktrees/env-3/workcell",
+      "repo": "Work/Workcell"
+    },
+    {
+      "branch": null,
+      "kind": "unattributed_worktree",
+      "path": "/Users/admin/Central/worktrees/env-3/workcell",
+      "repo": "Work/Workcell"
+    },
+    {
+      "branch": "backup/primary-pre-convergence-20260929",
+      "checked_out": false,
+      "kind": "local_only_branch",
+      "repo": "Work/Workcell"
+    },
+    {
+      "branch": "backup/primary-pre-convergence-20260929",
+      "days_idle": 15,
+      "kind": "stale_branch",
+      "repo": "Work/Workcell"
+    },
+    {
+      "branch": "docs/architecture-reconciliation-20260930",
+      "checked_out": false,
+      "kind": "local_only_branch",
+      "repo": "Work/Workcell"
+    },
+    {
+      "branch": "feat/native-team-material-498",
+      "checked_out": true,
+      "kind": "local_only_branch",
+      "repo": "Work/Workcell"
+    },
+    {
+      "branch": "fix/oi65-adapter-acceptance-20260922",
+      "checked_out": false,
+      "kind": "local_only_branch",
+      "repo": "Work/Workcell"
+    },
+    {
+      "branch": "fix/oi65-adapter-acceptance-20260922",
+      "days_idle": 16,
+      "kind": "stale_branch",
+      "repo": "Work/Workcell"
+    },
+    {
+      "branch": "fix/seat-scope-finish-20261005",
+      "checked_out": false,
+      "kind": "local_only_branch",
+      "repo": "Work/Workcell"
+    },
+    {
+      "branch": "help/task-oriented-frontdoor",
+      "checked_out": false,
+      "kind": "local_only_branch",
+      "repo": "Work/Workcell"
+    },
+    {
+      "branch": "record-state/fold-20261008",
+      "checked_out": false,
+      "kind": "local_only_branch",
+      "repo": "Work/Workcell"
+    },
+    {
+      "branch": "repair/65-macos-factory-dispatch",
+      "checked_out": false,
+      "kind": "local_only_branch",
+      "repo": "Work/Workcell"
+    },
+    {
+      "branch": "repair/65-macos-factory-dispatch",
+      "days_idle": 15,
+      "kind": "stale_branch",
+      "repo": "Work/Workcell"
+    },
+    {
+      "branch": "ui/cradle-reconciliation-20260924",
+      "checked_out": false,
+      "kind": "local_only_branch",
+      "repo": "Work/Workcell"
+    },
+    {
+      "branch": "ui/cradle-reconciliation-20260924",
+      "days_idle": 15,
+      "kind": "stale_branch",
+      "repo": "Work/Workcell"
+    },
+    {
+      "branch": "workcell-runs-20260923",
+      "checked_out": false,
+      "kind": "local_only_branch",
+      "repo": "Work/Workcell"
+    },
+    {
+      "branch": "workcell-runs-20260923",
+      "days_idle": 15,
+      "kind": "stale_branch",
+      "repo": "Work/Workcell"
+    }
+  ],
+  "generated_at": "2026-10-09T23:00:50.447235+00:00",
+  "repos": [
+    {
+      "bare": false,
+      "branches": [
+        {
+          "ahead": null,
+          "behind": null,
+          "checked_out_in": [],
+          "last_commit_at": "2026-09-24T23:09:43+01:00",
+          "local_only": true,
+          "name": "backup/primary-pre-convergence-20260929",
+          "upstream": null
+        },
+        {
+          "ahead": null,
+          "behind": null,
+          "checked_out_in": [],
+          "last_commit_at": "2026-10-01T01:41:56+01:00",
+          "local_only": true,
+          "name": "docs/architecture-reconciliation-20260930",
+          "upstream": "origin/docs/architecture-reconciliation-20260930"
+        },
+        {
+          "ahead": 6,
+          "behind": null,
+          "checked_out_in": [
+            "/Users/admin/Central/worktrees/env-1/workcell"
+          ],
+          "last_commit_at": "2026-10-08T09:52:48+01:00",
+          "local_only": true,
+          "name": "feat/native-team-material-498",
+          "upstream": "origin/main"
+        },
+        {
+          "ahead": null,
+          "behind": null,
+          "checked_out_in": [],
+          "last_commit_at": "2026-09-23T00:31:26+01:00",
+          "local_only": true,
+          "name": "fix/oi65-adapter-acceptance-20260922",
+          "upstream": "origin/fix/oi65-adapter-acceptance-20260922"
+        },
+        {
+          "ahead": 36,
+          "behind": 3,
+          "checked_out_in": [],
+          "last_commit_at": "2026-10-05T17:28:04+01:00",
+          "local_only": true,
+          "name": "fix/seat-scope-finish-20261005",
+          "upstream": "origin/main"
+        },
+        {
+          "ahead": null,
+          "behind": null,
+          "checked_out_in": [],
+          "last_commit_at": "2026-09-27T14:09:07+01:00",
+          "local_only": true,
+          "name": "help/task-oriented-frontdoor",
+          "upstream": "origin/help/task-oriented-frontdoor"
+        },
+        {
+          "ahead": null,
+          "behind": null,
+          "checked_out_in": [
+            "/Users/admin/Central/Work/Workcell"
+          ],
+          "last_commit_at": "2026-10-07T19:42:20+01:00",
+          "local_only": false,
+          "name": "main",
+          "upstream": "origin/main"
+        },
+        {
+          "ahead": null,
+          "behind": null,
+          "checked_out_in": [],
+          "last_commit_at": "2026-10-08T10:21:26+01:00",
+          "local_only": true,
+          "name": "record-state/fold-20261008",
+          "upstream": null
+        },
+        {
+          "ahead": null,
+          "behind": null,
+          "checked_out_in": [],
+          "last_commit_at": "2026-09-24T23:09:42+01:00",
+          "local_only": true,
+          "name": "repair/65-macos-factory-dispatch",
+          "upstream": "origin/repair/65-macos-factory-dispatch"
+        },
+        {
+          "ahead": null,
+          "behind": null,
+          "checked_out_in": [],
+          "last_commit_at": "2026-09-24T23:29:50+01:00",
+          "local_only": true,
+          "name": "ui/cradle-reconciliation-20260924",
+          "upstream": "origin/ui/cradle-reconciliation-20260924"
+        },
+        {
+          "ahead": null,
+          "behind": null,
+          "checked_out_in": [],
+          "last_commit_at": "2026-09-24T23:09:43+01:00",
+          "local_only": true,
+          "name": "workcell-runs-20260923",
+          "upstream": null
+        }
+      ],
+      "default_branch": "main",
+      "dirty_paths": null,
+      "head_branch": "main",
+      "head_sha": "522f6c64323ac16ce4ed6680751c01878d1a823f",
+      "remote": "https://github.com/EpiLogos/Workcell.git",
+      "repo": "Work/Workcell",
+      "repo_root": "/Users/admin/Central/Work/Workcell",
+      "unborn": false,
+      "unmerged_tips": [
+        "backup/primary-pre-convergence-20260929",
+        "docs/architecture-reconciliation-20260930",
+        "feat/native-team-material-498",
+        "fix/oi65-adapter-acceptance-20260922",
+        "fix/seat-scope-finish-20261005",
+        "help/task-oriented-frontdoor",
+        "record-state/fold-20261008",
+        "repair/65-macos-factory-dispatch",
+        "ui/cradle-reconciliation-20260924",
+        "workcell-runs-20260923"
+      ],
+      "worktrees": [
+        {
+          "ahead": null,
+          "bare": false,
+          "behind": null,
+          "branch": "main",
+          "detached": false,
+          "dirty_files": 8,
+          "lane": "unattributed",
+          "last_commit_at": "2026-10-07T19:42:20+01:00",
+          "locked": false,
+          "path": "/Users/admin/Central/Work/Workcell",
+          "prunable": false
+        },
+        {
+          "ahead": 6,
+          "bare": false,
+          "behind": null,
+          "branch": "feat/native-team-material-498",
+          "detached": false,
+          "dirty_files": 1,
+          "lane": "unattributed",
+          "last_commit_at": "2026-10-08T09:52:48+01:00",
+          "locked": false,
+          "path": "/Users/admin/Central/worktrees/env-1/workcell",
+          "prunable": false
+        },
+        {
+          "ahead": null,
+          "bare": false,
+          "behind": null,
+          "branch": null,
+          "detached": true,
+          "dirty_files": null,
+          "lane": "unattributed",
+          "last_commit_at": "2026-10-01T01:50:21+01:00",
+          "locked": false,
+          "path": "/Users/admin/Central/worktrees/env-2/workcell",
+          "prunable": false
+        },
+        {
+          "ahead": null,
+          "bare": false,
+          "behind": null,
+          "branch": null,
+          "detached": true,
+          "dirty_files": null,
+          "lane": "unattributed",
+          "last_commit_at": "2026-10-01T01:50:21+01:00",
+          "locked": false,
+          "path": "/Users/admin/Central/worktrees/env-3/workcell",
+          "prunable": false
+        }
+      ]
+    }
+  ],
+  "schema": "central.git-census/v1",
+  "scope": [
+    "Work/Workcell"
+  ],
+  "summary": {
+    "attention_items": 20,
+    "branches": 11,
+    "local_only_branches": 10,
+    "repos_censused": 1,
+    "repos_errored": 0,
+    "unattributed_worktrees": 3,
+    "worktrees": 4
+  }
+}

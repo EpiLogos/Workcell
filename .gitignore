@@ -7,3 +7,5 @@ ProjectCentral/agents/now/
 
 # Native-test artifact scratch (verify.sh product-scratch admission)
 ProjectCentral/now/tmp/
+
+/target
