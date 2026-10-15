@@ -8,12 +8,12 @@ use std::{
 };
 
 use epilogos_workcell_control::{
-    check_compatibility, credential_sha256, generate_credential, grant_ref_for,
+    check_compatibility, credential_sha256, generate_credential, grant_ref_for, identity,
     parse_duration_millis, software_version, validate_label, ConnectionGrants, ControlClient,
-    ControlClientError, ControlService, CreateOutcome, DirectTransport, ProjectionDecision,
-    RemoteMachineDeclaration, RemoteMachineRegistry, SecretProjectionLedger,
+    ControlClientError, ControlService, CreateOutcome, DirectTransport, IdentitySource,
+    ProjectionDecision, RemoteMachineDeclaration, RemoteMachineRegistry, SecretProjectionLedger,
     SecretProjectionRecord, TcpControlServer, TcpControlTransport, CONTROL_OPERATIONS,
-    CONTROL_PROTOCOL_VERSION, GRANTS_FILE,
+    CONTROL_PROTOCOL_VERSION, DEFAULT_WORKCELL_REF, GRANTS_FILE,
 };
 use epilogos_workcell_core::{
     broker_handle, correlate_projection, AffordanceRequirement, Availability, BindingRef,
@@ -50,14 +50,17 @@ use epilogos_workcell_wire::{
 };
 use serde_json::{json, Map, Value};
 
-const DEFAULT_WORKCELL_REF: &str = "workcell:local";
 const DEFAULT_DEMAND_REF: &str = "demand:cli";
 
 #[derive(Debug, Clone)]
 struct GlobalArgs {
     json: bool,
     state_root: PathBuf,
+    /// The identity local operations answer as: `--workcell-ref`, else the
+    /// state root's declaration (`workcell identity set`), else
+    /// `workcell:local`.
     workcell_ref: String,
+    workcell_ref_source: IdentitySource,
     receipt: Option<PathBuf>,
     workspace_source: Option<PathBuf>,
     services: Option<PathBuf>,
@@ -103,6 +106,7 @@ fn run(args: Vec<String>) -> Result<(), WorkcellError> {
             Ok(())
         }
         "status" => command_status(&global),
+        "identity" => command_identity(&global, command_args),
         "discover" => command_discover(&global),
         "providers" => command_providers(&global),
         "doctor" => command_doctor(&global),
@@ -144,7 +148,7 @@ fn run(args: Vec<String>) -> Result<(), WorkcellError> {
 fn parse_global(args: Vec<String>) -> Result<GlobalArgs, WorkcellError> {
     let mut json = false;
     let mut state_root = None;
-    let mut workcell_ref = DEFAULT_WORKCELL_REF.to_owned();
+    let mut workcell_ref_flag: Option<String> = None;
     let mut receipt = None;
     let mut workspace_source = None;
     let mut services = None;
@@ -162,7 +166,8 @@ fn parse_global(args: Vec<String>) -> Result<GlobalArgs, WorkcellError> {
                 index += 2;
             }
             "--workcell-ref" => {
-                workcell_ref = require_value(&args, index, "--workcell-ref")?.to_owned();
+                workcell_ref_flag =
+                    Some(require_value(&args, index, "--workcell-ref")?.to_owned());
                 index += 2;
             }
             "--receipt" => {
@@ -188,10 +193,28 @@ fn parse_global(args: Vec<String>) -> Result<GlobalArgs, WorkcellError> {
         }
     }
 
+    let state_root = state_root.unwrap_or_else(default_state_root);
+    // An unreadable declaration refuses every local operation by name; only
+    // help and `identity` itself (which reports and repairs it) still run.
+    let lenient = matches!(
+        remaining.first().map(String::as_str),
+        None | Some("identity" | "help" | "-h" | "--help")
+    );
+    let (workcell_ref, workcell_ref_source) = match workcell_ref_flag {
+        Some(flag) => (flag, IdentitySource::Flag),
+        None => match identity::read_declared(&state_root) {
+            Ok(Some(declared)) => (declared.to_string(), IdentitySource::Declared),
+            Ok(None) => (DEFAULT_WORKCELL_REF.to_owned(), IdentitySource::Default),
+            Err(_) if lenient => (DEFAULT_WORKCELL_REF.to_owned(), IdentitySource::Default),
+            Err(error) => return Err(error),
+        },
+    };
+
     Ok(GlobalArgs {
         json,
-        state_root: state_root.unwrap_or_else(default_state_root),
+        state_root,
         workcell_ref,
+        workcell_ref_source,
         receipt,
         workspace_source,
         services,
@@ -214,6 +237,7 @@ fn command_status(global: &GlobalArgs) -> Result<(), WorkcellError> {
         emit_json(json!({
             "ok": true,
             "workcell_ref": discovery.workcell_ref.as_str(),
+            "workcell_ref_source": global.workcell_ref_source.as_str(),
             "health": health(&discovery.health),
             "providers": provider_count(&discovery),
             "offers": discovery.offers.len(),
@@ -267,6 +291,259 @@ fn command_status(global: &GlobalArgs) -> Result<(), WorkcellError> {
             println!(", {revoked} revoked");
         }
         println!("state root: {}", global.state_root.display());
+    }
+    Ok(())
+}
+
+/// `workcell identity [set REF [--rebind]]`: this cell's identity, where it
+/// came from, and whether each identity-bound store in the state root agrees.
+fn command_identity(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    match args.first().map(String::as_str) {
+        None | Some("show") => {
+            let reading = identity_reading(global, None)?;
+            if global.json {
+                emit_json(reading);
+            } else {
+                print_identity_reading(&reading);
+            }
+            Ok(())
+        }
+        Some("set") => identity_set(global, &args[1..]),
+        Some(other) => Err(WorkcellError::InvalidDemand(format!(
+            "unknown identity subcommand `{other}`; usage: workcell identity [set REF [--rebind]]"
+        ))),
+    }
+}
+
+/// One identity-bound store of this state root and the ref it is bound to.
+struct BoundStore {
+    store: String,
+    bound_to: Option<String>,
+    /// Registries can be carried to a renamed cell; world receipts cannot —
+    /// relocation requires a new material binding, not renaming the host.
+    rebindable: bool,
+}
+
+fn bound_stores(state_root: &Path) -> Result<Vec<BoundStore>, WorkcellError> {
+    use epilogos_workcell_runtime::InstanceRegistry;
+    // The bound identity is read without the owner's refusal; the ref used to
+    // open each store is irrelevant to the survey.
+    let survey = WorkcellRef::new(DEFAULT_WORKCELL_REF).expect("default Workcell ref");
+    let mut stores = vec![
+        BoundStore {
+            store: format!("connections/{GRANTS_FILE}"),
+            bound_to: ConnectionGrants::new(state_root, survey.clone()).bound_identity()?,
+            rebindable: true,
+        },
+        BoundStore {
+            store: "instances/registry.json".into(),
+            bound_to: InstanceRegistry::new(state_root, survey).bound_identity()?,
+            rebindable: true,
+        },
+    ];
+    let worlds = state_root.join("worlds");
+    if let Ok(entries) = fs::read_dir(&worlds) {
+        let mut receipts: Vec<PathBuf> = entries
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+            .collect();
+        receipts.sort();
+        for receipt in receipts {
+            stores.push(BoundStore {
+                store: format!(
+                    "worlds/{}",
+                    receipt.file_name().unwrap_or_default().to_string_lossy()
+                ),
+                bound_to: identity::bound_identity(&receipt)?,
+                rebindable: false,
+            });
+        }
+    }
+    Ok(stores)
+}
+
+fn identity_reading(global: &GlobalArgs, target: Option<&str>) -> Result<Value, WorkcellError> {
+    let path = identity::identity_path(&global.state_root);
+    let declaration = match identity::read_declared(&global.state_root) {
+        Ok(Some(reference)) => json!({"state": "present", "workcell_ref": reference.as_str()}),
+        Ok(None) => json!({"state": "absent"}),
+        Err(error) => json!({"state": "unreadable", "error": error.to_string()}),
+    };
+    let target = target.unwrap_or(&global.workcell_ref);
+    let stores: Vec<Value> = bound_stores(&global.state_root)?
+        .into_iter()
+        .map(|store| {
+            json!({
+                "store": store.store,
+                "bound_to": store.bound_to,
+                "agrees": store.bound_to.as_deref().is_none_or(|bound| bound == target),
+                "rebindable": store.rebindable,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "ok": true,
+        "schema": "workcell.identity-reading/v1",
+        "workcell_ref": global.workcell_ref,
+        "source": global.workcell_ref_source.as_str(),
+        "declaration": {
+            "path": path,
+            "reading": declaration,
+        },
+        "stores": stores,
+        "state_root": global.state_root,
+    }))
+}
+
+fn print_identity_reading(reading: &Value) {
+    println!(
+        "Workcell {} ({})",
+        reading["workcell_ref"].as_str().unwrap_or("unknown"),
+        reading["source"].as_str().unwrap_or("unknown")
+    );
+    println!(
+        "declaration: {} {}",
+        reading["declaration"]["reading"]["state"]
+            .as_str()
+            .unwrap_or("unknown"),
+        reading["declaration"]["path"].as_str().unwrap_or("")
+    );
+    for store in reading["stores"].as_array().into_iter().flatten() {
+        println!(
+            "  {} bound to {}{}",
+            store["store"].as_str().unwrap_or(""),
+            store["bound_to"].as_str().unwrap_or("nothing yet"),
+            if store["agrees"] == true {
+                ""
+            } else {
+                " — differs"
+            }
+        );
+    }
+}
+
+/// Declare this state root's identity. A registry bound to another ref would
+/// refuse every read once the declaration names this one, so the declaration
+/// is refused while one does — unless `--rebind` carries it here (its exact
+/// prior bytes kept beside it). A world receipt bound to another ref is never
+/// carried: relocation requires a new material binding, not renaming the host.
+fn identity_set(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    let mut target = None;
+    let mut rebind = false;
+    for argument in args {
+        match argument.as_str() {
+            "--rebind" => rebind = true,
+            other if other.starts_with('-') => {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "unknown identity set option `{other}`; usage: workcell identity set REF [--rebind]"
+                )))
+            }
+            other if target.is_none() => target = Some(other.to_owned()),
+            other => {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "identity set takes one REF, got `{other}` as well"
+                )))
+            }
+        }
+    }
+    let target = parse_workcell_ref(&target.ok_or_else(|| {
+        WorkcellError::InvalidDemand("usage: workcell identity set REF [--rebind]".into())
+    })?)?;
+    let previous = identity::read_declared(&global.state_root)
+        .ok()
+        .flatten()
+        .map(|reference| reference.to_string());
+    let stores = bound_stores(&global.state_root)?;
+    let differing: Vec<&BoundStore> = stores
+        .iter()
+        .filter(|store| {
+            store
+                .bound_to
+                .as_deref()
+                .is_some_and(|bound| bound != target.as_str())
+        })
+        .collect();
+    let receipts: Vec<String> = differing
+        .iter()
+        .filter(|store| !store.rebindable)
+        .map(|store| {
+            format!(
+                "{} (bound to {})",
+                store.store,
+                store.bound_to.as_deref().unwrap_or("")
+            )
+        })
+        .collect();
+    if !receipts.is_empty() {
+        return Err(WorkcellError::UnsatisfiedDemand(format!(
+            "world receipts belong to another Workcell: {}; relocation requires a new material binding, not renaming the host — release or recover those worlds as their own Workcell first",
+            receipts.join(", ")
+        )));
+    }
+    if !differing.is_empty() && !rebind {
+        return Err(WorkcellError::UnsatisfiedDemand(format!(
+            "declaring {target} would strand registries bound to another Workcell: {}; pass --rebind to carry them to {target} (their exact prior bytes are kept beside them)",
+            differing
+                .iter()
+                .map(|store| format!(
+                    "{} (bound to {})",
+                    store.store,
+                    store.bound_to.as_deref().unwrap_or("")
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+    let at = now_unix_ms();
+    let mut rebound = Vec::new();
+    for store in &differing {
+        let from = parse_workcell_ref(store.bound_to.as_deref().unwrap_or(""))?;
+        let backup = if store.store.starts_with("connections/") {
+            ConnectionGrants::new(&global.state_root, target.clone()).rebind_from(&from, at)?
+        } else {
+            epilogos_workcell_runtime::InstanceRegistry::new(&global.state_root, target.clone())
+                .rebind_from(&from, |path| {
+                    identity::backup_before_rebind(path, &from, at)
+                })?
+        };
+        rebound.push(json!({
+            "store": store.store,
+            "from": from.as_str(),
+            "backup": backup,
+        }));
+    }
+    let unchanged = previous.as_deref() == Some(target.as_str()) && rebound.is_empty();
+    if !unchanged {
+        identity::declare(
+            &global.state_root,
+            &target,
+            json!({
+                "declared_at_unix_ms": at,
+                "previous": previous,
+                "rebound": rebound,
+            }),
+        )?;
+    }
+    let after = GlobalArgs {
+        workcell_ref: target.to_string(),
+        workcell_ref_source: IdentitySource::Declared,
+        ..global.clone()
+    };
+    let mut reading = identity_reading(&after, None)?;
+    reading["outcome"] = json!(if unchanged { "unchanged" } else { "declared" });
+    reading["rebound"] = json!(rebound);
+    if global.json {
+        emit_json(reading);
+    } else {
+        print_identity_reading(&reading);
+        for entry in &rebound {
+            println!(
+                "rebound {} from {} (prior bytes: {})",
+                entry["store"].as_str().unwrap_or(""),
+                entry["from"].as_str().unwrap_or(""),
+                entry["backup"].as_str().unwrap_or("")
+            );
+        }
     }
     Ok(())
 }
@@ -5252,10 +5529,12 @@ pub(super) fn system_descriptor_from(
     workspace_source: Option<PathBuf>,
     services: Option<PathBuf>,
 ) -> Result<Value, WorkcellError> {
+    let (workcell_ref, workcell_ref_source) = identity::resolve(state_root, None)?;
     system_descriptor(&GlobalArgs {
         json,
         state_root: state_root.to_path_buf(),
-        workcell_ref: DEFAULT_WORKCELL_REF.to_owned(),
+        workcell_ref: workcell_ref.to_string(),
+        workcell_ref_source,
         receipt: None,
         workspace_source,
         services,
@@ -5636,7 +5915,7 @@ fn system_descriptor(global: &GlobalArgs) -> Result<Value, WorkcellError> {
                     json!({ "workcell_ref": global.workcell_ref }),
                     json!({ "workcell_ref": discovery.workcell_ref.as_str() }),
                     json!({ "workcell_ref": discovery.workcell_ref.as_str() }),
-                    None, false, Some("workcell --workcell-ref REF"), true,
+                    None, false, Some("workcell identity set REF"), true,
                     identity_drift, &["declared", "effective"], None,
                 ),
                 system_setting(
@@ -8772,13 +9051,13 @@ fn secret_revoke_projection(global: &GlobalArgs, args: &[String]) -> Result<(), 
 fn print_help() {
     println!(
         "Workcell — provider-neutral material execution control: inspect this cell,\nprepare and release material worlds, run native material execution.\n\n\
-Everyday inspection:\n  workcell status       Summarise this local Workcell\n  workcell discover     Discover material offers\n  workcell material     The material reading (same handler as inspect)\n  workcell inspect      The material reading\n  workcell providers    List provider inventory\n  workcell instances    Live harness instances and bounded resource usage\n  workcell places       Census of persistent process places (tmux, herdr) — read-only\n  workcell doctor       Verify the zero-setup local baseline\n\n\
+Everyday inspection:\n  workcell status       Summarise this local Workcell\n  workcell discover     Discover material offers\n  workcell material     The material reading (same handler as inspect)\n  workcell inspect      The material reading\n  workcell providers    List provider inventory\n  workcell instances    Live harness instances and bounded resource usage\n  workcell places       Census of persistent process places (tmux, herdr) — read-only\n  workcell doctor       Verify the zero-setup local baseline\n  workcell identity     This cell's identity and where it comes from (flag, declaration, default)\n  workcell identity set REF [--rebind]\n                        Declare this machine's cell in its state root; --rebind carries\n                        registries bound to the old name to REF (prior bytes kept)\n\n\
 Material lifecycle (contextual — ordinary Start/Continue orchestrates only\nthe owner operations a task actually needs):\n  workcell plan         Plan an ExecutionDemand\n  workcell prepare      Prepare a material world and persist a receipt\n  workcell observe      Observe a prepared world from its receipt\n  workcell expose       Resolve prepared exposure surfaces\n  workcell collect      Collect prepared output channels\n  workcell release      Release or preserve a prepared world\n  workcell reconcile    Reconcile desired material state\n  workcell recover      Recover a prepared world from its receipt\n  workcell run          Native material execution; never fabricated Factory ancestry\n  workcell place        Place request/release over persistent places\n                        (request --provider auto|herdr|tmux --name SLUG; release --place-ref REF --pid N --start-marker PS_LSTART)\n\n\
 Cross-cell connection lifecycle (operator):\n  workcell serve --listen HOST:PORT [--authorization TOKEN]\n      Serve this cell's control plane; grants are enforced per request.\n      Non-loopback listeners require a token or at least one active grant.\n  workcell authorise --client <label> --allow <operation>... [--advertise <port>...] [--expires-in <duration>] [--store-credential]\n      Grant a connecting client named operations; the credential is shown once.\n      `--expires-in 30m` (s|m|h|d) makes the grant expire at the next use,\n      refused as expired; without it the grant never expires.\n  workcell revoke --client <label> | --grant <ref>\n      Revoke grants; takes effect at the connecting client's next use.\n  workcell connect --endpoint HOST:PORT [--connection <label>] [--authorization TOKEN] [--store-credential]\n      Establish or reconnect the client side; reports both cells' protocol\n      and software, refuses unsupported combinations loudly.\n  workcell connections  Cross-cell connection records (list/show/disconnect)\n  workcell machine add --label LABEL --endpoint HOST:PORT [--credential-ref REF]\n      Declare a remote machine natively; then `workcell connect --connection LABEL`\n      needs no flags — the endpoint and credential reference come from the\n      declaration, and the material resolves from the origin secret source.\n  workcell machine list | remove --label LABEL\n\n\
 Secret origin and projection (operator; presence and references, never values):\n  workcell secret scan [--json]\n      Detect credential material outside a secret provider (env vars, shell\n      rc files, known auth files); reports location + presence only.\n  workcell secret vault --from env:NAME|PATH [--select KEY] --ref REF [--provider secret-service|keychain]\n      Move material into this machine's origin store; the value is never printed.\n  workcell secret project --name LABEL (--to-workcell REF --connection LABEL | --to-sandbox --allocation-ref REF)\n      --credential-ref REF --source-provider REF --class CLASS --purpose P --scope S --by REF\n      Record an authorised projection at the origin (refs only, never material).\n  workcell secret projections | revoke-projection (--name LABEL | --ref PREF)\n      Read the origin's projection ledger; revocation reaches the projected\n      target at its next use.\n\n\
 Sandbox provisioning and projection correlation (operator):\n  workcell sandboxes    OpenSandbox server-side material (reconcile)\n  workcell --receipt WORLD.json correlate-projection --projection AIKIT.json --subject checkout:KEY\n      Carry an AIKit worktree-projection verdict (aikit worktree project --json)\n      as a correlated observation on the world's checkout subject. Workcell runs\n      no git and re-derives nothing — the verdict is AIKit's, carried verbatim.\n\n\
 System and configuration:\n  workcell system       Emit this Workcell's System settings disclosure (oi.product-settings-disclosure/v2)\n  workcell config-contribution\n                        Emit Workcell's configuration contribution (oi.configuration-contribution/v1)\n  workcell config       Owner-native configuration transport: validate | plan | apply | reset\n\n\
-Global options:\n  --json                     Structured machine/agent output\n  --state-root PATH          Local Workcell state (default: $WORKCELL_HOME or ~/.workcell)\n  --workcell-ref REF         Workcell identity for new local operations\n  --receipt PATH             Material-world receipt for prepare/resume\n  --workspace-source PATH    Physical local source binding; never semantic identity\n  --services PATH            Operator-declared logical services (default: <state-root>/services.json)\n\n\
+Global options:\n  --json                     Structured machine/agent output\n  --state-root PATH          Local Workcell state (default: $WORKCELL_HOME or ~/.workcell)\n  --workcell-ref REF         Workcell identity for this invocation (default: the state root's\n                             declared identity, else workcell:local)\n  --receipt PATH             Material-world receipt for prepare/resume\n  --workspace-source PATH    Physical local source binding; never semantic identity\n  --services PATH            Operator-declared logical services (default: <state-root>/services.json)\n\n\
 Demand options for plan/prepare:\n  --demand-ref REF\n  --require VALUE | --prefer VALUE | --optional VALUE\n  --workspace writable|read-only [--workspace-ref REF] [--revision REV]\n  --project-runtime MODE\n  --connect VALUE | --prefer-connect VALUE | --optional-connect VALUE\n  --expose VALUE | --prefer-expose VALUE | --optional-expose VALUE\n  --output VALUE | --prefer-output VALUE | --optional-output VALUE\n  --resource key[=amount[:unit]]\n  --subject role=opaque-ref\n  --persistence SCOPE\n  --isolation VALUE\n  --retention release|preserve|suspend-if-supported|snapshot-if-supported\n  --extension key=value\n\n\
 Reconcile:\n  workcell --receipt WORLD.json reconcile --desired logical-ref=state"
     );

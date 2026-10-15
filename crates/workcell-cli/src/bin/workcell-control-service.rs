@@ -2,13 +2,11 @@ use std::{env, error::Error, path::PathBuf};
 
 use epilogos_workcell_cli::DurableCollapsedLocalWorkcell;
 use epilogos_workcell_control::{
-    ConnectionGrants, ControlService, TcpControlServer, CONTROL_PROTOCOL_VERSION,
+    identity, ConnectionGrants, ControlService, TcpControlServer, CONTROL_PROTOCOL_VERSION,
 };
-use epilogos_workcell_core::WorkcellRef;
 use epilogos_workcell_runtime::CollapsedLocalConfig;
 
 const DEFAULT_LISTEN: &str = "127.0.0.1:7777";
-const DEFAULT_WORKCELL_REF: &str = "workcell:local";
 
 fn main() -> Result<(), Box<dyn Error>> {
     match env::args().skip(1).collect::<Vec<_>>().as_slice() {
@@ -24,7 +22,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut state_root = env::var_os("WORKCELL_STATE_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(".workcell-state"));
-    let mut workcell_ref = DEFAULT_WORKCELL_REF.to_owned();
+    let mut workcell_ref: Option<String> = None;
     let mut authorization = env::var("WORKCELL_CONTROL_TOKEN").ok();
     let mut services: Option<PathBuf> = None;
 
@@ -41,7 +39,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 index += 2;
             }
             "--workcell-ref" => {
-                workcell_ref = required_value(&args, index, "--workcell-ref")?.to_owned();
+                workcell_ref = Some(required_value(&args, index, "--workcell-ref")?.to_owned());
                 index += 2;
             }
             "--authorization" => {
@@ -67,7 +65,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    let workcell_ref = WorkcellRef::new(workcell_ref.clone())?;
+    // `--workcell-ref`, else the state root's declared identity, else
+    // workcell:local — the same resolution as the `workcell` CLI.
+    let (workcell_ref, _) = identity::resolve(&state_root, workcell_ref.as_deref())?;
     let mut config = CollapsedLocalConfig::new(workcell_ref.clone(), &state_root)
         .with_persistent_host_lifetime()
         .with_native_material_executable(env::current_exe()?);
@@ -119,6 +119,6 @@ fn is_loopback_listener(address: &str) -> bool {
 
 fn print_help() {
     println!(
-        "workcell-control-service [--listen HOST:PORT] [--state-root PATH] [--workcell-ref REF] [--authorization TOKEN] [--services PATH]\n\nRemote/non-loopback listeners require an authorization token. Prefer WORKCELL_CONTROL_TOKEN over passing the token on the command line.\n\n--services declares logical services this Workcell can materialise; it defaults to <state-root>/services.json when that file exists."
+        "workcell-control-service [--listen HOST:PORT] [--state-root PATH] [--workcell-ref REF] [--authorization TOKEN] [--services PATH]\n\n--workcell-ref defaults to the state root's declared identity (workcell identity set), else workcell:local.\n\nRemote/non-loopback listeners require an authorization token. Prefer WORKCELL_CONTROL_TOKEN over passing the token on the command line.\n\n--services declares logical services this Workcell can materialise; it defaults to <state-root>/services.json when that file exists."
     );
 }

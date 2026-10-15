@@ -95,6 +95,10 @@ OpenSandbox already proves that one provider request is projected unchanged to m
 
 `workcell:local` is the default current-machine material context, not a machine account or version selector.
 
+A machine that names its cell otherwise (two machines cannot both be `workcell:local`) declares it once in its state root: `workcell identity set workcell:mac` writes `<state-root>/identity.json` (`workcell.identity/v1`). Every local operation that passes no `--workcell-ref` — the CLI and `workcell-control-service` alike — then answers as the declared cell; an explicit `--workcell-ref` still wins, and an unreadable declaration refuses by name rather than falling back to `workcell:local`. `workcell identity --json` reads the resolved ref, where it came from (`flag`, `declared`, `default`) and the ref each identity-bound store of the state root is bound to (connection grants, the harness-instance registry, world receipts).
+
+A declaration that would strand a registry bound to the old name is refused, naming it. `--rebind` carries the connection grants and the instance registry to the declared cell, keeping each store's exact prior bytes beside it (`<file>.rebind-<old-ref>-<unix-ms>.bak`) and recording what moved in the declaration's provenance. World receipts are never carried: relocation requires a new material binding, not renaming the host — release or recover those worlds as their own cell first.
+
 Keep these facts separate:
 
 ```text

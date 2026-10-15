@@ -1,6 +1,7 @@
 mod client;
 pub mod codec;
 pub mod grants;
+pub mod identity;
 pub mod machines;
 mod network;
 pub mod projections;
@@ -15,6 +16,7 @@ pub use grants::{
     credential_sha256, generate_credential, grant_ref_for, parse_duration_millis, validate_label,
     ConnectionGrants, CreateOutcome, GrantDecision, CONNECTIONS_DIRECTORY, GRANTS_FILE,
 };
+pub use identity::{IdentitySource, DEFAULT_WORKCELL_REF, IDENTITY_FILE, IDENTITY_SCHEMA};
 pub use machines::{
     RemoteMachineDeclaration, RemoteMachineRegistry, MACHINES_FILE, MACHINES_SCHEMA,
     MACHINE_CREDENTIAL_SCHEMES,
