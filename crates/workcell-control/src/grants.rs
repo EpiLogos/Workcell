@@ -212,6 +212,35 @@ impl ConnectionGrants {
         })
     }
 
+    /// The `workcell_ref` this registry file is bound to, read without
+    /// refusing a foreign binding; `None` when no registry exists.
+    pub fn bound_identity(&self) -> Result<Option<String>> {
+        crate::identity::bound_identity(&self.path)
+    }
+
+    /// Carry this registry from the identity it is bound to (`from`) to this
+    /// registry's identity — the machine renamed its cell. Every grant is
+    /// kept exactly; only the binding changes. The prior bytes are kept as a
+    /// backup first. Returns the backup path, or `None` when there was no
+    /// registry or it is already bound here.
+    pub fn rebind_from(&self, from: &WorkcellRef, at_unix_ms: u64) -> Result<Option<PathBuf>> {
+        if !self.path.exists()
+            || self.bound_identity()?.as_deref() == Some(self.workcell_ref.as_str())
+        {
+            return Ok(None);
+        }
+        let prior = ConnectionGrants {
+            path: self.path.clone(),
+            workcell_ref: from.clone(),
+        };
+        let mut file = prior.load()?;
+        let backup = crate::identity::backup_before_rebind(&self.path, from, at_unix_ms)?;
+        file["workcell_ref"] = json!(self.workcell_ref.to_string());
+        self.store(&file)?;
+        self.load()?;
+        Ok(Some(backup))
+    }
+
     pub fn list(&self) -> Result<Vec<ConnectionGrant>> {
         let file = self.load()?;
         Ok(file["grants"]

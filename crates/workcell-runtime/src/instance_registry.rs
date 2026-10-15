@@ -169,6 +169,96 @@ impl InstanceRegistry {
         Ok((publication, file))
     }
 
+    /// The `workcell_ref` this registry file is bound to, read without
+    /// refusing a foreign binding; `None` when no registry exists.
+    pub fn bound_identity(&self) -> Result<Option<String>> {
+        let path = self.registry_path();
+        let Some(raw) = Publication::read(&path).map_err(|error| {
+            WorkcellError::OperationFailed(format!(
+                "read instance registry {}: {error}",
+                path.display()
+            ))
+        })?
+        else {
+            return Ok(None);
+        };
+        let parsed: Value = serde_json::from_slice(&raw).map_err(|error| {
+            WorkcellError::OperationFailed(format!(
+                "parse instance registry {}: {error}",
+                path.display()
+            ))
+        })?;
+        parsed
+            .get("workcell_ref")
+            .and_then(Value::as_str)
+            .map(|reference| Some(reference.to_owned()))
+            .ok_or_else(|| {
+                WorkcellError::OperationFailed(
+                    "instance registry file requires a string `workcell_ref`".into(),
+                )
+            })
+    }
+
+    /// Carry this registry from the identity it is bound to (`from`) to this
+    /// registry's identity — the machine renamed its cell. Under the
+    /// registry's own lock: the file must be a valid registry of `from`; the
+    /// caller's `backup` keeps its exact prior bytes first; then the file and
+    /// every record name this registry's identity. Instance refs, evidence
+    /// and liveness are kept exactly (an instance ref never covers the cell).
+    /// Returns the backup path, or `None` when there was no registry or it is
+    /// already bound here.
+    pub fn rebind_from(
+        &self,
+        from: &WorkcellRef,
+        backup: impl FnOnce(&Path) -> Result<PathBuf>,
+    ) -> Result<Option<PathBuf>> {
+        let path = self.registry_path();
+        if Publication::read(&path)
+            .map_err(|error| {
+                WorkcellError::OperationFailed(format!(
+                    "read instance registry {}: {error}",
+                    path.display()
+                ))
+            })?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let publication = Publication::acquire(&path).map_err(|error| {
+            WorkcellError::OperationFailed(format!(
+                "lock instance registry {}: {error}",
+                path.display()
+            ))
+        })?;
+        let Some(bytes) = publication.bytes() else {
+            return Ok(None);
+        };
+        let mut file: Value = serde_json::from_slice(bytes).map_err(|error| {
+            WorkcellError::OperationFailed(format!(
+                "parse instance registry {}: {error}",
+                path.display()
+            ))
+        })?;
+        if file.get("workcell_ref").and_then(Value::as_str) == Some(self.workcell_ref.as_str()) {
+            self.validate_file(&file)?;
+            return Ok(None);
+        }
+        InstanceRegistry::new(&self.state_root, from.clone()).validate_file(&file)?;
+        let kept = backup(&path)?;
+        let identity = json!(self.workcell_ref.to_string());
+        file["workcell_ref"] = identity.clone();
+        for record in file
+            .get_mut("instances")
+            .and_then(Value::as_object_mut)
+            .expect("validated registry file has an instances object")
+            .values_mut()
+        {
+            record["workcell_ref"] = identity.clone();
+        }
+        self.store(&publication, &file)?;
+        Ok(Some(kept))
+    }
+
     pub fn list(&self) -> Result<Vec<Value>> {
         let file = self.load()?;
         let instances = file
