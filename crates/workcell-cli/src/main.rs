@@ -4967,7 +4967,7 @@ fn command_connect(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellE
 fn command_connections(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
     let Some(subcommand) = args.first().map(String::as_str) else {
         return Err(WorkcellError::InvalidDemand(
-            "usage: workcell connections <list|show|disconnect> [label]".into(),
+            "usage: workcell connections <list|show|disconnect|probe> [label]".into(),
         ));
     };
     match subcommand {
@@ -5051,10 +5051,154 @@ fn command_connections(global: &GlobalArgs, args: &[String]) -> Result<(), Workc
             }
             Ok(())
         }
+        "probe" => connections_probe(global, &args[1..]),
         other => Err(WorkcellError::InvalidDemand(format!(
-            "unknown connections subcommand `{other}`; expected list|show|disconnect"
+            "unknown connections subcommand `{other}`; expected list|show|disconnect|probe"
         ))),
     }
+}
+
+const CONNECTION_PROBE_SCHEMA: &str = "workcell.connection-probe/v1";
+const DEFAULT_PROBE_TIMEOUT_MS: u64 = 3_000;
+
+/// `workcell connections probe [label] [--timeout-ms N]`: reachability and
+/// the round trip to each recorded connection's endpoint, by the same ungated
+/// handshake `connect` opens with (the remote discloses its protocol,
+/// software, identity and whether the presented credential is authorised).
+/// It reads only: the connection record is never written, and a credential
+/// the record names resolves here exactly as `connect` resolves it, never
+/// printed.
+fn connections_probe(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    let usage = "usage: workcell connections probe [label] [--timeout-ms N]";
+    let mut label = None;
+    let mut timeout_ms = DEFAULT_PROBE_TIMEOUT_MS;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--timeout-ms" => {
+                timeout_ms = rest
+                    .next()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .filter(|value| (1..=60_000).contains(value))
+                    .ok_or_else(|| {
+                        WorkcellError::InvalidDemand(format!(
+                            "--timeout-ms takes 1..=60000 milliseconds; {usage}"
+                        ))
+                    })?;
+            }
+            value if value.starts_with('-') || label.is_some() => {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "unexpected `{value}`; {usage}"
+                )))
+            }
+            value => label = Some(value.to_owned()),
+        }
+    }
+    let records = match &label {
+        Some(label) => vec![load_connection_record(&global.state_root, label)?.ok_or_else(
+            || WorkcellError::NotFound(format!("no connection record named `{label}`")),
+        )?],
+        None => list_connection_records(&global.state_root)?,
+    };
+    let probes = records
+        .iter()
+        .map(|record| probe_connection(record, timeout_ms))
+        .collect::<Vec<_>>();
+    if global.json {
+        emit_json(json!({
+            "ok": true,
+            "schema": CONNECTION_PROBE_SCHEMA,
+            "probed_at_unix_ms": now_unix_ms(),
+            "timeout_ms": timeout_ms,
+            "probes": probes,
+        }));
+    } else {
+        if probes.is_empty() {
+            println!("no cross-cell connections recorded");
+        }
+        for probe in &probes {
+            let lag = probe["rtt_ms"]
+                .as_f64()
+                .map(|ms| format!("{ms:.1} ms"))
+                .unwrap_or_else(|| "no round trip".to_owned());
+            println!(
+                "{} -> {} [{}] {lag}{}",
+                probe["label"].as_str().unwrap_or("?"),
+                probe["endpoint"].as_str().unwrap_or("?"),
+                probe["state"].as_str().unwrap_or("?"),
+                probe["detail"]
+                    .as_str()
+                    .map(|detail| format!(": {detail}"))
+                    .unwrap_or_default(),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// One handshake, timed. `state` is reachable (the remote answered the
+/// handshake), incompatible (it answered under another protocol), refused
+/// (it answered with an error) or unreachable (no answer within the timeout).
+/// `rtt_ms` stands only where an answer came back.
+fn probe_connection(record: &ConnectionRecord, timeout_ms: u64) -> Value {
+    let mut probe = json!({
+        "label": record.label,
+        "endpoint": record.endpoint,
+        "recorded_state": record.state,
+        "credential_ref": record.credential_ref,
+    });
+    let credential = match resolve_connection_credential(None, record.credential_ref.as_deref()) {
+        Ok(credential) => credential,
+        Err(error) => {
+            probe["credential_detail"] = json!(error.to_string());
+            None
+        }
+    };
+    let mut client = ControlClient::new(
+        TcpControlTransport::new(record.endpoint.clone())
+            .with_timeout(Some(std::time::Duration::from_millis(timeout_ms))),
+    );
+    if let Some(token) = &credential {
+        client = client.with_authorization(token);
+    }
+    let began = std::time::Instant::now();
+    let answer = client.handshake(&record.label);
+    let elapsed_ms = (began.elapsed().as_secs_f64() * 10_000.0).round() / 10.0;
+    probe["elapsed_ms"] = json!(elapsed_ms);
+    match answer {
+        Ok(handshake) => {
+            let protocol = handshake["protocol"].as_str().unwrap_or("unknown");
+            let software = handshake["software"].as_str().unwrap_or("unknown");
+            probe["rtt_ms"] = json!(elapsed_ms);
+            probe["protocol"] = json!(protocol);
+            probe["remote_software"] = json!(software);
+            probe["remote_workcell_ref"] = handshake["workcell_ref"].clone();
+            probe["authorised"] = handshake["authorised"].clone();
+            probe["reason"] = handshake["reason"].clone();
+            match check_compatibility(protocol, software) {
+                Ok(_) => probe["state"] = json!("reachable"),
+                Err(error) => {
+                    probe["state"] = json!("incompatible");
+                    probe["detail"] = json!(error.to_string());
+                }
+            }
+        }
+        Err(ControlClientError::TransportUnavailable(message)) => {
+            probe["state"] = json!("unreachable");
+            probe["detail"] = json!(message);
+        }
+        Err(ControlClientError::ProtocolIncompatible(message)) => {
+            probe["rtt_ms"] = json!(elapsed_ms);
+            probe["state"] = json!("incompatible");
+            probe["detail"] = json!(message);
+        }
+        Err(other) => {
+            probe["rtt_ms"] = json!(elapsed_ms);
+            probe["state"] = json!("refused");
+            probe["detail"] = json!(other.to_string());
+        }
+    }
+    probe
 }
 
 /// Apply reconciliation changes to an existing record, or start a fresh one
@@ -9053,7 +9197,7 @@ fn print_help() {
         "Workcell — provider-neutral material execution control: inspect this cell,\nprepare and release material worlds, run native material execution.\n\n\
 Everyday inspection:\n  workcell status       Summarise this local Workcell\n  workcell discover     Discover material offers\n  workcell material     The material reading (same handler as inspect)\n  workcell inspect      The material reading\n  workcell providers    List provider inventory\n  workcell instances    Live harness instances and bounded resource usage\n  workcell places       Census of persistent process places (tmux, herdr) — read-only\n  workcell doctor       Verify the zero-setup local baseline\n  workcell identity     This cell's identity and where it comes from (flag, declaration, default)\n  workcell identity set REF [--rebind]\n                        Declare this machine's cell in its state root; --rebind carries\n                        registries bound to the old name to REF (prior bytes kept)\n\n\
 Material lifecycle (contextual — ordinary Start/Continue orchestrates only\nthe owner operations a task actually needs):\n  workcell plan         Plan an ExecutionDemand\n  workcell prepare      Prepare a material world and persist a receipt\n  workcell observe      Observe a prepared world from its receipt\n  workcell expose       Resolve prepared exposure surfaces\n  workcell collect      Collect prepared output channels\n  workcell release      Release or preserve a prepared world\n  workcell reconcile    Reconcile desired material state\n  workcell recover      Recover a prepared world from its receipt\n  workcell run          Native material execution; never fabricated Factory ancestry\n  workcell place        Place request/release over persistent places\n                        (request --provider auto|herdr|tmux --name SLUG; release --place-ref REF --pid N --start-marker PS_LSTART)\n\n\
-Cross-cell connection lifecycle (operator):\n  workcell serve --listen HOST:PORT [--authorization TOKEN]\n      Serve this cell's control plane; grants are enforced per request.\n      Non-loopback listeners require a token or at least one active grant.\n  workcell authorise --client <label> --allow <operation>... [--advertise <port>...] [--expires-in <duration>] [--store-credential]\n      Grant a connecting client named operations; the credential is shown once.\n      `--expires-in 30m` (s|m|h|d) makes the grant expire at the next use,\n      refused as expired; without it the grant never expires.\n  workcell revoke --client <label> | --grant <ref>\n      Revoke grants; takes effect at the connecting client's next use.\n  workcell connect --endpoint HOST:PORT [--connection <label>] [--authorization TOKEN] [--store-credential]\n      Establish or reconnect the client side; reports both cells' protocol\n      and software, refuses unsupported combinations loudly.\n  workcell connections  Cross-cell connection records (list/show/disconnect)\n  workcell machine add --label LABEL --endpoint HOST:PORT [--credential-ref REF]\n      Declare a remote machine natively; then `workcell connect --connection LABEL`\n      needs no flags — the endpoint and credential reference come from the\n      declaration, and the material resolves from the origin secret source.\n  workcell machine list | remove --label LABEL\n\n\
+Cross-cell connection lifecycle (operator):\n  workcell serve --listen HOST:PORT [--authorization TOKEN]\n      Serve this cell's control plane; grants are enforced per request.\n      Non-loopback listeners require a token or at least one active grant.\n  workcell authorise --client <label> --allow <operation>... [--advertise <port>...] [--expires-in <duration>] [--store-credential]\n      Grant a connecting client named operations; the credential is shown once.\n      `--expires-in 30m` (s|m|h|d) makes the grant expire at the next use,\n      refused as expired; without it the grant never expires.\n  workcell revoke --client <label> | --grant <ref>\n      Revoke grants; takes effect at the connecting client's next use.\n  workcell connect --endpoint HOST:PORT [--connection <label>] [--authorization TOKEN] [--store-credential]\n      Establish or reconnect the client side; reports both cells' protocol\n      and software, refuses unsupported combinations loudly.\n  workcell connections  Cross-cell connection records (list/show/disconnect/probe)\n  workcell connections probe [label] [--timeout-ms N]\n      Reachability and round trip to each connection's endpoint by the handshake;\n      reads only, never writes the record.\n  workcell machine add --label LABEL --endpoint HOST:PORT [--credential-ref REF]\n      Declare a remote machine natively; then `workcell connect --connection LABEL`\n      needs no flags — the endpoint and credential reference come from the\n      declaration, and the material resolves from the origin secret source.\n  workcell machine list | remove --label LABEL\n\n\
 Secret origin and projection (operator; presence and references, never values):\n  workcell secret scan [--json]\n      Detect credential material outside a secret provider (env vars, shell\n      rc files, known auth files); reports location + presence only.\n  workcell secret vault --from env:NAME|PATH [--select KEY] --ref REF [--provider secret-service|keychain]\n      Move material into this machine's origin store; the value is never printed.\n  workcell secret project --name LABEL (--to-workcell REF --connection LABEL | --to-sandbox --allocation-ref REF)\n      --credential-ref REF --source-provider REF --class CLASS --purpose P --scope S --by REF\n      Record an authorised projection at the origin (refs only, never material).\n  workcell secret projections | revoke-projection (--name LABEL | --ref PREF)\n      Read the origin's projection ledger; revocation reaches the projected\n      target at its next use.\n\n\
 Sandbox provisioning and projection correlation (operator):\n  workcell sandboxes    OpenSandbox server-side material (reconcile)\n  workcell --receipt WORLD.json correlate-projection --projection AIKIT.json --subject checkout:KEY\n      Carry an AIKit worktree-projection verdict (aikit worktree project --json)\n      as a correlated observation on the world's checkout subject. Workcell runs\n      no git and re-derives nothing — the verdict is AIKit's, carried verbatim.\n\n\
 System and configuration:\n  workcell system       Emit this Workcell's System settings disclosure (oi.product-settings-disclosure/v2)\n  workcell config-contribution\n                        Emit Workcell's configuration contribution (oi.configuration-contribution/v1)\n  workcell config       Owner-native configuration transport: validate | plan | apply | reset\n\n\
