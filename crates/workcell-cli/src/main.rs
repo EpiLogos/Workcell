@@ -8081,7 +8081,13 @@ fn write_receipt(
 /// decoder: its receipt path, world, Workcell, demand, subjects, state,
 /// retention and how many bindings and exposures it holds. A receipt that
 /// does not decode is named under `unreadable`. A receipt written elsewhere
-/// with `--receipt` is not known here, and the answer says so. Reads only.
+/// with `--receipt` is not known here, and the answer says so.
+///
+/// Each world also names `runs`: the slugs of the run-ledger records whose
+/// `world_ref` is that world's, joined at read time (nothing is persisted).
+/// A record that names no world joins none. If the ledger cannot be read,
+/// `runs` is null on every world and `run_ledger` carries the error, rather
+/// than claiming no run names it. Reads only.
 fn command_worlds(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
     if let Some(extra) = args.first() {
         return Err(WorkcellError::InvalidDemand(format!(
@@ -8102,6 +8108,30 @@ fn command_worlds(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellEr
         }
     };
     receipts.sort();
+    // The run ledger's records keep the world they materialised as
+    // `world_ref` (set by `run start` on every rung); join on it.
+    let (runs_by_world, run_ledger) = match RunLedger::new(&global.state_root).list() {
+        Ok(records) => {
+            let mut by_world: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for record in &records {
+                if let (Some(world_ref), Some(slug)) =
+                    (record["world_ref"].as_str(), record["run_slug"].as_str())
+                {
+                    if !world_ref.is_empty() {
+                        by_world
+                            .entry(world_ref.to_owned())
+                            .or_default()
+                            .push(slug.to_owned());
+                    }
+                }
+            }
+            (
+                Some(by_world),
+                json!({"read": true, "runs": records.len()}),
+            )
+        }
+        Err(error) => (None, json!({"read": false, "error": error.to_string()})),
+    };
     let mut worlds = Vec::new();
     let mut unreadable = Vec::new();
     for receipt in receipts {
@@ -8121,6 +8151,13 @@ fn command_worlds(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellEr
                 "persistence": world["persistence"],
                 "bindings": world["binding_graph"]["bindings"].as_array().map_or(0, Vec::len),
                 "planned_exposures": world["planned_exposures"].as_array().map_or(0, Vec::len),
+                "runs": runs_by_world.as_ref().map(|by_world| {
+                    world["world_ref"]
+                        .as_str()
+                        .and_then(|world_ref| by_world.get(world_ref))
+                        .cloned()
+                        .unwrap_or_default()
+                }),
             })),
             Err(error) => unreadable.push(json!({
                 "receipt": receipt.display().to_string(),
@@ -8135,18 +8172,29 @@ fn command_worlds(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellEr
             "receipt_root": directory.display().to_string(),
             "worlds": worlds,
             "unreadable": unreadable,
-            "note": "receipts kept under this cell's state root only; a receipt written elsewhere with --receipt is not listed",
+            "run_ledger": run_ledger,
+            "note": "receipts kept under this cell's state root only; a receipt written elsewhere with --receipt is not listed. Each world's runs are the run-ledger slugs whose record names its world_ref (null when the ledger cannot be read)",
         }));
     } else {
         if worlds.is_empty() && unreadable.is_empty() {
             println!("no material-world receipts in {}", directory.display());
         }
         for world in &worlds {
+            let runs = match world["runs"].as_array() {
+                Some(runs) if runs.is_empty() => "none".to_owned(),
+                Some(runs) => runs
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                None => "unreadable ledger".to_owned(),
+            };
             println!(
-                "{} [{}] demand {} — {}",
+                "{} [{}] demand {} runs {} — {}",
                 world["world_ref"].as_str().unwrap_or("?"),
                 world["state"].as_str().unwrap_or("?"),
                 world["demand_ref"].as_str().unwrap_or("?"),
+                runs,
                 world["receipt"].as_str().unwrap_or("?"),
             );
         }
