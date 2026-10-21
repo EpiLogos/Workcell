@@ -27,6 +27,10 @@ pub const RUN_SCHEMA: &str = "workcell.run/v1";
 pub const RUN_INDEX_SCHEMA: &str = "workcell.run-index/v1";
 pub const RUNS_DIRECTORY: &str = "runs";
 pub const RUNS_INDEX_FILE: &str = "runs.json";
+/// The demand body a run was started with, kept beside its record as
+/// `runs/<slug>/demand.json`: the exact bytes whose sha256 the record carries
+/// as `demand_digest`.
+pub const RUN_DEMAND_FILE: &str = "demand.json";
 
 /// Factory's closed execution-status vocabulary, reused verbatim
 /// (`ExecutionStatus::ALL`, factory/src/build.rs). Workcell admits exactly
@@ -340,10 +344,79 @@ impl RunLedger {
         Ok(file)
     }
 
+    /// Where a run's demand body is kept: `runs/<slug>/demand.json`.
+    pub fn demand_path(&self, slug: &str) -> PathBuf {
+        self.runs_dir().join(slug).join(RUN_DEMAND_FILE)
+    }
+
     /// Write a new run record. A duplicate slug is refused — a run slug names
     /// one material execution, and history is never silently replaced.
-    pub fn create(&self, mut record: Value) -> Result<Value> {
+    pub fn create(&self, record: Value) -> Result<Value> {
         let _lock = self.lock()?;
+        self.create_locked(record, None)
+    }
+
+    /// Write a new run record and keep the demand body it was started with.
+    /// The body must be the exact bytes the record's `demand_digest` names;
+    /// any other body is refused, so a kept demand is always the digested one.
+    /// The body is written before the record and removed if the record cannot
+    /// be written, so no record ever names a body that is not there.
+    pub fn create_with_demand(&self, record: Value, demand: &[u8]) -> Result<Value> {
+        let _lock = self.lock()?;
+        self.create_locked(record, Some(demand))
+    }
+
+    /// The demand body kept for `record`, checked against its digest:
+    /// `standing` is `kept` (with `body`), `not-kept` (no body beside the
+    /// record — every record written before Workcell kept demand bodies),
+    /// `mismatch` (a body whose digest is not the record's; never carried) or
+    /// `unreadable` (with the error). Nothing is reconstructed.
+    pub fn demand_reading(&self, record: &Value) -> Value {
+        let slug = record["run_slug"].as_str().unwrap_or("");
+        let path = self.demand_path(slug);
+        let digest = record["demand_digest"].clone();
+        let mut reading = json!({
+            "path": path.display().to_string(),
+            "digest": digest,
+        });
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                reading["standing"] = json!("not-kept");
+                reading["detail"] = json!(
+                    "no demand body is kept beside this run's record; a run started before Workcell kept demand bodies records only its demand_ref and demand_digest"
+                );
+                return reading;
+            }
+            Err(error) => {
+                reading["standing"] = json!("unreadable");
+                reading["detail"] = json!(format!("read demand body: {error}"));
+                return reading;
+            }
+        };
+        let body_digest = demand_digest(&bytes);
+        if digest.as_str() != Some(body_digest.as_str()) {
+            reading["standing"] = json!("mismatch");
+            reading["body_digest"] = json!(body_digest);
+            reading["detail"] = json!(
+                "the kept body's digest is not the record's demand_digest; it is not this run's demand and is not carried"
+            );
+            return reading;
+        }
+        match serde_json::from_slice::<Value>(&bytes) {
+            Ok(body) => {
+                reading["standing"] = json!("kept");
+                reading["body"] = body;
+            }
+            Err(error) => {
+                reading["standing"] = json!("unreadable");
+                reading["detail"] = json!(format!("parse demand body: {error}"));
+            }
+        }
+        reading
+    }
+
+    fn create_locked(&self, mut record: Value, demand: Option<&[u8]>) -> Result<Value> {
         if record["schema"] != RUN_SCHEMA {
             record["schema"] = json!(RUN_SCHEMA);
         }
@@ -387,9 +460,52 @@ impl RunLedger {
                 "run `{slug}` already exists; a run slug names one material execution"
             )));
         }
-        self.write_record(&path, &record)?;
+        let kept = match demand {
+            Some(demand) => {
+                let body_digest = demand_digest(demand);
+                if record["demand_digest"].as_str() != Some(body_digest.as_str()) {
+                    return Err(WorkcellError::InvalidDemand(format!(
+                        "run `{slug}`: the demand body's digest {body_digest} is not the record's demand_digest"
+                    )));
+                }
+                Some(self.write_demand(&slug, demand)?)
+            }
+            None => None,
+        };
+        if let Err(error) = self.write_record(&path, &record) {
+            if let Some(kept) = kept {
+                let _ = fs::remove_file(&kept);
+                let _ = kept.parent().map(fs::remove_dir);
+            }
+            return Err(error);
+        }
         self.write_index()?;
         Ok(record)
+    }
+
+    fn write_demand(&self, slug: &str, demand: &[u8]) -> Result<PathBuf> {
+        let path = self.demand_path(slug);
+        let directory = path.parent().expect("demand path has a run directory");
+        fs::create_dir_all(directory).map_err(|error| {
+            WorkcellError::OperationFailed(format!(
+                "create run directory `{}`: {error}",
+                directory.display()
+            ))
+        })?;
+        let staged = path.with_extension("json.tmp");
+        fs::write(&staged, demand).map_err(|error| {
+            WorkcellError::OperationFailed(format!(
+                "write staged demand body `{}`: {error}",
+                staged.display()
+            ))
+        })?;
+        fs::rename(&staged, &path).map_err(|error| {
+            WorkcellError::OperationFailed(format!(
+                "commit demand body `{}`: {error}",
+                path.display()
+            ))
+        })?;
+        Ok(path)
     }
 
     /// Commit only if the owner record still equals the one inspected.
@@ -574,6 +690,13 @@ impl RunLedger {
     }
 }
 
+/// `sha256:<hex>` of a demand body's exact bytes — the form a run record's
+/// `demand_digest` takes.
+pub fn demand_digest(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
 /// Digest of the exact native run reading used to compose a scope.
 pub fn run_record_revision(run: &Value) -> String {
     use sha2::{Digest, Sha256};
@@ -639,6 +762,45 @@ mod tests {
         record["correlations"] = json!([]);
         record["deliverable"] = json!({"outputs": [], "branch": null});
         record
+    }
+
+    #[test]
+    fn a_demand_body_is_kept_only_when_it_is_the_digested_one() {
+        let root = temp_root("demand-body");
+        let ledger = RunLedger::new(&root);
+        let body = br#"{"demand_ref":"demand:run-my-run"}"#;
+
+        // A body whose digest is not the record's is refused, and neither
+        // the record nor the body is left behind.
+        let mut wrong = sample_record("wrong-body");
+        wrong["demand_digest"] = json!("sha256:not-this-body");
+        let refused = ledger.create_with_demand(wrong, body).unwrap_err();
+        assert!(refused
+            .to_string()
+            .contains("not the record's demand_digest"));
+        assert!(ledger.get("wrong-body").unwrap().is_none());
+        assert!(!ledger.demand_path("wrong-body").exists());
+
+        // The digested body is kept beside the record and read back as kept.
+        let mut record = sample_record("kept-body");
+        record["demand_digest"] = json!(demand_digest(body));
+        let record = ledger.create_with_demand(record, body).unwrap();
+        assert_eq!(fs::read(ledger.demand_path("kept-body")).unwrap(), body);
+        let reading = ledger.demand_reading(&record);
+        assert_eq!(reading["standing"], "kept");
+        assert_eq!(reading["body"]["demand_ref"], "demand:run-my-run");
+        // The run directory beside the record is not a record.
+        assert_eq!(ledger.list().unwrap().len(), 1);
+
+        // A record created without a body answers that honestly.
+        let mut legacy = sample_record("legacy");
+        legacy["demand_digest"] = json!("sha256:recorded-before-bodies");
+        let legacy = ledger.create(legacy).unwrap();
+        let reading = ledger.demand_reading(&legacy);
+        assert_eq!(reading["standing"], "not-kept");
+        assert!(reading.get("body").is_none());
+        assert_eq!(reading["digest"], "sha256:recorded-before-bodies");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

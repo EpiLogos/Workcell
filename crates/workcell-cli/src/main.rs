@@ -2827,12 +2827,6 @@ fn run_flag_multiple(args: &[String], name: &str) -> Result<Vec<String>, Workcel
     Ok(found)
 }
 
-fn demand_json_digest(demand: &ExecutionDemand) -> Result<String, WorkcellError> {
-    use sha2::{Digest, Sha256};
-    let encoded = epilogos_workcell_control::codec::demand_value(demand).to_string();
-    Ok(format!("sha256:{:x}", Sha256::digest(encoded.as_bytes())))
-}
-
 fn require_run(global: &GlobalArgs, args: &[String]) -> Result<(RunLedger, Value), WorkcellError> {
     let slug = run_flag(args, "--run")?.ok_or_else(|| {
         WorkcellError::InvalidDemand("this command requires `--run <slug>`".into())
@@ -2910,7 +2904,11 @@ fn run_start(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> 
         )));
     }
 
-    let demand_digest = demand_json_digest(&demand)?;
+    // The demand's encoded bytes are both digested into the record and kept
+    // beside it (`runs/<slug>/demand.json`), so `run show` can answer the
+    // demand itself, checked against the digest.
+    let demand_body = epilogos_workcell_control::codec::demand_value(&demand).to_string();
+    let demand_digest = epilogos_workcell_runtime::demand_digest(demand_body.as_bytes());
     let mut record = json!({
         "schema": epilogos_workcell_runtime::RUN_SCHEMA,
         "run_slug": slug,
@@ -2971,7 +2969,7 @@ fn run_start(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> 
         let document = read_json_file(Path::new(correlation))?;
         run_append_correlation(&mut record, document)?;
     }
-    let record = ledger.create(record)?;
+    let record = ledger.create_with_demand(record, demand_body.as_bytes())?;
     let original_record = record.clone();
 
     let mut record = match rung.as_str() {
@@ -3761,11 +3759,17 @@ fn run_list(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
 }
 
 fn run_show(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
-    let (_, record) = require_run(global, args)?;
+    let (ledger, record) = require_run(global, args)?;
+    // The demand body kept beside the record, checked against its digest
+    // (kept | not-kept | mismatch | unreadable); never reconstructed.
+    let demand = ledger.demand_reading(&record);
     if global.json {
-        emit_json(
-            json!({"ok": true, "run_revision": epilogos_workcell_runtime::run_record_revision(&record), "run": record}),
-        );
+        emit_json(json!({
+            "ok": true,
+            "run_revision": epilogos_workcell_runtime::run_record_revision(&record),
+            "run": record,
+            "demand": demand,
+        }));
     } else {
         println!(
             "run {} [{}] rung={}",
@@ -3786,6 +3790,11 @@ fn run_show(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
                 println!("{field}: {}", record[field]);
             }
         }
+        println!(
+            "demand body: {} ({})",
+            demand["standing"].as_str().unwrap_or("?"),
+            demand["path"].as_str().unwrap_or("?")
+        );
         if !record["material_refs"]
             .as_array()
             .unwrap_or(&Vec::new())
