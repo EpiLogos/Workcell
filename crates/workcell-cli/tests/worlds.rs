@@ -59,6 +59,8 @@ fn an_empty_cell_lists_no_worlds_and_says_where_it_looked() {
     assert_eq!(reading["schema"], "workcell.world-receipts/v1");
     assert_eq!(reading["worlds"], serde_json::json!([]));
     assert_eq!(reading["unreadable"], serde_json::json!([]));
+    assert_eq!(reading["run_ledger"]["read"], true);
+    assert_eq!(reading["run_ledger"]["runs"], 0);
     assert_eq!(
         reading["receipt_root"],
         state.join("worlds").display().to_string()
@@ -109,6 +111,8 @@ fn a_prepared_world_is_listed_with_its_ref_demand_and_subjects() {
             .len()
     );
     assert_eq!(reading["unreadable"], serde_json::json!([]));
+    // A world prepared outside any run is named by none.
+    assert_eq!(world["runs"], serde_json::json!([]));
 
     // The status count and the listing agree on what the cell keeps.
     let status = json_stdout(&run(&[
@@ -177,6 +181,91 @@ fn a_torn_receipt_is_named_unreadable_beside_the_good_ones() {
         directory.join("torn.json").display().to_string()
     );
     assert!(!unreadable[0]["error"].as_str().unwrap().is_empty());
+    let _ = fs::remove_dir_all(state);
+}
+
+fn run_start(state: &Path, slug: &str) -> Value {
+    json_stdout(&run(&[
+        "--state-root",
+        path_arg(state),
+        "--json",
+        "run",
+        "start",
+        "--run",
+        slug,
+        "--demand-ref",
+        "demand:worlds-runs",
+        "--require",
+        "shell",
+        "--subject",
+        "run=opaque:factory-run-11",
+    ]))
+}
+
+fn record_path(state: &Path, slug: &str) -> PathBuf {
+    state.join("runs").join(format!("{slug}.json"))
+}
+
+#[test]
+fn each_world_names_the_runs_whose_record_names_it() {
+    let state = temp_path("runs");
+    let started = run_start(&state, "run-a");
+    let world_ref = started["run"]["world_ref"].as_str().unwrap().to_owned();
+
+    let reading = worlds(&state);
+    let listed = reading["worlds"].as_array().unwrap();
+    assert_eq!(listed.len(), 1, "{reading:#}");
+    assert_eq!(listed[0]["world_ref"], world_ref.as_str());
+    assert_eq!(listed[0]["runs"], serde_json::json!(["run-a"]));
+    // The opaque subject is not the slug; the join is by the record.
+    assert_eq!(listed[0]["subjects"]["run"], "opaque:factory-run-11");
+    assert_eq!(reading["run_ledger"]["runs"], 1);
+
+    // Several records naming one world are all named, in slug order.
+    let record: Value =
+        serde_json::from_str(&fs::read_to_string(record_path(&state, "run-a")).unwrap()).unwrap();
+    let mut second = record.clone();
+    second["run_slug"] = serde_json::json!("run-0");
+    fs::write(
+        record_path(&state, "run-0"),
+        serde_json::to_vec_pretty(&second).unwrap(),
+    )
+    .unwrap();
+    // A record that names no world (as an older one may) joins none.
+    let mut older = record.clone();
+    older["run_slug"] = serde_json::json!("run-older");
+    older["world_ref"] = Value::Null;
+    fs::write(
+        record_path(&state, "run-older"),
+        serde_json::to_vec_pretty(&older).unwrap(),
+    )
+    .unwrap();
+    let reading = worlds(&state);
+    assert_eq!(
+        reading["worlds"][0]["runs"],
+        serde_json::json!(["run-0", "run-a"])
+    );
+    assert_eq!(reading["run_ledger"]["runs"], 3);
+
+    // An unreadable ledger is said, not taken for "no runs".
+    fs::write(record_path(&state, "torn"), "{\"run_slug\":").unwrap();
+    let reading = worlds(&state);
+    assert_eq!(reading["worlds"][0]["runs"], Value::Null, "{reading:#}");
+    assert_eq!(reading["run_ledger"]["read"], false);
+    assert!(!reading["run_ledger"]["error"].as_str().unwrap().is_empty());
+
+    fs::remove_file(record_path(&state, "torn")).unwrap();
+    fs::remove_file(record_path(&state, "run-0")).unwrap();
+    fs::remove_file(record_path(&state, "run-older")).unwrap();
+    let _ = run(&[
+        "--state-root",
+        path_arg(&state),
+        "--json",
+        "run",
+        "release",
+        "--run",
+        "run-a",
+    ]);
     let _ = fs::remove_dir_all(state);
 }
 
