@@ -8191,8 +8191,16 @@ fn machine_list(global: &GlobalArgs, _args: &[String]) -> Result<(), WorkcellErr
         emit_json(json!({
             "ok": true,
             "machines": machines.iter().map(|machine| machine.to_json()).collect::<Vec<_>>(),
+            // Every operation the control plane serves, so a caller can name
+            // what a declaration may allow (`machine add --allow`) and what a
+            // grant may carry (`authorise --allow`) without guessing.
+            "control_operations": CONTROL_OPERATIONS,
         }));
     } else {
+        println!(
+            "operations a machine may be granted: {}",
+            CONTROL_OPERATIONS.join(", ")
+        );
         if machines.is_empty() {
             println!(
                 "no machines declared in {}; add one with `workcell machine add --label LABEL --endpoint HOST:PORT`",
