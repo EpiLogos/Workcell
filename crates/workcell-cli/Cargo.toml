@@ -22,6 +22,7 @@ path = "src/bin/workcell-control-client.rs"
 
 [dependencies]
 epilogos-workcell-control = { path = "../workcell-control" }
+epilogos-workcell-placement = { path = "../workcell-placement" }
 epilogos-workcell-core = { path = "../workcell-core" }
 epilogos-workcell-keychain = { path = "../workcell-keychain" }
 epilogos-workcell-onepassword = { path = "../workcell-onepassword" }

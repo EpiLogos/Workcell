@@ -131,6 +131,7 @@ fn run(args: Vec<String>) -> Result<(), WorkcellError> {
         "revoke" => command_revoke(&global, command_args),
         "connect" => command_connect(&global, command_args),
         "connections" => command_connections(&global, command_args),
+        "placement" => command_placement(&global, command_args),
         "secret" => command_secret(&global, command_args),
         "machine" => command_machine(&global, command_args),
         "system" => command_system(&global),
@@ -820,6 +821,250 @@ fn command_plan(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellErro
         return Err(WorkcellError::UnsatisfiedDemand(
             "materialisation plan is unsatisfiable".into(),
         ));
+    }
+    Ok(())
+}
+
+/// This cell, discovered in process: the placement source that costs nothing
+/// to reach.
+struct LocalPlacementSource {
+    discovery: Discovery,
+}
+
+impl epilogos_workcell_placement::WorkcellDiscoverySource for LocalPlacementSource {
+    fn source_ref(&self) -> &str {
+        "local"
+    }
+    fn workcell_hint(&self) -> Option<&WorkcellRef> {
+        Some(&self.discovery.workcell_ref)
+    }
+    fn locality_cost(&self) -> u32 {
+        0
+    }
+    fn transport_provenance(&self) -> BTreeMap<String, String> {
+        BTreeMap::from([("transport".to_owned(), "in-process".to_owned())])
+    }
+    fn discover(&self) -> Result<Discovery, WorkcellError> {
+        Ok(self.discovery.clone())
+    }
+}
+
+/// A connected cell, discovered through its grant's `discover` over the
+/// control protocol, and read back into a Discovery by the control codec.
+struct ConnectionPlacementSource {
+    source_ref: String,
+    label: String,
+    endpoint: String,
+    hint: Option<WorkcellRef>,
+    credential: Option<String>,
+    timeout: std::time::Duration,
+}
+
+impl epilogos_workcell_placement::WorkcellDiscoverySource for ConnectionPlacementSource {
+    fn source_ref(&self) -> &str {
+        &self.source_ref
+    }
+    fn workcell_hint(&self) -> Option<&WorkcellRef> {
+        self.hint.as_ref()
+    }
+    fn locality_cost(&self) -> u32 {
+        1
+    }
+    fn transport_provenance(&self) -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("transport".to_owned(), "workcell.control/v1".to_owned()),
+            ("connection".to_owned(), self.label.clone()),
+            ("endpoint".to_owned(), self.endpoint.clone()),
+        ])
+    }
+    fn discover(&self) -> Result<Discovery, WorkcellError> {
+        let mut client = ControlClient::new(
+            TcpControlTransport::new(self.endpoint.clone()).with_timeout(Some(self.timeout)),
+        );
+        if let Some(token) = &self.credential {
+            client = client.with_authorization(token);
+        }
+        let value = client.discover().map_err(|error| match error {
+            ControlClientError::TransportUnavailable(message) => WorkcellError::Unavailable(
+                format!("connection `{}` is unreachable: {message}", self.label),
+            ),
+            other => WorkcellError::OperationFailed(format!(
+                "connection `{}` refused discover: {other}",
+                self.label
+            )),
+        })?;
+        epilogos_workcell_control::codec::discovery_from_value(&value)
+    }
+}
+
+/// `workcell placement <demand flags> [--connection L]… [--max-locality-cost N]
+/// [--prefer-locality] [--require-declared-capacity] [--previous REF]`: the
+/// demand planned on this cell and on each connected cell whose grant allows
+/// `discover`, ranked by the placement law. Reads only: nothing is prepared.
+fn command_placement(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    let mut demand_args = Vec::new();
+    let mut named = Vec::new();
+    let mut policy = epilogos_workcell_placement::PlacementPolicy::default();
+    let mut previous = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--connection" => {
+                named.push(require_value(args, index, "--connection")?.to_owned());
+                index += 2;
+            }
+            "--max-locality-cost" => {
+                let raw = require_value(args, index, "--max-locality-cost")?;
+                policy.max_locality_cost = Some(raw.parse().map_err(|_| {
+                    WorkcellError::InvalidDemand(format!(
+                        "--max-locality-cost takes a whole number, not `{raw}`"
+                    ))
+                })?);
+                index += 2;
+            }
+            "--prefer-locality" => {
+                policy.prefer_locality_over_capacity = true;
+                index += 1;
+            }
+            "--require-declared-capacity" => {
+                policy.require_declared_aggregate_capacity = true;
+                index += 1;
+            }
+            "--previous" => {
+                previous = Some(parse_workcell_ref(require_value(args, index, "--previous")?)?);
+                index += 2;
+            }
+            _ => {
+                demand_args.push(args[index].clone());
+                index += 1;
+            }
+        }
+    }
+    let demand = parse_demand(&demand_args)?;
+    let channels = demand_output_channels(&demand);
+    let local = LocalPlacementSource {
+        discovery: new_local(global, parse_workcell_ref(&global.workcell_ref)?, channels)?
+            .discover()?,
+    };
+    let records = list_connection_records(&global.state_root)?;
+    for label in &named {
+        if !records.iter().any(|record| &record.label == label) {
+            return Err(WorkcellError::NotFound(format!(
+                "no connection record named `{label}`"
+            )));
+        }
+    }
+    let mut remotes = Vec::new();
+    let mut skipped = Vec::new();
+    for record in &records {
+        if !named.is_empty() && !named.contains(&record.label) {
+            continue;
+        }
+        let reason = if record.state != "connected" {
+            Some(format!("the connection is {}", record.state))
+        } else if !record.granted_operations.iter().any(|op| op == "discover") {
+            Some("its grant does not allow discover".to_owned())
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            skipped.push(json!({"connection": record.label, "reason": reason}));
+            continue;
+        }
+        remotes.push(ConnectionPlacementSource {
+            source_ref: format!("connection:{}", record.label),
+            label: record.label.clone(),
+            endpoint: record.endpoint.clone(),
+            hint: record
+                .remote_workcell_ref
+                .as_deref()
+                .and_then(|reference| WorkcellRef::new(reference).ok()),
+            credential: resolve_connection_credential(None, record.credential_ref.as_deref())?,
+            timeout: std::time::Duration::from_secs(10),
+        });
+    }
+    let mut sources: Vec<&dyn epilogos_workcell_placement::WorkcellDiscoverySource> =
+        vec![&local];
+    sources.extend(
+        remotes
+            .iter()
+            .map(|source| source as &dyn epilogos_workcell_placement::WorkcellDiscoverySource),
+    );
+    let evaluation =
+        epilogos_workcell_placement::evaluate_placement(&demand, &sources, &policy, previous.as_ref())?;
+    let eligible = evaluation
+        .eligible
+        .iter()
+        .map(|decision| {
+            let provenance = &decision.provenance;
+            json!({
+                "workcell_ref": decision.workcell_ref.as_str(),
+                "plan": plan_json(&decision.plan),
+                "provenance": {
+                    "source_ref": provenance.source_ref,
+                    "workcell_ref": provenance.workcell_ref.as_str(),
+                    "previous_workcell_ref": provenance.previous_workcell_ref.as_ref().map(|r| r.as_str().to_owned()),
+                    "placement_changed": provenance.placement_changed,
+                    "locality_cost": provenance.locality_cost,
+                    "capacity_headroom": provenance.capacity_headroom,
+                    "provider_refs": provenance.provider_refs,
+                    "offer_refs": provenance.offer_refs,
+                    "transport": provenance.transport,
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    let diagnostics = evaluation
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            json!({
+                "source_ref": diagnostic.source_ref,
+                "workcell_ref": diagnostic.workcell_ref.as_ref().map(|r| r.as_str().to_owned()),
+                "kind": match diagnostic.kind {
+                    epilogos_workcell_placement::PlacementDiagnosticKind::TransportUnavailable => "transport-unavailable",
+                    epilogos_workcell_placement::PlacementDiagnosticKind::WorkcellUnavailable => "workcell-unavailable",
+                    epilogos_workcell_placement::PlacementDiagnosticKind::PolicyRejected => "policy-rejected",
+                    epilogos_workcell_placement::PlacementDiagnosticKind::CapacityRejected => "capacity-rejected",
+                    epilogos_workcell_placement::PlacementDiagnosticKind::Unsatisfiable => "unsatisfiable",
+                },
+                "detail": diagnostic.detail,
+            })
+        })
+        .collect::<Vec<_>>();
+    let selected = evaluation
+        .selected()
+        .map(|decision| decision.workcell_ref.as_str().to_owned());
+    if global.json {
+        emit_json(json!({
+            "ok": true,
+            "schema": "workcell.placement-evaluation/v1",
+            "demand_ref": demand.demand_ref.as_str(),
+            "selected": selected,
+            "eligible": eligible,
+            "diagnostics": diagnostics,
+            "skipped": skipped,
+        }));
+    } else {
+        match &selected {
+            Some(workcell_ref) => println!("selected {workcell_ref}"),
+            None => println!("no cell can carry this demand"),
+        }
+        for decision in &evaluation.eligible {
+            println!(
+                "  {} via {} (locality {}, {})",
+                decision.workcell_ref,
+                decision.provenance.source_ref,
+                decision.provenance.locality_cost,
+                plan_status(&decision.plan.status)
+            );
+        }
+        for diagnostic in &evaluation.diagnostics {
+            println!("  {}: {:?} — {}", diagnostic.source_ref, diagnostic.kind, diagnostic.detail);
+        }
+        for skip in &skipped {
+            println!("  skipped {}: {}", skip["connection"], skip["reason"]);
+        }
     }
     Ok(())
 }
@@ -9196,7 +9441,7 @@ fn print_help() {
     println!(
         "Workcell — provider-neutral material execution control: inspect this cell,\nprepare and release material worlds, run native material execution.\n\n\
 Everyday inspection:\n  workcell status       Summarise this local Workcell\n  workcell discover     Discover material offers\n  workcell material     The material reading (same handler as inspect)\n  workcell inspect      The material reading\n  workcell providers    List provider inventory\n  workcell instances    Live harness instances and bounded resource usage\n  workcell places       Census of persistent process places (tmux, herdr) — read-only\n  workcell doctor       Verify the zero-setup local baseline\n  workcell identity     This cell's identity and where it comes from (flag, declaration, default)\n  workcell identity set REF [--rebind]\n                        Declare this machine's cell in its state root; --rebind carries\n                        registries bound to the old name to REF (prior bytes kept)\n\n\
-Material lifecycle (contextual — ordinary Start/Continue orchestrates only\nthe owner operations a task actually needs):\n  workcell plan         Plan an ExecutionDemand\n  workcell prepare      Prepare a material world and persist a receipt\n  workcell observe      Observe a prepared world from its receipt\n  workcell expose       Resolve prepared exposure surfaces\n  workcell collect      Collect prepared output channels\n  workcell release      Release or preserve a prepared world\n  workcell reconcile    Reconcile desired material state\n  workcell recover      Recover a prepared world from its receipt\n  workcell run          Native material execution; never fabricated Factory ancestry\n  workcell place        Place request/release over persistent places\n                        (request --provider auto|herdr|tmux --name SLUG; release --place-ref REF --pid N --start-marker PS_LSTART)\n\n\
+Material lifecycle (contextual — ordinary Start/Continue orchestrates only\nthe owner operations a task actually needs):\n  workcell plan         Plan an ExecutionDemand\n  workcell placement    Plan an ExecutionDemand on this cell and each connected cell that grants discover, ranked\n  workcell prepare      Prepare a material world and persist a receipt\n  workcell observe      Observe a prepared world from its receipt\n  workcell expose       Resolve prepared exposure surfaces\n  workcell collect      Collect prepared output channels\n  workcell release      Release or preserve a prepared world\n  workcell reconcile    Reconcile desired material state\n  workcell recover      Recover a prepared world from its receipt\n  workcell run          Native material execution; never fabricated Factory ancestry\n  workcell place        Place request/release over persistent places\n                        (request --provider auto|herdr|tmux --name SLUG; release --place-ref REF --pid N --start-marker PS_LSTART)\n\n\
 Cross-cell connection lifecycle (operator):\n  workcell serve --listen HOST:PORT [--authorization TOKEN]\n      Serve this cell's control plane; grants are enforced per request.\n      Non-loopback listeners require a token or at least one active grant.\n  workcell authorise --client <label> --allow <operation>... [--advertise <port>...] [--expires-in <duration>] [--store-credential]\n      Grant a connecting client named operations; the credential is shown once.\n      `--expires-in 30m` (s|m|h|d) makes the grant expire at the next use,\n      refused as expired; without it the grant never expires.\n  workcell revoke --client <label> | --grant <ref>\n      Revoke grants; takes effect at the connecting client's next use.\n  workcell connect --endpoint HOST:PORT [--connection <label>] [--authorization TOKEN] [--store-credential]\n      Establish or reconnect the client side; reports both cells' protocol\n      and software, refuses unsupported combinations loudly.\n  workcell connections  Cross-cell connection records (list/show/disconnect/probe)\n  workcell connections probe [label] [--timeout-ms N]\n      Reachability and round trip to each connection's endpoint by the handshake;\n      reads only, never writes the record.\n  workcell machine add --label LABEL --endpoint HOST:PORT [--credential-ref REF]\n      Declare a remote machine natively; then `workcell connect --connection LABEL`\n      needs no flags — the endpoint and credential reference come from the\n      declaration, and the material resolves from the origin secret source.\n  workcell machine list | remove --label LABEL\n\n\
 Secret origin and projection (operator; presence and references, never values):\n  workcell secret scan [--json]\n      Detect credential material outside a secret provider (env vars, shell\n      rc files, known auth files); reports location + presence only.\n  workcell secret vault --from env:NAME|PATH [--select KEY] --ref REF [--provider secret-service|keychain]\n      Move material into this machine's origin store; the value is never printed.\n  workcell secret project --name LABEL (--to-workcell REF --connection LABEL | --to-sandbox --allocation-ref REF)\n      --credential-ref REF --source-provider REF --class CLASS --purpose P --scope S --by REF\n      Record an authorised projection at the origin (refs only, never material).\n  workcell secret projections | revoke-projection (--name LABEL | --ref PREF)\n      Read the origin's projection ledger; revocation reaches the projected\n      target at its next use.\n\n\
 Sandbox provisioning and projection correlation (operator):\n  workcell sandboxes    OpenSandbox server-side material (reconcile)\n  workcell --receipt WORLD.json correlate-projection --projection AIKIT.json --subject checkout:KEY\n      Carry an AIKit worktree-projection verdict (aikit worktree project --json)\n      as a correlated observation on the world's checkout subject. Workcell runs\n      no git and re-derives nothing — the verdict is AIKit's, carried verbatim.\n\n\
