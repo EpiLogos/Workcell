@@ -122,6 +122,7 @@ fn run(args: Vec<String>) -> Result<(), WorkcellError> {
         "reconcile" => command_reconcile(&global, command_args),
         "correlate-projection" => command_correlate_projection(&global, command_args),
         "instances" => command_instances(&global, command_args),
+        "worlds" => command_worlds(&global, command_args),
         "places" => command_places(&global),
         "place" => command_place(&global, command_args),
         "sandboxes" => command_sandboxes(&global, command_args),
@@ -8065,6 +8066,92 @@ fn write_receipt(
     })
 }
 
+/// `workcell worlds [--json]`: the material-world receipts this cell keeps
+/// under its state root (`<state-root>/worlds/`, where prepare writes them
+/// unless `--receipt` names another path), each read back through the wire
+/// decoder: its receipt path, world, Workcell, demand, subjects, state,
+/// retention and how many bindings and exposures it holds. A receipt that
+/// does not decode is named under `unreadable`. A receipt written elsewhere
+/// with `--receipt` is not known here, and the answer says so. Reads only.
+fn command_worlds(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    if let Some(extra) = args.first() {
+        return Err(WorkcellError::InvalidDemand(format!(
+            "workcell worlds takes no arguments; `{extra}` is not one"
+        )));
+    }
+    let directory = global.state_root.join("worlds");
+    let mut receipts: Vec<PathBuf> = match fs::read_dir(&directory) {
+        Ok(entries) => entries
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+            .collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => {
+            return Err(WorkcellError::OperationFailed(format!(
+                "read world receipts: {error}"
+            )))
+        }
+    };
+    receipts.sort();
+    let mut worlds = Vec::new();
+    let mut unreadable = Vec::new();
+    for receipt in receipts {
+        let read = fs::read_to_string(&receipt)
+            .map_err(|error| error.to_string())
+            .and_then(|encoded| decode_world(&encoded).map_err(|error| error.to_string()))
+            .and_then(|world| world_value(&world).map_err(|error| error.to_string()));
+        match read {
+            Ok(world) => worlds.push(json!({
+                "receipt": receipt.display().to_string(),
+                "world_ref": world["world_ref"],
+                "workcell_ref": world["workcell_ref"],
+                "demand_ref": world["demand_ref"],
+                "subjects": world["subjects"],
+                "state": world["state"],
+                "retention": world["retention"],
+                "persistence": world["persistence"],
+                "bindings": world["binding_graph"]["bindings"].as_array().map_or(0, Vec::len),
+                "planned_exposures": world["planned_exposures"].as_array().map_or(0, Vec::len),
+            })),
+            Err(error) => unreadable.push(json!({
+                "receipt": receipt.display().to_string(),
+                "error": error,
+            })),
+        }
+    }
+    if global.json {
+        emit_json(json!({
+            "ok": true,
+            "schema": "workcell.world-receipts/v1",
+            "receipt_root": directory.display().to_string(),
+            "worlds": worlds,
+            "unreadable": unreadable,
+            "note": "receipts kept under this cell's state root only; a receipt written elsewhere with --receipt is not listed",
+        }));
+    } else {
+        if worlds.is_empty() && unreadable.is_empty() {
+            println!("no material-world receipts in {}", directory.display());
+        }
+        for world in &worlds {
+            println!(
+                "{} [{}] demand {} — {}",
+                world["world_ref"].as_str().unwrap_or("?"),
+                world["state"].as_str().unwrap_or("?"),
+                world["demand_ref"].as_str().unwrap_or("?"),
+                world["receipt"].as_str().unwrap_or("?"),
+            );
+        }
+        for entry in &unreadable {
+            println!(
+                "unreadable {}: {}",
+                entry["receipt"].as_str().unwrap_or("?"),
+                entry["error"].as_str().unwrap_or("?")
+            );
+        }
+    }
+    Ok(())
+}
+
 fn receipt_count(state_root: &Path) -> Result<usize, WorkcellError> {
     let worlds = state_root.join("worlds");
     if !worlds.exists() {
@@ -9448,7 +9535,7 @@ fn secret_revoke_projection(global: &GlobalArgs, args: &[String]) -> Result<(), 
 fn print_help() {
     println!(
         "Workcell — provider-neutral material execution control: inspect this cell,\nprepare and release material worlds, run native material execution.\n\n\
-Everyday inspection:\n  workcell status       Summarise this local Workcell\n  workcell discover     Discover material offers\n  workcell material     The material reading (same handler as inspect)\n  workcell inspect      The material reading\n  workcell providers    List provider inventory\n  workcell instances    Live harness instances and bounded resource usage\n  workcell places       Census of persistent process places (tmux, herdr) — read-only\n  workcell doctor       Verify the zero-setup local baseline\n  workcell identity     This cell's identity and where it comes from (flag, declaration, default)\n  workcell identity set REF [--rebind]\n                        Declare this machine's cell in its state root; --rebind carries\n                        registries bound to the old name to REF (prior bytes kept)\n\n\
+Everyday inspection:\n  workcell status       Summarise this local Workcell\n  workcell discover     Discover material offers\n  workcell material     The material reading (same handler as inspect)\n  workcell inspect      The material reading\n  workcell providers    List provider inventory\n  workcell instances    Live harness instances and bounded resource usage\n  workcell worlds       The material-world receipts this cell keeps, with world, demand and subjects\n  workcell places       Census of persistent process places (tmux, herdr) — read-only\n  workcell doctor       Verify the zero-setup local baseline\n  workcell identity     This cell's identity and where it comes from (flag, declaration, default)\n  workcell identity set REF [--rebind]\n                        Declare this machine's cell in its state root; --rebind carries\n                        registries bound to the old name to REF (prior bytes kept)\n\n\
 Material lifecycle (contextual — ordinary Start/Continue orchestrates only\nthe owner operations a task actually needs):\n  workcell plan         Plan an ExecutionDemand\n  workcell placement    Plan an ExecutionDemand on this cell and each connected cell that grants discover, ranked\n  workcell prepare      Prepare a material world and persist a receipt\n  workcell observe      Observe a prepared world from its receipt\n  workcell expose       Resolve prepared exposure surfaces\n  workcell collect      Collect prepared output channels\n  workcell release      Release or preserve a prepared world\n  workcell reconcile    Reconcile desired material state\n  workcell recover      Recover a prepared world from its receipt\n  workcell run          Native material execution; never fabricated Factory ancestry\n  workcell place        Place request/release over persistent places\n                        (request --provider auto|herdr|tmux --name SLUG; release --place-ref REF --pid N --start-marker PS_LSTART)\n\n\
 Cross-cell connection lifecycle (operator):\n  workcell serve --listen HOST:PORT [--authorization TOKEN]\n      Serve this cell's control plane; grants are enforced per request.\n      Non-loopback listeners require a token or at least one active grant.\n  workcell authorise --client <label> --allow <operation>... [--advertise <port>...] [--expires-in <duration>] [--store-credential]\n      Grant a connecting client named operations; the credential is shown once.\n      `--expires-in 30m` (s|m|h|d) makes the grant expire at the next use,\n      refused as expired; without it the grant never expires.\n  workcell revoke --client <label> | --grant <ref>\n      Revoke grants; takes effect at the connecting client's next use.\n  workcell connect --endpoint HOST:PORT [--connection <label>] [--authorization TOKEN] [--store-credential]\n      Establish or reconnect the client side; reports both cells' protocol\n      and software, refuses unsupported combinations loudly.\n  workcell connections  Cross-cell connection records (list/show/disconnect/probe)\n  workcell connections probe [label] [--timeout-ms N]\n      Reachability and round trip to each connection's endpoint by the handshake;\n      reads only, never writes the record.\n  workcell machine add --label LABEL --endpoint HOST:PORT [--credential-ref REF]\n      Declare a remote machine natively; then `workcell connect --connection LABEL`\n      needs no flags — the endpoint and credential reference come from the\n      declaration, and the material resolves from the origin secret source.\n  workcell machine list | remove --label LABEL\n\n\
 Secret origin and projection (operator; presence and references, never values):\n  workcell secret scan [--json]\n      Detect credential material outside a secret provider (env vars, shell\n      rc files, known auth files); reports location + presence only.\n  workcell secret vault --from env:NAME|PATH [--select KEY] --ref REF [--provider secret-service|keychain]\n      Move material into this machine's origin store; the value is never printed.\n  workcell secret project --name LABEL (--to-workcell REF --connection LABEL | --to-sandbox --allocation-ref REF)\n      --credential-ref REF --source-provider REF --class CLASS --purpose P --scope S --by REF\n      Record an authorised projection at the origin (refs only, never material).\n  workcell secret projections | revoke-projection (--name LABEL | --ref PREF)\n      Read the origin's projection ledger; revocation reaches the projected\n      target at its next use.\n\n\

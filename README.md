@@ -18,7 +18,7 @@ What was provided is kept as a **binding graph**: each requirement is tied to th
 
 - **Zero-daemon local mode.** Directory and git-worktree workspaces, host-process execution, directory artifact storage, a run ledger (`workcell run start|observe|collect|release|list|show`) and receipts.
 - **Services.** Services are declared in `services.json`. Workcell observes services that something else started ("target-owned") and starts and stops child-process services itself ("managed").
-- **Inspection.** `workcell status`, `providers`, `inspect` and `doctor` (`doctor` checks the zero-setup local baseline).
+- **Inspection.** `workcell status`, `providers`, `inspect` and `doctor` (`doctor` checks the zero-setup local baseline). `workcell worlds` lists the material-world receipts kept under the state root (`worlds/`), each with its world, Workcell, demand, subjects, state and retention. It names receipts that do not decode, and it cannot know receipts written elsewhere with `--receipt`.
 - **Process census.** `workcell places` is a read-only census of tmux and herdr panes as persistent places for processes; `place request|release` acts on them. `workcell instances` lists live agent-harness processes, using Actuation's harness detection, and gives bounded CPU and memory readings that never read process arguments or environment.
 - **Cross-machine connections.** `serve`, `authorise`, `connect`, `revoke`, `connections` and `machine add|list|remove` run one Workcell's commands against another over `workcell.control/v1`. Each client gets a named grant of operations and a credential shown once. A grant can expire, and an expired grant is refused as expired, distinct from revoked. `connections probe [label]` times the opening handshake to each recorded endpoint and reports reachable, incompatible, refused or unreachable, with the round trip. It never writes the connection record. `placement <demand flags>` plans a demand on this cell and on each connected cell whose grant allows `discover`, and ranks them by the placement law, with a diagnostic for each cell that cannot carry it. Nothing is prepared.
 - **Secrets by reference.** `secret scan` reports where credential material sits outside a secret store, giving the location only and never the value. `secret vault` moves it into the macOS Keychain, 1Password or the Linux Secret Service. `secret project` records an authorised projection by reference. Delivery works today only to an OpenSandbox allocation, through its credential broker.
@@ -81,6 +81,7 @@ workcell discover                      # what this machine can provide right now
 workcell plan --require shell --workspace writable --json   # plan only; nothing is created
 workcell places                        # read-only census of tmux / herdr places
 workcell instances list                # live agent-harness processes
+workcell worlds                        # material-world receipts this cell keeps
 workcell secret scan                   # where credentials sit outside a store (presence only)
 ```
 
