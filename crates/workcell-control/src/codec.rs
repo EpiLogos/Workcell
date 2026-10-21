@@ -172,6 +172,100 @@ pub fn discovery_value(discovery: &Discovery) -> Value {
     })
 }
 
+/// The inverse of [`discovery_value`]: a remote cell's `discover` answer read
+/// back into the canonical Discovery, so placement can weigh it beside this
+/// cell's own. Every field `discovery_value` writes is required; an unknown
+/// health or availability word is refused, never guessed.
+pub fn discovery_from_value(value: &Value) -> Result<Discovery, WorkcellError> {
+    let map = value
+        .as_object()
+        .ok_or_else(|| invalid("a discovery answer must be an object".into()))?;
+    let offers = array_field(map, "offers")?
+        .iter()
+        .map(|offer| {
+            let offer = offer
+                .as_object()
+                .ok_or_else(|| invalid("each discovery offer must be an object".into()))?;
+            let strings = |key: &str| -> Result<Vec<String>, WorkcellError> {
+                Ok(string_array_field(offer, key)?
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect())
+            };
+            Ok(epilogos_workcell_core::OperationalOffer {
+                offer_ref: epilogos_workcell_core::OfferRef::new(string_field(offer, "offer_ref")?)
+                    .map_err(|e| invalid(format!("offer_ref: {e}")))?,
+                provider_ref: epilogos_workcell_core::ProviderRef::new(string_field(
+                    offer,
+                    "provider_ref",
+                )?)
+                .map_err(|e| invalid(format!("provider_ref: {e}")))?,
+                port: string_field(offer, "port")?.to_owned(),
+                affordances: strings("affordances")?,
+                connections: strings("connections")?,
+                exposures: strings("exposures")?,
+                isolation_trust: strings("isolation_trust")?,
+                availability: parse_availability(string_field(offer, "availability")?)?,
+                health: parse_health(string_field(offer, "health")?)?,
+                capacity: capacity_from(map_field(offer, "capacity")?)?,
+                metadata: string_map_field(offer, "metadata")?,
+            })
+        })
+        .collect::<Result<Vec<_>, WorkcellError>>()?;
+    Ok(Discovery {
+        workcell_ref: epilogos_workcell_core::WorkcellRef::new(string_field(map, "workcell_ref")?)
+            .map_err(|e| invalid(format!("workcell_ref: {e}")))?,
+        health: parse_health(string_field(map, "health")?)?,
+        capacity: capacity_from(map_field(map, "capacity")?)?,
+        offers,
+    })
+}
+
+fn capacity_from(
+    map: &Map<String, Value>,
+) -> Result<BTreeMap<String, epilogos_workcell_core::Capacity>, WorkcellError> {
+    map.iter()
+        .map(|(key, value)| {
+            let entry = value
+                .as_object()
+                .ok_or_else(|| invalid(format!("capacity `{key}` must be an object")))?;
+            let amount = entry
+                .get("amount")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| invalid(format!("capacity `{key}` needs an unsigned amount")))?;
+            let unit = match entry.get("unit") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(string(value, "capacity unit")?.to_owned()),
+            };
+            Ok((
+                key.clone(),
+                epilogos_workcell_core::Capacity { amount, unit },
+            ))
+        })
+        .collect()
+}
+
+fn parse_health(value: &str) -> Result<epilogos_workcell_core::HealthState, WorkcellError> {
+    use epilogos_workcell_core::HealthState;
+    match value {
+        "healthy" => Ok(HealthState::Healthy),
+        "degraded" => Ok(HealthState::Degraded),
+        "unavailable" => Ok(HealthState::Unavailable),
+        "unknown" => Ok(HealthState::Unknown),
+        other => Err(invalid(format!("unknown health `{other}`"))),
+    }
+}
+
+fn parse_availability(value: &str) -> Result<epilogos_workcell_core::Availability, WorkcellError> {
+    use epilogos_workcell_core::Availability;
+    match value {
+        "available" => Ok(Availability::Available),
+        "degraded" => Ok(Availability::Degraded),
+        "unavailable" => Ok(Availability::Unavailable),
+        other => Err(invalid(format!("unknown availability `{other}`"))),
+    }
+}
+
 pub fn status_value(discovery: &Discovery) -> Value {
     let providers = discovery
         .offers
@@ -594,6 +688,55 @@ fn decode_storage(value: &Value) -> Result<StorageRequirement, WorkcellError> {
 #[cfg(test)]
 mod storage_transport_tests {
     use super::*;
+    #[test]
+    fn a_discovery_reads_back_exactly_as_it_was_written() {
+        use epilogos_workcell_core::{
+            Availability, Capacity, HealthState, OfferRef, OperationalOffer, ProviderRef,
+            WorkcellRef,
+        };
+        let discovery = Discovery {
+            workcell_ref: WorkcellRef::new("workcell:remote").unwrap(),
+            health: HealthState::Degraded,
+            capacity: BTreeMap::from([(
+                "memory".to_owned(),
+                Capacity {
+                    amount: 64,
+                    unit: Some("GiB".into()),
+                },
+            )]),
+            offers: vec![OperationalOffer {
+                offer_ref: OfferRef::new("offer:shell").unwrap(),
+                provider_ref: ProviderRef::new("provider:host").unwrap(),
+                port: "shell".into(),
+                affordances: vec!["shell".into()],
+                connections: vec![],
+                exposures: vec!["http".into()],
+                isolation_trust: vec!["host-process".into()],
+                availability: Availability::Available,
+                health: HealthState::Healthy,
+                capacity: BTreeMap::from([(
+                    "cpu".to_owned(),
+                    Capacity {
+                        amount: 8,
+                        unit: None,
+                    },
+                )]),
+                metadata: BTreeMap::from([("os".to_owned(), "linux".to_owned())]),
+            }],
+        };
+        let written = discovery_value(&discovery);
+        assert_eq!(discovery_from_value(&written).unwrap(), discovery);
+        let mut unknown = written.clone();
+        unknown["health"] = json!("splendid");
+        assert!(
+            discovery_from_value(&unknown).is_err(),
+            "an unknown health is refused"
+        );
+        let mut torn = written;
+        torn.as_object_mut().unwrap().remove("offers");
+        assert!(discovery_from_value(&torn).is_err());
+    }
+
     #[test]
     fn storage_requirements_survive_control_transport_and_affect_basis() {
         let mut demand = ExecutionDemand::new(

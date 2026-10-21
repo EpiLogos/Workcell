@@ -424,6 +424,7 @@ dependencies = [
  "epilogos-workcell-keychain",
  "epilogos-workcell-onepassword",
  "epilogos-workcell-opensandbox",
+ "epilogos-workcell-placement",
  "epilogos-workcell-runtime",
  "epilogos-workcell-secret-scan",
  "epilogos-workcell-secret-service",
