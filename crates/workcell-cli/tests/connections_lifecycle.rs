@@ -744,3 +744,131 @@ fn a_failed_connection_never_kills_a_serving_daemon_with_a_closed_stderr() {
     let _ = server.wait();
     let _ = fs::remove_dir_all(root);
 }
+
+/// Every file under a directory, by relative path, with its bytes.
+fn snapshot(root: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let mut files = std::collections::BTreeMap::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(directory) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                files.insert(
+                    path.strip_prefix(root).unwrap().display().to_string(),
+                    fs::read(&path).unwrap(),
+                );
+            }
+        }
+    }
+    files
+}
+
+#[test]
+fn probe_times_the_handshake_and_never_writes_the_record() {
+    let root = temp_path("probe");
+    let server_root = root.join("server");
+    let client_root = root.join("client");
+    fs::create_dir_all(&client_root).unwrap();
+    let (mut server, endpoint) = spawn_server(&server_root, "127.0.0.1:0");
+    let grant = stdout_json(&run_string(&[
+        "--state-root",
+        &server_root.display().to_string(),
+        "--workcell-ref",
+        "workcell:home-server",
+        "authorise",
+        "--client",
+        "laptop",
+        "--allow",
+        "status",
+        "--json",
+    ]));
+    let credential = grant["credential"].as_str().unwrap().to_owned();
+    stdout_json(&run(&connect_args(
+        &client_root,
+        &endpoint,
+        "laptop",
+        &credential,
+    )));
+    let before = snapshot(&client_root);
+
+    let probed = stdout_json(&run_string(&[
+        "--state-root",
+        &client_root.display().to_string(),
+        "connections",
+        "probe",
+        "--json",
+    ]));
+    assert_eq!(probed["schema"], "workcell.connection-probe/v1");
+    assert_eq!(probed["timeout_ms"], 3000);
+    let probe = &probed["probes"][0];
+    assert_eq!(probe["label"], "laptop");
+    assert_eq!(probe["endpoint"], endpoint);
+    assert_eq!(probe["state"], "reachable", "{probe}");
+    assert_eq!(probe["recorded_state"], "connected");
+    assert_eq!(probe["protocol"], "workcell.control/v1");
+    let rtt = probe["rtt_ms"].as_f64().expect("a round trip came back");
+    assert!((0.0..3000.0).contains(&rtt), "{rtt}");
+    // No credential is recorded for this connection (it was handed per call),
+    // so the remote says the bare handshake is not authorised, in its words.
+    // and a refused handshake discloses no identity.
+    assert_eq!(probe["authorised"], false);
+    assert!(probe["reason"].is_string(), "{probe}");
+    assert!(probe["remote_workcell_ref"].is_null(), "{probe}");
+    assert_eq!(
+        snapshot(&client_root),
+        before,
+        "a probe writes nothing under the client's state root"
+    );
+
+    // One label, plain text.
+    let plain = run_string(&[
+        "--state-root",
+        &client_root.display().to_string(),
+        "connections",
+        "probe",
+        "laptop",
+    ]);
+    assert!(plain.status.success());
+    let text = String::from_utf8_lossy(&plain.stdout).to_string();
+    assert!(
+        text.contains("laptop -> ") && text.contains("[reachable]") && text.contains(" ms"),
+        "{text}"
+    );
+
+    // The serving cell goes away: unreachable, no round trip, record untouched.
+    server.kill().unwrap();
+    let _ = server.wait();
+    let offline = stdout_json(&run_string(&[
+        "--state-root",
+        &client_root.display().to_string(),
+        "connections",
+        "probe",
+        "laptop",
+        "--timeout-ms",
+        "500",
+        "--json",
+    ]));
+    let probe = &offline["probes"][0];
+    assert_eq!(probe["state"], "unreachable", "{probe}");
+    assert!(probe.get("rtt_ms").is_none());
+    assert!(probe["detail"].as_str().unwrap().contains(&endpoint));
+    assert_eq!(snapshot(&client_root), before);
+
+    // Refusals before anything is asked.
+    for args in [
+        vec!["connections", "probe", "nobody", "--json"],
+        vec!["connections", "probe", "--timeout-ms", "0", "--json"],
+        vec!["connections", "probe", "laptop", "extra", "--json"],
+    ] {
+        let mut full = vec!["--state-root", client_root.to_str().unwrap()];
+        full.extend(args.iter().copied());
+        let output = run_string(&full);
+        assert!(!output.status.success(), "{args:?}");
+    }
+    let _ = fs::remove_dir_all(&root);
+}
