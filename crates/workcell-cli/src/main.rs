@@ -119,6 +119,9 @@ fn run(args: Vec<String>) -> Result<(), WorkcellError> {
         "material" => command_material(&global),
         "collect" => command_collect(&global),
         "release" => command_release(&global),
+        "lease" => command_lease(&global, command_args),
+        "checkpoint" => command_checkpoint(&global, command_args),
+        "checkpoints" => command_checkpoints(&global, command_args),
         "reconcile" => command_reconcile(&global, command_args),
         "correlate-projection" => command_correlate_projection(&global, command_args),
         "instances" => command_instances(&global, command_args),
@@ -1251,6 +1254,273 @@ fn command_release(global: &GlobalArgs) -> Result<(), WorkcellError> {
         );
     }
     Ok(())
+}
+
+// ---- Leases and checkpoints --------------------------------------------
+//
+// A prepared world's lifetime as its providers hold it. `lease` asks each
+// binding's own provider for its lease (MaterialLeaseProvider) and renews
+// nothing. `checkpoint` takes a provider checkpoint of one binding
+// (MaterialCheckpointProvider) and keeps its record in this cell's
+// checkpoint ledger, `<state-root>/checkpoints/<world>.jsonl`, the only
+// place a world's checkpoints are kept; `checkpoints` reads that ledger.
+
+const LEASES_SCHEMA: &str = "workcell.material-leases/v1";
+const CHECKPOINT_SCHEMA: &str = "workcell.material-checkpoint/v1";
+const CHECKPOINTS_SCHEMA: &str = "workcell.material-checkpoints/v1";
+
+fn command_lease(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    use epilogos_workcell_runtime::LeaseStanding;
+    if let Some(extra) = args.first() {
+        return Err(WorkcellError::InvalidDemand(format!(
+            "workcell --receipt R lease takes no arguments; `{extra}` is not one"
+        )));
+    }
+    let (workcell, world, _) = resume(global)?;
+    let presence = binding_presences(&world)?;
+    let leases = workcell
+        .observe_leases(&world.world_ref)?
+        .into_iter()
+        .map(|lease| {
+            let mut entry = json!({
+                "logical_ref": lease.logical_ref,
+                "port": lease.port.as_str(),
+                "provider_ref": lease.provider_ref.as_str(),
+                "material_ref": lease.material_ref,
+                "presence": presence.get(&lease.logical_ref),
+            });
+            match lease.standing {
+                LeaseStanding::Leased(held) => {
+                    entry["standing"] = json!("leased");
+                    entry["expires_at"] = json!(held.expires_at);
+                    entry["renewable"] = json!(held.renewable);
+                    entry["provenance"] = json!(held.provenance);
+                }
+                LeaseStanding::Unexpiring => entry["standing"] = json!("unexpiring"),
+                LeaseStanding::NoLease => entry["standing"] = json!("no-lease"),
+                LeaseStanding::Unobserved(error) => {
+                    entry["standing"] = json!("unobserved");
+                    entry["error"] = json!(error);
+                }
+            }
+            entry
+        })
+        .collect::<Vec<_>>();
+    if global.json {
+        emit_json(json!({
+            "ok": true,
+            "schema": LEASES_SCHEMA,
+            "world_ref": world.world_ref.as_str(),
+            "observed_at_unix_ms": now_unix_ms(),
+            "leases": leases,
+        }));
+    } else {
+        println!("{}", world.world_ref);
+        for lease in &leases {
+            let standing = match lease["standing"].as_str().unwrap_or("?") {
+                "leased" => format!(
+                    "leased until {}{}",
+                    lease["expires_at"].as_str().unwrap_or("?"),
+                    if lease["renewable"] == json!(true) {
+                        " (renewable)"
+                    } else {
+                        ""
+                    }
+                ),
+                "unexpiring" => "its provider reports no expiry".to_owned(),
+                "no-lease" => "no lease: held until released".to_owned(),
+                other => format!(
+                    "{other}: {}",
+                    lease["error"].as_str().unwrap_or("no reason given")
+                ),
+            };
+            println!(
+                "{} ({}) — {standing}",
+                lease["logical_ref"].as_str().unwrap_or("?"),
+                lease["provider_ref"].as_str().unwrap_or("?"),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn command_checkpoint(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    use epilogos_workcell_core::{CheckpointRequest, MaterialCheckpointState};
+    let usage = "usage: workcell --receipt R checkpoint [--binding LOGICAL_REF] [--name NAME]";
+    let mut binding = None;
+    let mut name = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--binding" => {
+                binding = Some(require_value(args, index, "--binding")?.to_owned());
+                index += 2;
+            }
+            "--name" => {
+                name = Some(require_value(args, index, "--name")?.to_owned());
+                index += 2;
+            }
+            other => {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "unexpected `{other}`; {usage}"
+                )))
+            }
+        }
+    }
+    let (mut workcell, world, _) = resume(global)?;
+    let (logical_ref, checkpoint) = workcell.checkpoint_binding(
+        &world.world_ref,
+        binding.as_deref(),
+        &CheckpointRequest { name: name.clone() },
+    )?;
+    let state = match checkpoint.state {
+        MaterialCheckpointState::Creating => "creating",
+        MaterialCheckpointState::Ready => "ready",
+        MaterialCheckpointState::Failed => "failed",
+        MaterialCheckpointState::Unknown => "unknown",
+    };
+    let record = json!({
+        "schema": CHECKPOINT_SCHEMA,
+        "world_ref": world.world_ref.as_str(),
+        "logical_ref": logical_ref,
+        "provider_ref": checkpoint.provider_ref.as_str(),
+        "source_material_ref": checkpoint.source_material_ref,
+        "checkpoint_ref": checkpoint.checkpoint_ref,
+        "name": name,
+        "state": state,
+        "reusable": checkpoint.reusable,
+        "provenance": checkpoint.provenance,
+        "taken_at_unix_ms": now_unix_ms(),
+    });
+    let ledger = checkpoint_ledger_path(&global.state_root, world.world_ref.as_str());
+    append_checkpoint_record(&ledger, &record)?;
+    if global.json {
+        let mut answer = record;
+        answer["ok"] = json!(true);
+        answer["ledger"] = json!(ledger.display().to_string());
+        emit_json(answer);
+    } else {
+        println!(
+            "checkpoint {} of {} ({}) — {state}; kept in {}",
+            checkpoint.checkpoint_ref,
+            logical_ref,
+            world.world_ref,
+            ledger.display()
+        );
+    }
+    Ok(())
+}
+
+fn command_checkpoints(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
+    if let Some(extra) = args.first() {
+        return Err(WorkcellError::InvalidDemand(format!(
+            "workcell --receipt R checkpoints takes no arguments; `{extra}` is not one"
+        )));
+    }
+    let world = load_world_receipt(global)?;
+    let ledger = checkpoint_ledger_path(&global.state_root, world.world_ref.as_str());
+    let mut checkpoints = Vec::new();
+    let mut unreadable = Vec::new();
+    match fs::read_to_string(&ledger) {
+        Ok(raw) => {
+            for (index, line) in raw.lines().enumerate() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                match serde_json::from_str::<Value>(line) {
+                    Ok(record) if record["schema"] == CHECKPOINT_SCHEMA => checkpoints.push(record),
+                    Ok(_) => unreadable.push(json!({
+                        "line": index + 1,
+                        "error": format!("not a {CHECKPOINT_SCHEMA} record"),
+                    })),
+                    Err(error) => unreadable.push(json!({
+                        "line": index + 1,
+                        "error": error.to_string(),
+                    })),
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(WorkcellError::OperationFailed(format!(
+                "read checkpoint ledger `{}`: {error}",
+                ledger.display()
+            )))
+        }
+    }
+    if global.json {
+        emit_json(json!({
+            "ok": true,
+            "schema": CHECKPOINTS_SCHEMA,
+            "world_ref": world.world_ref.as_str(),
+            "ledger": ledger.display().to_string(),
+            "checkpoints": checkpoints,
+            "unreadable": unreadable,
+        }));
+    } else {
+        if checkpoints.is_empty() && unreadable.is_empty() {
+            println!("no checkpoints kept for {}", world.world_ref);
+        }
+        for checkpoint in &checkpoints {
+            println!(
+                "{} of {} — {}",
+                checkpoint["checkpoint_ref"].as_str().unwrap_or("?"),
+                checkpoint["logical_ref"].as_str().unwrap_or("?"),
+                checkpoint["state"].as_str().unwrap_or("?"),
+            );
+        }
+        for entry in &unreadable {
+            println!(
+                "unreadable line {}: {}",
+                entry["line"],
+                entry["error"].as_str().unwrap_or("?")
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Each binding's presence as the receipt records it, by logical ref.
+fn binding_presences(
+    world: &MaterialisedExecutionWorld,
+) -> Result<BTreeMap<String, Value>, WorkcellError> {
+    let value = world_value(world)?;
+    Ok(value["binding_graph"]["bindings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|binding| {
+            binding["logical_ref"]
+                .as_str()
+                .map(|logical_ref| (logical_ref.to_owned(), binding["presence"].clone()))
+        })
+        .collect())
+}
+
+fn checkpoint_ledger_path(state_root: &Path, world_ref: &str) -> PathBuf {
+    state_root
+        .join("checkpoints")
+        .join(format!("{}.jsonl", safe_filename(world_ref)))
+}
+
+fn append_checkpoint_record(ledger: &Path, record: &Value) -> Result<(), WorkcellError> {
+    use std::io::Write;
+    let failed = |error: std::io::Error| {
+        WorkcellError::OperationFailed(format!(
+            "keep checkpoint record in `{}`: {error}",
+            ledger.display()
+        ))
+    };
+    if let Some(parent) = ledger.parent() {
+        fs::create_dir_all(parent).map_err(failed)?;
+    }
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(ledger)
+        .map_err(failed)?;
+    writeln!(file, "{record}").map_err(failed)?;
+    file.sync_data().map_err(failed)
 }
 
 fn command_reconcile(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
@@ -9593,7 +9863,7 @@ fn print_help() {
     println!(
         "Workcell — provider-neutral material execution control: inspect this cell,\nprepare and release material worlds, run native material execution.\n\n\
 Everyday inspection:\n  workcell status       Summarise this local Workcell\n  workcell discover     Discover material offers\n  workcell material     The material reading (same handler as inspect)\n  workcell inspect      The material reading\n  workcell providers    List provider inventory\n  workcell instances    Live harness instances and bounded resource usage\n  workcell worlds       The material-world receipts this cell keeps, with world, demand and subjects\n  workcell places       Census of persistent process places (tmux, herdr) — read-only\n  workcell doctor       Verify the zero-setup local baseline\n  workcell identity     This cell's identity and where it comes from (flag, declaration, default)\n  workcell identity set REF [--rebind]\n                        Declare this machine's cell in its state root; --rebind carries\n                        registries bound to the old name to REF (prior bytes kept)\n\n\
-Material lifecycle (contextual — ordinary Start/Continue orchestrates only\nthe owner operations a task actually needs):\n  workcell plan         Plan an ExecutionDemand\n  workcell placement    Plan an ExecutionDemand on this cell and each connected cell that grants discover, ranked\n  workcell prepare      Prepare a material world and persist a receipt\n  workcell observe      Observe a prepared world from its receipt\n  workcell expose       Resolve prepared exposure surfaces\n  workcell collect      Collect prepared output channels\n  workcell release      Release or preserve a prepared world\n  workcell reconcile    Reconcile desired material state\n  workcell recover      Recover a prepared world from its receipt\n  workcell run          Native material execution; never fabricated Factory ancestry\n  workcell place        Place request/release over persistent places\n                        (request --provider auto|herdr|tmux --name SLUG; release --place-ref REF --pid N --start-marker PS_LSTART)\n\n\
+Material lifecycle (contextual — ordinary Start/Continue orchestrates only\nthe owner operations a task actually needs):\n  workcell plan         Plan an ExecutionDemand\n  workcell placement    Plan an ExecutionDemand on this cell and each connected cell that grants discover, ranked\n  workcell prepare      Prepare a material world and persist a receipt\n  workcell observe      Observe a prepared world from its receipt\n  workcell expose       Resolve prepared exposure surfaces\n  workcell collect      Collect prepared output channels\n  workcell release      Release or preserve a prepared world\n  workcell lease        Each binding's lease as its provider holds it; renews nothing\n  workcell checkpoint [--binding LOGICAL_REF] [--name NAME]\n                        Take a provider checkpoint of a binding and keep its record\n  workcell checkpoints  The checkpoints this cell keeps for a prepared world\n  workcell reconcile    Reconcile desired material state\n  workcell recover      Recover a prepared world from its receipt\n  workcell run          Native material execution; never fabricated Factory ancestry\n  workcell place        Place request/release over persistent places\n                        (request --provider auto|herdr|tmux --name SLUG; release --place-ref REF --pid N --start-marker PS_LSTART)\n\n\
 Cross-cell connection lifecycle (operator):\n  workcell serve --listen HOST:PORT [--authorization TOKEN]\n      Serve this cell's control plane; grants are enforced per request.\n      Non-loopback listeners require a token or at least one active grant.\n  workcell authorise --client <label> --allow <operation>... [--advertise <port>...] [--expires-in <duration>] [--store-credential]\n      Grant a connecting client named operations; the credential is shown once.\n      `--expires-in 30m` (s|m|h|d) makes the grant expire at the next use,\n      refused as expired; without it the grant never expires.\n  workcell revoke --client <label> | --grant <ref>\n      Revoke grants; takes effect at the connecting client's next use.\n  workcell connect --endpoint HOST:PORT [--connection <label>] [--authorization TOKEN] [--store-credential]\n      Establish or reconnect the client side; reports both cells' protocol\n      and software, refuses unsupported combinations loudly.\n  workcell connections  Cross-cell connection records (list/show/disconnect/probe)\n  workcell connections probe [label] [--timeout-ms N]\n      Reachability and round trip to each connection's endpoint by the handshake;\n      reads only, never writes the record.\n  workcell machine add --label LABEL --endpoint HOST:PORT [--credential-ref REF]\n      Declare a remote machine natively; then `workcell connect --connection LABEL`\n      needs no flags — the endpoint and credential reference come from the\n      declaration, and the material resolves from the origin secret source.\n  workcell machine list | remove --label LABEL\n\n\
 Secret origin and projection (operator; presence and references, never values):\n  workcell secret scan [--json]\n      Detect credential material outside a secret provider (env vars, shell\n      rc files, known auth files); reports location + presence only.\n  workcell secret vault --from env:NAME|PATH [--select KEY] --ref REF [--provider secret-service|keychain]\n      Move material into this machine's origin store; the value is never printed.\n  workcell secret project --name LABEL (--to-workcell REF --connection LABEL | --to-sandbox --allocation-ref REF)\n      --credential-ref REF --source-provider REF --class CLASS --purpose P --scope S --by REF\n      Record an authorised projection at the origin (refs only, never material).\n  workcell secret projections | revoke-projection (--name LABEL | --ref PREF)\n      Read the origin's projection ledger; revocation reaches the projected\n      target at its next use.\n\n\
 Sandbox provisioning and projection correlation (operator):\n  workcell sandboxes    OpenSandbox server-side material (reconcile)\n  workcell --receipt WORLD.json correlate-projection --projection AIKIT.json --subject checkout:KEY\n      Carry an AIKit worktree-projection verdict (aikit worktree project --json)\n      as a correlated observation on the world's checkout subject. Workcell runs\n      no git and re-derives nothing — the verdict is AIKit's, carried verbatim.\n\n\
