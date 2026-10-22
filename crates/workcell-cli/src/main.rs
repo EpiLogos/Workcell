@@ -724,6 +724,12 @@ fn command_doctor(global: &GlobalArgs) -> Result<(), WorkcellError> {
     // make doctor fail. They are reported because a declared service that does
     // not answer is the thing an operator most needs to see.
     let services = declared_service_report(&discovery);
+    // The OpenSandbox deployments this state root declares, by the provider
+    // ref `sandboxes reconcile --provider` resolves.
+    let sandbox_deployments = declared_sandbox_deployments(global)?
+        .iter()
+        .map(declared_sandbox_deployment_value)
+        .collect::<Vec<_>>();
     let opensandbox_declared = discovery.offers.iter().any(|offer| {
         offer.port == ProviderPortKind::Execution.as_str()
             && offer.provider_ref.as_str().contains("opensandbox")
@@ -738,6 +744,7 @@ fn command_doctor(global: &GlobalArgs) -> Result<(), WorkcellError> {
             "filesystem_artifacts": filesystem_artifacts,
             "optional_external_providers_required": false,
             "declared_services": services,
+            "declared_sandbox_deployments": sandbox_deployments,
             "opensandbox_control_fence": if opensandbox_declared {
                 json!(epilogos_workcell_opensandbox::EGRESS_CONTROL_FENCE)
             } else {
@@ -770,6 +777,13 @@ fn command_doctor(global: &GlobalArgs) -> Result<(), WorkcellError> {
                     service["endpoint"].as_str().unwrap_or("no endpoint"),
                 );
             }
+        }
+        for deployment in &sandbox_deployments {
+            println!(
+                "  declared sandbox deployment: {} at {}",
+                deployment["provider_ref"].as_str().unwrap_or("?"),
+                deployment["lifecycle_base_url"].as_str().unwrap_or("?"),
+            );
         }
         if opensandbox_declared {
             println!(
@@ -2848,7 +2862,8 @@ fn command_sandboxes(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
     }
 
     let mut server = None;
-    let mut api_key_env = OPENSANDBOX_DEFAULT_API_KEY_ENV.to_owned();
+    let mut provider = None;
+    let mut api_key_env = None;
     let mut release_orphans = false;
     let mut include_snapshots = false;
     let mut operator_releases: Vec<String> = Vec::new();
@@ -2859,8 +2874,12 @@ fn command_sandboxes(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
                 server = Some(require_value(args, index, "--server")?.to_owned());
                 index += 2;
             }
+            "--provider" => {
+                provider = Some(require_value(args, index, "--provider")?.to_owned());
+                index += 2;
+            }
             "--api-key-env" => {
-                api_key_env = require_value(args, index, "--api-key-env")?.to_owned();
+                api_key_env = Some(require_value(args, index, "--api-key-env")?.to_owned());
                 index += 2;
             }
             "--release-orphans" => {
@@ -2882,17 +2901,39 @@ fn command_sandboxes(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
             }
         }
     }
-    let Some(server) = server else {
-        return Err(WorkcellError::InvalidDemand(
-            "usage: workcell sandboxes reconcile --server <url> [--api-key-env <ENV>] [--release-orphans] [--release <id>...] [--include-snapshots]".into(),
-        ));
+    const USAGE: &str = "usage: workcell sandboxes reconcile (--server <url> [--api-key-env <ENV>] | --provider <ref>) [--release-orphans] [--release <id>...] [--include-snapshots]";
+    // `--provider` names a deployment this cell declares: its lifecycle
+    // server and the environment variable that holds its key both come from
+    // the declaration, so a key only ever reaches Workcell's own declared
+    // server. `--server` names a server directly, as before.
+    let (server, api_key_env) = match (server, provider.as_deref()) {
+        (Some(_), Some(_)) => {
+            return Err(WorkcellError::InvalidDemand(format!(
+                "pass --server or --provider, not both; {USAGE}"
+            )))
+        }
+        (None, Some(provider_ref)) => {
+            if api_key_env.is_some() {
+                return Err(WorkcellError::InvalidDemand(format!(
+                    "--provider takes its key environment from the declared deployment; drop --api-key-env. {USAGE}"
+                )));
+            }
+            let config = declared_sandbox_deployment(global, provider_ref)?;
+            (config.lifecycle_base_url, config.api_key_env)
+        }
+        (Some(server), None) => (
+            server,
+            Some(api_key_env.unwrap_or_else(|| OPENSANDBOX_DEFAULT_API_KEY_ENV.to_owned())),
+        ),
+        (None, None) => return Err(WorkcellError::InvalidDemand(USAGE.into())),
     };
     // The credential enters through the named environment variable when set
     // and non-empty; otherwise no key is sent (servers without auth accept
     // that). A raw key literal is not accepted as argv: credentials belong to
     // their origin store or the environment, never to the command line.
-    let api_key = std::env::var(&api_key_env)
-        .ok()
+    let api_key = api_key_env
+        .as_deref()
+        .and_then(|name| std::env::var(name).ok())
         .filter(|value| !value.is_empty());
 
     let reconciler =
@@ -2942,6 +2983,7 @@ fn command_sandboxes(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
         emit_json(json!({
             "ok": true,
             "server": server,
+            "provider_ref": provider,
             "release_orphans": release_orphans,
             "include_snapshots": include_snapshots,
             "sandboxes": sandboxes,
@@ -9006,33 +9048,61 @@ fn command_secret(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellEr
     }
 }
 
-/// The declared OpenSandbox execution deployment from this state root's
-/// services file — the same declaration `discover`/`prepare` compose with.
+/// Every OpenSandbox execution deployment this state root's services file
+/// declares — the same declaration `discover`/`prepare` compose with.
+fn declared_sandbox_deployments(
+    global: &GlobalArgs,
+) -> Result<Vec<OpenSandboxConfig>, WorkcellError> {
+    let declared =
+        epilogos_workcell_runtime::read_state_root_service_declarations(&global.state_root)?;
+    Ok(declared
+        .execution
+        .into_iter()
+        .filter_map(|deployment| match deployment {
+            epilogos_workcell_runtime::ExecutionDeployment::OpenSandbox(config) => Some(config),
+            epilogos_workcell_runtime::ExecutionDeployment::Docker(_) => None,
+        })
+        .collect())
+}
+
+/// One declared OpenSandbox execution deployment, by its provider ref.
 fn declared_sandbox_deployment(
     global: &GlobalArgs,
     provider_ref: &str,
 ) -> Result<OpenSandboxConfig, WorkcellError> {
-    let declared =
-        epilogos_workcell_runtime::read_state_root_service_declarations(&global.state_root)?;
+    let declared = declared_sandbox_deployments(global)?;
+    let names = declared
+        .iter()
+        .map(|config| format!("`{}`", config.provider_ref))
+        .collect::<Vec<_>>();
     declared
-        .execution
         .into_iter()
-        .find_map(|deployment| match deployment {
-            epilogos_workcell_runtime::ExecutionDeployment::OpenSandbox(config)
-                if config.provider_ref.as_str() == provider_ref =>
-            {
-                Some(Ok(config))
-            }
-            epilogos_workcell_runtime::ExecutionDeployment::OpenSandbox(_) => None,
-            epilogos_workcell_runtime::ExecutionDeployment::Docker(_) => None,
+        .find(|config| config.provider_ref.as_str() == provider_ref)
+        .ok_or_else(|| {
+            WorkcellError::Unavailable(format!(
+                "no OpenSandbox deployment `{provider_ref}` is declared in {}; declared: {}. \
+                 Declare it under `execution` in that file",
+                epilogos_workcell_runtime::default_service_declaration_path(&global.state_root)
+                    .display(),
+                if names.is_empty() {
+                    "none".to_owned()
+                } else {
+                    names.join(", ")
+                }
+            ))
         })
-        .unwrap_or_else(|| {
-            Err(WorkcellError::Unavailable(format!(
-                "no OpenSandbox deployment `{provider_ref}` is declared in {}`s services file; \
-                 declare it under `execution` before delivering secrets to a sandbox",
-                global.state_root.display()
-            )))
-        })
+}
+
+/// What `doctor` names of a declared OpenSandbox deployment: where its
+/// lifecycle server is and which environment variable holds its key (the
+/// name only, never the value).
+fn declared_sandbox_deployment_value(config: &OpenSandboxConfig) -> Value {
+    json!({
+        "provider_ref": config.provider_ref.as_str(),
+        "kind": "opensandbox",
+        "lifecycle_base_url": config.lifecycle_base_url,
+        "api_key_env": config.api_key_env,
+    })
 }
 
 fn secret_deliver(global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellError> {
@@ -9866,7 +9936,7 @@ Everyday inspection:\n  workcell status       Summarise this local Workcell\n  w
 Material lifecycle (contextual — ordinary Start/Continue orchestrates only\nthe owner operations a task actually needs):\n  workcell plan         Plan an ExecutionDemand\n  workcell placement    Plan an ExecutionDemand on this cell and each connected cell that grants discover, ranked\n  workcell prepare      Prepare a material world and persist a receipt\n  workcell observe      Observe a prepared world from its receipt\n  workcell expose       Resolve prepared exposure surfaces\n  workcell collect      Collect prepared output channels\n  workcell release      Release or preserve a prepared world\n  workcell lease        Each binding's lease as its provider holds it; renews nothing\n  workcell checkpoint [--binding LOGICAL_REF] [--name NAME]\n                        Take a provider checkpoint of a binding and keep its record\n  workcell checkpoints  The checkpoints this cell keeps for a prepared world\n  workcell reconcile    Reconcile desired material state\n  workcell recover      Recover a prepared world from its receipt\n  workcell run          Native material execution; never fabricated Factory ancestry\n  workcell place        Place request/release over persistent places\n                        (request --provider auto|herdr|tmux --name SLUG; release --place-ref REF --pid N --start-marker PS_LSTART)\n\n\
 Cross-cell connection lifecycle (operator):\n  workcell serve --listen HOST:PORT [--authorization TOKEN]\n      Serve this cell's control plane; grants are enforced per request.\n      Non-loopback listeners require a token or at least one active grant.\n  workcell authorise --client <label> --allow <operation>... [--advertise <port>...] [--expires-in <duration>] [--store-credential]\n      Grant a connecting client named operations; the credential is shown once.\n      `--expires-in 30m` (s|m|h|d) makes the grant expire at the next use,\n      refused as expired; without it the grant never expires.\n  workcell revoke --client <label> | --grant <ref>\n      Revoke grants; takes effect at the connecting client's next use.\n  workcell connect --endpoint HOST:PORT [--connection <label>] [--authorization TOKEN] [--store-credential]\n      Establish or reconnect the client side; reports both cells' protocol\n      and software, refuses unsupported combinations loudly.\n  workcell connections  Cross-cell connection records (list/show/disconnect/probe)\n  workcell connections probe [label] [--timeout-ms N]\n      Reachability and round trip to each connection's endpoint by the handshake;\n      reads only, never writes the record.\n  workcell machine add --label LABEL --endpoint HOST:PORT [--credential-ref REF]\n      Declare a remote machine natively; then `workcell connect --connection LABEL`\n      needs no flags — the endpoint and credential reference come from the\n      declaration, and the material resolves from the origin secret source.\n  workcell machine list | remove --label LABEL\n\n\
 Secret origin and projection (operator; presence and references, never values):\n  workcell secret scan [--json]\n      Detect credential material outside a secret provider (env vars, shell\n      rc files, known auth files); reports location + presence only.\n  workcell secret vault --from env:NAME|PATH [--select KEY] --ref REF [--provider secret-service|keychain]\n      Move material into this machine's origin store; the value is never printed.\n  workcell secret project --name LABEL (--to-workcell REF --connection LABEL | --to-sandbox --allocation-ref REF)\n      --credential-ref REF --source-provider REF --class CLASS --purpose P --scope S --by REF\n      Record an authorised projection at the origin (refs only, never material).\n  workcell secret projections | revoke-projection (--name LABEL | --ref PREF)\n      Read the origin's projection ledger; revocation reaches the projected\n      target at its next use.\n\n\
-Sandbox provisioning and projection correlation (operator):\n  workcell sandboxes    OpenSandbox server-side material (reconcile)\n  workcell --receipt WORLD.json correlate-projection --projection AIKIT.json --subject checkout:KEY\n      Carry an AIKit worktree-projection verdict (aikit worktree project --json)\n      as a correlated observation on the world's checkout subject. Workcell runs\n      no git and re-derives nothing — the verdict is AIKit's, carried verbatim.\n\n\
+Sandbox provisioning and projection correlation (operator):\n  workcell sandboxes    OpenSandbox server-side material (reconcile)\n  workcell sandboxes reconcile (--server URL [--api-key-env ENV] | --provider REF) [--release-orphans] [--release ID]... [--include-snapshots]\n      --provider REF resolves a deployment this cell declares (its lifecycle server and\n      key environment); `workcell doctor` names them under declared_sandbox_deployments.\n  workcell --receipt WORLD.json correlate-projection --projection AIKIT.json --subject checkout:KEY\n      Carry an AIKit worktree-projection verdict (aikit worktree project --json)\n      as a correlated observation on the world's checkout subject. Workcell runs\n      no git and re-derives nothing — the verdict is AIKit's, carried verbatim.\n\n\
 System and configuration:\n  workcell system       Emit this Workcell's System settings disclosure (oi.product-settings-disclosure/v2)\n  workcell config-contribution\n                        Emit Workcell's configuration contribution (oi.configuration-contribution/v1)\n  workcell config       Owner-native configuration transport: validate | plan | apply | reset\n\n\
 Global options:\n  --json                     Structured machine/agent output\n  --state-root PATH          Local Workcell state (default: $WORKCELL_HOME or ~/.workcell)\n  --workcell-ref REF         Workcell identity for this invocation (default: the state root's\n                             declared identity, else workcell:local)\n  --receipt PATH             Material-world receipt for prepare/resume\n  --workspace-source PATH    Physical local source binding; never semantic identity\n  --services PATH            Operator-declared logical services (default: <state-root>/services.json)\n\n\
 Demand options for plan/prepare:\n  --demand-ref REF\n  --require VALUE | --prefer VALUE | --optional VALUE\n  --workspace writable|read-only [--workspace-ref REF] [--revision REV]\n  --project-runtime MODE\n  --connect VALUE | --prefer-connect VALUE | --optional-connect VALUE\n  --expose VALUE | --prefer-expose VALUE | --optional-expose VALUE\n  --output VALUE | --prefer-output VALUE | --optional-output VALUE\n  --resource key[=amount[:unit]]\n  --subject role=opaque-ref\n  --persistence SCOPE\n  --isolation VALUE\n  --retention release|preserve|suspend-if-supported|snapshot-if-supported\n  --extension key=value\n\n\
