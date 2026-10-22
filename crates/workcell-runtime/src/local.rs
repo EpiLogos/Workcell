@@ -3,16 +3,17 @@ use std::{cell::RefCell, collections::BTreeMap, fs, path::PathBuf, rc::Rc, sync:
 use epilogos_workcell_artifact::DirectoryArtifactStorageProvider;
 use epilogos_workcell_core::{
     compose_world, rebind_material_world, ArtifactChannelRequest, ArtifactStorageProvider,
-    AttachedStorageRequest, BindingPresence, CollectionBundle, DesiredMaterialState, Discovery,
-    ExecutionDemand, ExecutionMaterialRequest, ExecutionProvider, ExposureBundle, HealthState,
-    LogicalConnectionRequirement, MaterialOperationGrant, MaterialOperationReading,
-    MaterialOperationRequest, MaterialOperationState, MaterialisationPlan,
-    MaterialisedExecutionWorld, ObservationBundle, PlanStatus, PlannedAllocation,
-    PreparedWorldControlPlane, ProviderAllocation, ProviderObservation, ProviderPort,
-    ProviderPortKind, ProviderRef, ProviderReleaseResult, ReconciliationResult, ReleaseResult,
-    Result, RetentionExpectation, ServiceMaterialRequest, ServiceProvider, StorageProvider,
-    WorkcellControlPlane, WorkcellError, WorkcellRef, WorkspaceAccess, WorkspaceMaterialRequest,
-    WorkspaceMaterialSource, WorkspaceProvider, WorldRef,
+    AttachedStorageRequest, BindingPresence, CheckpointRequest, CollectionBundle,
+    DesiredMaterialState, Discovery, ExecutionDemand, ExecutionMaterialRequest, ExecutionProvider,
+    ExposureBundle, HealthState, LogicalConnectionRequirement, MaterialCheckpoint,
+    MaterialCheckpointProvider, MaterialLease, MaterialLeaseProvider, MaterialOperationGrant,
+    MaterialOperationReading, MaterialOperationRequest, MaterialOperationState,
+    MaterialisationPlan, MaterialisedExecutionWorld, ObservationBundle, PlanStatus,
+    PlannedAllocation, PreparedWorldControlPlane, ProviderAllocation, ProviderObservation,
+    ProviderPort, ProviderPortKind, ProviderRef, ProviderReleaseResult, ReconciliationResult,
+    ReleaseResult, Result, RetentionExpectation, ServiceMaterialRequest, ServiceProvider,
+    StorageProvider, WorkcellControlPlane, WorkcellError, WorkcellRef, WorkspaceAccess,
+    WorkspaceMaterialRequest, WorkspaceMaterialSource, WorkspaceProvider, WorldRef,
 };
 use epilogos_workcell_docker::DockerExecutionProvider;
 use epilogos_workcell_opensandbox::{
@@ -500,6 +501,30 @@ pub struct CollapsedLocalWorkcell {
     budget: Option<CapacityBudget>,
     budget_observation_error: Option<String>,
     admission: AdmissionLedger,
+}
+
+/// How one binding's lifetime stands with its provider.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LeaseStanding {
+    /// The provider holds the material under this lease.
+    Leased(MaterialLease),
+    /// The provider keeps leases and reports no expiry for this material.
+    Unexpiring,
+    /// The provider keeps no lease: nothing expires the material before it is
+    /// released.
+    NoLease,
+    /// The provider keeps leases but could not be asked; its words.
+    Unobserved(String),
+}
+
+/// One binding of a world with its lease standing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BindingLease {
+    pub logical_ref: String,
+    pub port: ProviderPortKind,
+    pub provider_ref: ProviderRef,
+    pub material_ref: String,
+    pub standing: LeaseStanding,
 }
 
 /// The branch law shared by run worktrees, `aikit task --worktree` trees and
@@ -992,6 +1017,118 @@ impl CollapsedLocalWorkcell {
     /// host exposes observation facts.
     pub fn capacity_budget(&self) -> Option<&CapacityBudget> {
         self.budget.as_ref()
+    }
+
+    /// The lease each binding of a registered world holds, as its own provider
+    /// observes it ([`MaterialLeaseProvider::observe_lease`]). Only a provider
+    /// that keeps leases is asked; every other binding is named as holding
+    /// none, and a provider that cannot be asked is named with its error.
+    /// Reads only: nothing is renewed.
+    pub fn observe_leases(&self, world: &WorldRef) -> Result<Vec<BindingLease>> {
+        let world = self.inspect(world)?;
+        Ok(world
+            .binding_graph
+            .bindings
+            .iter()
+            .map(|binding| {
+                let standing = match self.lease_provider(binding) {
+                    None => LeaseStanding::NoLease,
+                    Some(provider) => match provider.observe_lease(&allocation_of(binding)) {
+                        Ok(Some(lease)) => LeaseStanding::Leased(lease),
+                        Ok(None) => LeaseStanding::Unexpiring,
+                        Err(error) => LeaseStanding::Unobserved(error.to_string()),
+                    },
+                };
+                BindingLease {
+                    logical_ref: binding.logical_ref.clone(),
+                    port: binding.port,
+                    provider_ref: binding.provider_ref.clone(),
+                    material_ref: binding.material_ref.clone(),
+                    standing,
+                }
+            })
+            .collect())
+    }
+
+    /// Take a checkpoint of one binding of a registered world through its own
+    /// provider ([`MaterialCheckpointProvider::checkpoint`]). `logical_ref`
+    /// names the binding; without it the world's one checkpointable binding
+    /// is taken, and a world with several is refused with their names. A
+    /// binding whose provider takes no checkpoint is refused as unsupported.
+    pub fn checkpoint_binding(
+        &mut self,
+        world: &WorldRef,
+        logical_ref: Option<&str>,
+        request: &CheckpointRequest,
+    ) -> Result<(String, MaterialCheckpoint)> {
+        let world = self.inspect(world)?;
+        let checkpointable: Vec<&epilogos_workcell_core::Binding> = world
+            .binding_graph
+            .bindings
+            .iter()
+            .filter(|binding| self.lease_provider(binding).is_some())
+            .collect();
+        let binding = match logical_ref {
+            Some(logical_ref) => {
+                let binding = world
+                    .binding_graph
+                    .bindings
+                    .iter()
+                    .find(|binding| binding.logical_ref == logical_ref)
+                    .ok_or_else(|| {
+                        WorkcellError::NotFound(format!(
+                            "material world `{}` has no binding `{logical_ref}`",
+                            world.world_ref
+                        ))
+                    })?;
+                if self.lease_provider(binding).is_none() {
+                    return Err(WorkcellError::Unsupported(format!(
+                        "binding `{logical_ref}` is held by `{}`, which takes no checkpoint",
+                        binding.provider_ref
+                    )));
+                }
+                binding
+            }
+            None => match checkpointable.as_slice() {
+                [only] => *only,
+                [] => {
+                    return Err(WorkcellError::Unsupported(format!(
+                        "no binding of material world `{}` is held by a provider that takes checkpoints",
+                        world.world_ref
+                    )))
+                }
+                several => {
+                    return Err(WorkcellError::InvalidDemand(format!(
+                        "material world `{}` has several checkpointable bindings; name one: {}",
+                        world.world_ref,
+                        several
+                            .iter()
+                            .map(|binding| binding.logical_ref.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )))
+                }
+            },
+        };
+        let allocation = allocation_of(binding);
+        let logical_ref = binding.logical_ref.clone();
+        let provider = self.opensandbox.as_mut().ok_or_else(|| {
+            WorkcellError::OperationFailed("checkpoint provider vanished from composition".into())
+        })?;
+        Ok((logical_ref, provider.checkpoint(&allocation, request)?))
+    }
+
+    /// The provider that keeps leases and checkpoints for a binding, when its
+    /// provider is one that does (a declared OpenSandbox deployment's
+    /// execution today); `None` for every other provider.
+    fn lease_provider(
+        &self,
+        binding: &epilogos_workcell_core::Binding,
+    ) -> Option<&OpenSandboxExecutionProvider<StdHttpOpenSandboxTransport>> {
+        self.opensandbox.as_ref().filter(|provider| {
+            binding.port == ProviderPortKind::Execution
+                && provider.provider_ref() == &binding.provider_ref
+        })
     }
 
     /// Re-enter a previously prepared material world from durable allocation
