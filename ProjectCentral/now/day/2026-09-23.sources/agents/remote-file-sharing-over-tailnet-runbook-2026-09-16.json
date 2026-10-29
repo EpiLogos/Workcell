@@ -1,0 +1,14 @@
+{
+  "schema": "central.project-now.handoff/v1",
+  "id": "remote-file-sharing-over-tailnet-runbook-2026-09-16",
+  "provenance": "agent-authored-bounded-return",
+  "actor": "zcode-session",
+  "kind": "learning",
+  "recorded_at_unix_seconds": 1789595398,
+  "subject": "remote file sharing over tailnet: runbook + staging script landed, gate green",
+  "result": "Mac-omarchy file sharing proven live: smb://frank mounts in Finder; Samba gated by hosts allow (loopback + tailnet ranges) because bind interfaces only silently falls back to loopback on a /32 tailscale peer; Finder sftp:// client broken against a healthy sshd (terminal ssh/sftp fine) - SMB is the maintained path. Landed in Work/Workcell: docs/REMOTE-FILE-SHARING.md (design laws + diagnostic ladder), scripts/stage-remote-file-share.sh (key-only staging, one-sudo-paste install, live-tested against oi-omarchy), verify.sh bash -n line, CROSS-CELL-CONNECTIONS.md cross-ref. Pre-existing gate repairs, attributed: clippy redundant closure at workcell-cli main.rs:2235 (landed red with 20735a2), temp-path collision flake in workcell-workspace tests/directory_provider.rs (passed in isolation; fixed with atomic seq counter). Evidence: ./scripts/verify.sh exit 0, 66 suites ok. Open: pid+nanos temp-path pattern latent in ~8 other test files; SMB share not modelled as a Workcell provider port (design awaits owner recognition); Control/machines/agent-system.md transport-record update proposed, not written.",
+  "status": "promoted",
+  "promoted_to": [
+    "ProjectCentral/agents/wiki/returns/remote-file-sharing-over-tailnet"
+  ]
+}
