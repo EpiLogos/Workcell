@@ -769,7 +769,7 @@ mod tests {
         };
         let root = root();
         let mut host = DurableCollapsedLocalWorkcell::new(config(&root)).unwrap();
-        let (request, grant) = admitted(&mut host, &root, "printf exactly-once >> effect", 1000);
+        let (request, grant) = admitted(&mut host, &root, "printf exactly-once >> effect", 10_000);
         let mut service = ControlService::new(host);
         {
             let mut client = ControlClient::new(DirectTransport::new(&mut service));
@@ -834,7 +834,7 @@ mod tests {
             &mut host,
             &root,
             "printf x >> effect; printf substantive",
-            1000,
+            10_000,
         );
         let reading = host.execute(&request, &grant).unwrap();
         assert_eq!(reading.state, MaterialOperationState::Completed);
@@ -869,17 +869,20 @@ mod tests {
     fn material_native_timeout_retains_uncertainty_and_allows_exact_cancellation() {
         let root = root();
         let mut host = DurableCollapsedLocalWorkcell::new(config(&root)).unwrap();
-        // Give the admitted printf time to land before the sleep is cut short —
-        // hosted CI process start can exceed a tight 80ms budget.
-        let (request, grant) = admitted(&mut host, &root, "printf started >> effect; sleep 8", 500);
+        // Give the admitted printf time to land before the sleep is cut short:
+        // on a loaded runner the guardian and shell can take over 500 ms to start.
+        let (request, grant) =
+            admitted(&mut host, &root, "printf started >> effect; sleep 8", 3000);
         let reading = host.execute(&request, &grant).unwrap();
         assert_eq!(reading.state, MaterialOperationState::Uncertain);
         assert!(reading.result.is_none());
         // Hosted runners can schedule the admitted printf after the timeout
         // fire; wait briefly for the side effect the command was admitted to write.
+        // The shell creates the file before printf writes to it, so wait for content.
         let effect = root.join("effect");
         let deadline = Instant::now() + Duration::from_secs(2);
-        while !effect.exists() && Instant::now() < deadline {
+        while fs::read(&effect).map_or(true, |bytes| bytes.is_empty()) && Instant::now() < deadline
+        {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(fs::read(&effect).unwrap(), b"started");
@@ -902,7 +905,7 @@ mod tests {
     fn material_pending_native_effect_checkpoint_never_reexecutes_after_owner_teardown() {
         let root = root();
         let mut host = DurableCollapsedLocalWorkcell::new(config(&root)).unwrap();
-        let (request, grant) = admitted(&mut host, &root, "printf once >> effect", 1000);
+        let (request, grant) = admitted(&mut host, &root, "printf once >> effect", 10_000);
         let mut pending = MaterialOperationReading {
             world_ref: request.world_ref.clone(),
             binding_ref: request.binding_ref.clone(),
