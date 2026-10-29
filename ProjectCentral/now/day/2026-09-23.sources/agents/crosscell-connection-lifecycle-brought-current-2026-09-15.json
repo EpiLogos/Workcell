@@ -1,0 +1,11 @@
+{
+  "schema": "central.project-now.handoff/v1",
+  "id": "crosscell-connection-lifecycle-brought-current-2026-09-15",
+  "provenance": "agent-authored-bounded-return",
+  "actor": "zcode-session",
+  "kind": "handoff",
+  "recorded_at_unix_seconds": 1789445284,
+  "subject": "cross-cell connection lifecycle brought current, gate green, two-machine smoke passed",
+  "result": "Branch agent/cross-cell-connection-lifecycle (head 8dc9a99): merged origin/main 0c3ad1e keeping connection commands + system --json; ./scripts/verify.sh exit 0 (fmt, clippy -D warnings, 326 tests/63 suites incl. connections_lifecycle + connections). All seven section-5 two-machine cases smoke-passed 2026-09-15 between Mac client and oi-omarchy host: execution-location proof, grant-scoped refusals, unreachable-vs-refused, re-bind with registry, revocation at next use, wire-gate version-skew refusal, reconnect reconciliation, client teardown leaving host world intact. Evidence: Work/O-I/campaign-evidence/2026-09-15-cross-cell-smoke/. Runbook added: docs/CROSS-CELL-CONNECTIONS.md. PR #82 open and current. Open: grant expiry (revocation only today); shared-ground half of case 6 spans products; x86_64 Linux binaries built reproducibly on oi-omarchy (checksums in evidence).",
+  "status": "active"
+}

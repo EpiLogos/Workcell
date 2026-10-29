@@ -1,0 +1,11 @@
+{
+  "schema": "central.project-now.handoff/v1",
+  "id": "three-ratified-followups-landed-branch-rebased-2026-09-17",
+  "provenance": "agent-authored-bounded-return",
+  "actor": "zcode-session",
+  "kind": "handoff",
+  "recorded_at_unix_seconds": 1789602446,
+  "subject": "three ratified follow-ups landed; branch rebased on origin/main and merged",
+  "result": "Owner ratified all three open items. (1) Temp-path hygiene: remaining four pid+nanos helpers hardened with atomic seq counters (collapsed_local, external_service_conformance, caw_material, restart_recovery); three others already carried counters; runtime src uses noted as out of scope. (2) SMB share as provider port: new crate workcell-fileshare, ServiceProvider implementation provider:fileshare-smb — blueprint provider-native, demand stays semantic, stages smb.conf + one-shot installer, hosts-allow gating, observe reports disk truth (ok/drifted/absent); sdk testkit conformance + 6 tests; caught and fixed a homes-share validation bug during TDD. (3) Machine record: Control/machines/agent-system.md gains smb-file-share entry under Transport with evidence and the human-surface-not-control-path standing. Gate: ./scripts/verify.sh exit 0, 68 suites, re-run green after rebase onto origin/main (838dd41). Branch agent/remote-file-sharing rebased (local 20735a2 replayed as 48d9abc) and merged --no-ff into main (58bfed4); main not pushed. Remaining open: modelling live-share observation (ssh LISTEN probe) as provider surface awaits owner design; wiki maintenance (aikit) to incorporate the returned learning.",
+  "status": "active"
+}

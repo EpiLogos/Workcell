@@ -1,0 +1,11 @@
+{
+  "schema": "central.project-now.handoff/v1",
+  "id": "place-census-and-place-requestrelease-landed-2026-09-15",
+  "provenance": "agent-authored-bounded-return",
+  "actor": "agent:oh-i",
+  "kind": "handoff",
+  "recorded_at_unix_seconds": 1789491585,
+  "subject": "Place census and place request/release landed as PR #83: the suite can now see the rooms processes run in (tmux/herdr panes with pid+start-marker generation proof) and claim/release them by placement law; verified 370/370 green plus a live round trip (already-exists exit 3, stale-binding exit 7)",
+  "result": "Branch agent/place-census, commits 33afdee+3163b49, pushed, PR EpiLogos/Workcell#83 open for owner review. workcell.place-census/v1 inventories tmux sessions/panes and herdr workspaces/tabs/panes read-only, classifying each pane pid as harness/self/other — orphan processes are seen, never touched; degraded provider states are honest (present-no-server, present-cli-unparsed). workcell.place-grant/v1 publishes flat under schema with pid+start-marker proof tokens; release proves the same process generation before killing; duplicate names refuse already-exists, adoption stays an explicit separate op. Contract law: a place is material evidence and addressable location, never caller identity — pane ids and session names are never identity claims; continuity travels in persisted context. Cross-repo conformance fixed after live interop probe caught envelope/field drift: grant document is now flat (schema key, absent workspace_id omitted, no null padding), matching Factory #242 parser field-for-field with a live-captured conformance fixture test there. verify.sh exit 0 (370 passed) including a pre-existing write_boundary temp-dir flake fixed with the repo AtomicU64 idiom (failure reproduced on clean tree first). Open: census-driven placement decisions, named in docs/PLACE-CENSUS.md. Register note: ProjectCentral lacked agents/governance + relations scaffolding; stamped additively this session via central.world.reproject (plan+apply), nothing moved or rewritten. Next: owner merges #83 with Factory #242; commissioned re-test follows Control/agents/now/flows/tm02r-commissioned-session-runbook-2026-09-15-1758",
+  "status": "active"
+}
