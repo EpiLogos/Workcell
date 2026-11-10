@@ -504,7 +504,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14]
+        os: [ubuntu-24.04, macos-15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -838,7 +838,7 @@ jobs:
           if ! python3 evidence/native39/audit.py snapshot; then failed=1; fi
           test "$failed" -eq 0
       - name: Actual native runtime capability and Mac refusal
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         shell: bash
         run: |
           set -euo pipefail
