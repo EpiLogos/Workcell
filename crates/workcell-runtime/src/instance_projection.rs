@@ -329,7 +329,8 @@ mod tests {
         root
     }
 
-    /// Detection document naming one harness at a fixed receipt.
+    /// Detection document naming one harness, whose executable probe
+    /// resolved a file named after its slug at a fixed receipt.
     fn detection(slug: &str, sha: &str) -> Value {
         json!({
             "schema": "actuation.harness-detection/v1",
@@ -337,6 +338,12 @@ mod tests {
                 "slug": slug,
                 "harness_ref": format!("harness/{slug}"),
                 "state": "detected",
+                "probes": [{
+                    "kind": "executable",
+                    "result": "pass",
+                    "spec": slug,
+                    "detail": format!("/usr/local/bin/{slug}"),
+                }],
                 "receipts": {
                     "executable": format!("/usr/local/bin/{slug}"),
                     "sha256": sha,

@@ -2708,9 +2708,11 @@ fn command_instances(global: &GlobalArgs, args: &[String]) -> Result<(), Workcel
 
 /// `workcell places` — the read-only place census. It is a machine-first
 /// census document, so it emits the JSON shape unconditionally (`--json`
-/// changes nothing); there is no useful text rendering of a census.
+/// changes nothing); there is no useful text rendering of a census. Like
+/// `instances scan`, a census Actuation's detection could not feed is
+/// emitted as `unavailable` with its reason.
 fn command_places(_global: &GlobalArgs) -> Result<(), WorkcellError> {
-    let census = epilogos_workcell_runtime::scan_places_live();
+    let census = epilogos_workcell_runtime::scan_places_live("actuation");
     emit_json(epilogos_workcell_runtime::census_json(&census));
     Ok(())
 }

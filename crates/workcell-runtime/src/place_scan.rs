@@ -16,10 +16,17 @@
 //! The census is READ-ONLY. No tmux or Herdr command on this path may create,
 //! kill, or modify anything: only `tmux -V`, `tmux list-panes`, `herdr
 //! --version`, `herdr workspace list`, `herdr pane list` and `herdr pane
-//! process-info` are ever spawned here. A provider that is installed but not
+//! process-info` are ever spawned here, beside the `ps` pid table and
+//! Actuation's `harness detect --json`. A provider that is installed but not
 //! running is a disclosed degraded state (`present-no-server`,
 //! `present-server-unreachable`) with its exact stderr — honest absence, not
 //! an error and never an empty set read as proof.
+//!
+//! Which processes are harnesses is Actuation's census, read through the
+//! same seam `instance_scan` uses: the [`HarnessVocabulary`] derived from its
+//! detection document. A census that cannot read that document, or the pid
+//! table, is `unavailable` with the reason — it never classifies against a
+//! list of its own.
 
 use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
@@ -27,9 +34,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
-use crate::instance_scan::{read_pid_table, ObservedProcess, PID_ALIASES};
+use crate::instance_scan::{
+    read_pid_table, run_actuation_detection, HarnessVocabulary, ObservedProcess,
+};
 
 pub const PLACE_CENSUS_VERSION: &str = "workcell.place-census/v1";
+
+/// Census statuses: a completed census (`ok`), or one whose inputs could not
+/// be read (`unavailable`, with the reason) — never an empty census read as a
+/// machine without places.
+pub const PLACE_CENSUS_OK: &str = "ok";
+pub const PLACE_CENSUS_UNAVAILABLE: &str = "unavailable";
 
 pub const TMUX_PROVIDER: &str = "tmux";
 pub const HERDR_PROVIDER: &str = "herdr";
@@ -54,8 +69,8 @@ pub const PLACE_CLASS_UNOBSERVED: &str = "unobserved";
 /// Which evidence classified a pane. `ps-comm`: the pid-table `ps` command
 /// name decided — every tmux pane, and any pane whose provider reading was
 /// not consulted or did not match. `provider-foreground`: the pid-table comm
-/// did not match a harness alias, but the provider's own foreground-process
-/// reading (herdr `pane process-info`) named a known harness. Never a guess:
+/// named no harness in the detection vocabulary, but the provider's own
+/// foreground-process reading (herdr `pane process-info`) did. Never a guess:
 /// an `unobserved` pane carries no evidence at all.
 pub const PLACE_EVIDENCE_PS_COMM: &str = "ps-comm";
 pub const PLACE_EVIDENCE_PROVIDER_FOREGROUND: &str = "provider-foreground";
@@ -169,9 +184,12 @@ pub struct PlaceReuseFinding {
     pub reason: &'static str,
 }
 
-/// One completed place census.
+/// One place census: completed (`PLACE_CENSUS_OK`), or `unavailable` with
+/// the reason and nothing enumerated.
 #[derive(Debug, Clone)]
 pub struct PlaceCensus {
+    pub status: &'static str,
+    pub reason: Option<String>,
     pub machine: String,
     pub generated_utc: String,
     pub providers: Vec<ProviderCensus>,
@@ -179,19 +197,48 @@ pub struct PlaceCensus {
     pub reuse_findings: Vec<PlaceReuseFinding>,
 }
 
+impl PlaceCensus {
+    /// A census whose inputs could not be read: no provider is enumerated
+    /// and no pane classified; the reason is the evidence.
+    pub fn unavailable(machine: String, generated_utc: String, reason: String) -> Self {
+        Self {
+            status: PLACE_CENSUS_UNAVAILABLE,
+            reason: Some(reason),
+            machine,
+            generated_utc,
+            providers: Vec::new(),
+            panes: Vec::new(),
+            reuse_findings: Vec::new(),
+        }
+    }
+}
+
 /// Run one full place census against the live host. Read-only by law.
-pub fn scan_places_live() -> PlaceCensus {
+///
+/// Intake law (`instance_scan`'s): the harness vocabulary is read from
+/// `actuation_command`'s detection document, and when that document or the
+/// pid table cannot be read the census is `unavailable {reason}`.
+pub fn scan_places_live(actuation_command: &str) -> PlaceCensus {
     let machine = machine_name();
     let generated_utc = utc_now_rfc3339();
 
-    let pid_table = read_pid_table().unwrap_or_default();
+    let vocabulary = match run_actuation_detection(actuation_command)
+        .and_then(|document| HarnessVocabulary::from_detection(&document))
+    {
+        Ok(vocabulary) => vocabulary,
+        Err(reason) => return PlaceCensus::unavailable(machine, generated_utc, reason),
+    };
+    let pid_table = match read_pid_table() {
+        Ok(pid_table) => pid_table,
+        Err(reason) => return PlaceCensus::unavailable(machine, generated_utc, reason),
+    };
 
     let (tmux_provider, tmux_panes) = scan_tmux_provider();
     let (herdr_provider, herdr_panes) = scan_herdr_provider();
 
     let mut panes = tmux_panes;
     panes.extend(herdr_panes);
-    join_process_evidence(&mut panes, &pid_table);
+    join_process_evidence(&mut panes, &pid_table, &vocabulary);
 
     let providers = vec![tmux_provider, herdr_provider];
     assemble_census(machine, generated_utc, providers, panes)
@@ -235,6 +282,8 @@ pub fn assemble_census(
     }
 
     PlaceCensus {
+        status: PLACE_CENSUS_OK,
+        reason: None,
         machine,
         generated_utc,
         providers,
@@ -244,8 +293,12 @@ pub fn assemble_census(
 }
 
 /// Join `ps` start-marker evidence into the pane observations and classify
-/// each pane's process.
-pub fn join_process_evidence(panes: &mut [PaneObservation], pid_table: &[ObservedProcess]) {
+/// each pane's process against the detection vocabulary.
+pub fn join_process_evidence(
+    panes: &mut [PaneObservation],
+    pid_table: &[ObservedProcess],
+    vocabulary: &HarnessVocabulary,
+) {
     let by_pid: BTreeMap<u32, &ObservedProcess> = pid_table
         .iter()
         .map(|process| (process.pid, process))
@@ -267,7 +320,7 @@ pub fn join_process_evidence(panes: &mut [PaneObservation], pid_table: &[Observe
         pane.process_start_marker = (!process.start_marker.is_empty())
             .then(|| process.start_marker.clone())
             .or(pane.process_start_marker.clone());
-        let (classification, harness_slug) = classify_command(&process.comm);
+        let (classification, harness_slug) = classify_command(&process.comm, vocabulary);
         pane.classification = classification;
         pane.harness_slug = harness_slug;
         pane.classification_evidence = Some(PLACE_EVIDENCE_PS_COMM);
@@ -277,18 +330,17 @@ pub fn join_process_evidence(panes: &mut [PaneObservation], pid_table: &[Observe
         // process-info reading (already joined as `pane_command`) is a
         // second, independent evidence source — consulted only when ps-comm
         // did not match, only for herdr (tmux panes keep `ps-comm`), and only
-        // for the harness alias table. Neither source naming a harness stays
-        // `other`: never a guess.
+        // against the detection vocabulary. Neither source naming a harness
+        // stays `other`: never a guess.
         if classification == PLACE_CLASS_OTHER && pane.provider == HERDR_PROVIDER {
-            if let Some(foreground) = pane.pane_command.as_deref() {
-                if let Some((_, slug)) = PID_ALIASES
-                    .iter()
-                    .find(|(alias, _)| alias == &command_stem(foreground))
-                {
-                    pane.classification = PLACE_CLASS_HARNESS;
-                    pane.harness_slug = Some((*slug).to_owned());
-                    pane.classification_evidence = Some(PLACE_EVIDENCE_PROVIDER_FOREGROUND);
-                }
+            if let Some(slug) = pane
+                .pane_command
+                .as_deref()
+                .and_then(|foreground| vocabulary.slug_for(foreground))
+            {
+                pane.classification = PLACE_CLASS_HARNESS;
+                pane.harness_slug = Some(slug.to_owned());
+                pane.classification_evidence = Some(PLACE_EVIDENCE_PROVIDER_FOREGROUND);
             }
         }
     }
@@ -300,14 +352,18 @@ fn command_stem(command: &str) -> &str {
     command.rsplit('/').next().unwrap_or(command)
 }
 
-/// Classify one `ps comm` value.
-pub fn classify_command(comm: &str) -> (&'static str, Option<String>) {
+/// Classify one `ps comm` value: a suite binary, a harness the detection
+/// vocabulary names, or other.
+pub fn classify_command(
+    comm: &str,
+    vocabulary: &HarnessVocabulary,
+) -> (&'static str, Option<String>) {
     let stem = command_stem(comm);
     if SELF_BINARY_STEMS.contains(&stem) {
         return (PLACE_CLASS_SELF, None);
     }
-    if let Some((_, slug)) = PID_ALIASES.iter().find(|(alias, _)| alias == &stem) {
-        return (PLACE_CLASS_HARNESS, Some((*slug).to_owned()));
+    if let Some(slug) = vocabulary.slug_for(stem) {
+        return (PLACE_CLASS_HARNESS, Some(slug.to_owned()));
     }
     (PLACE_CLASS_OTHER, None)
 }
@@ -884,7 +940,9 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 pub fn census_json(census: &PlaceCensus) -> Value {
     json!({
         "schema": PLACE_CENSUS_VERSION,
-        "ok": true,
+        "ok": census.status == PLACE_CENSUS_OK,
+        "status": census.status,
+        "reason": census.reason,
         "machine": census.machine,
         "generated_utc": census.generated_utc,
         "providers": census.providers.iter().map(|provider| json!({
@@ -943,6 +1001,32 @@ mod tests {
 
     const MARKER_A: &str = "Thu Sep 14 00:01:50 2026";
     const MARKER_B: &str = "Thu Sep 14 00:09:09 2026";
+
+    /// The vocabulary of a detection document in Actuation's shape with
+    /// claude-code, codex and pi detected.
+    fn vocabulary() -> HarnessVocabulary {
+        vocabulary_of(&[("claude-code", "claude"), ("codex", "codex"), ("pi", "pi")])
+    }
+
+    /// The vocabulary of a detection document listing `(slug, executable)`
+    /// rows, each detected through its executable probe.
+    fn vocabulary_of(rows: &[(&str, &str)]) -> HarnessVocabulary {
+        HarnessVocabulary::from_detection(&json!({
+            "schema": "actuation.harness-detection/v1",
+            "document": "detection",
+            "harnesses": rows.iter().map(|(slug, executable)| json!({
+                "slug": slug,
+                "harness_ref": format!("harness/{slug}"),
+                "native_kind": "harness",
+                "state": "detected",
+                "probes": [{"kind": "executable", "result": "pass", "spec": executable,
+                    "detail": format!("/usr/local/bin/{executable}")}],
+                "receipts": {"executable": format!("/usr/local/bin/{executable}"),
+                    "sha256": "ab".repeat(32)},
+            })).collect::<Vec<_>>(),
+        }))
+        .unwrap()
+    }
 
     fn tmux_fixture() -> String {
         // Two live panes (one a harness alias), one dead pane with no pid,
@@ -1023,26 +1107,41 @@ mod tests {
 
     #[test]
     fn classification_names_harness_self_and_other() {
-        let (harness, slug) = classify_command("claude");
+        let vocabulary = vocabulary();
+        let (harness, slug) = classify_command("claude", &vocabulary);
         assert_eq!(harness, PLACE_CLASS_HARNESS);
         assert_eq!(slug.as_deref(), Some("claude-code"));
 
-        let (self_class, slug) = classify_command("workcell");
+        let (self_class, slug) = classify_command("workcell", &vocabulary);
         assert_eq!(self_class, PLACE_CLASS_SELF);
         assert_eq!(slug, None);
 
-        let (self_path, _) = classify_command("/usr/local/bin/factory");
+        let (self_path, _) = classify_command("/usr/local/bin/factory", &vocabulary);
         assert_eq!(
             self_path, PLACE_CLASS_SELF,
             "full paths classify by basename"
         );
 
-        let (other, slug) = classify_command("htop");
+        let (other, slug) = classify_command("htop", &vocabulary);
         assert_eq!(
             other, PLACE_CLASS_OTHER,
             "outside processes are seen, never hidden"
         );
         assert_eq!(slug, None);
+    }
+
+    #[test]
+    fn classification_reads_only_the_detection_vocabulary() {
+        // A harness the detection document does not list is no harness,
+        // and the slug is the document's own (qwen-code, not `qwen`).
+        let vocabulary = vocabulary_of(&[("qwen-code", "qwen")]);
+        let (claude, slug) = classify_command("claude", &vocabulary);
+        assert_eq!(claude, PLACE_CLASS_OTHER);
+        assert_eq!(slug, None);
+
+        let (qwen, slug) = classify_command("/opt/homebrew/bin/qwen", &vocabulary);
+        assert_eq!(qwen, PLACE_CLASS_HARNESS);
+        assert_eq!(slug.as_deref(), Some("qwen-code"));
     }
 
     #[test]
@@ -1127,7 +1226,7 @@ mod tests {
             pid(10, "zsh", MARKER_A),
             pid(11, "/usr/local/bin/claude", MARKER_A),
         ];
-        join_process_evidence(&mut panes, &table);
+        join_process_evidence(&mut panes, &table, &vocabulary());
 
         assert_eq!(panes[0].classification, PLACE_CLASS_OTHER);
         assert_eq!(panes[0].process_start_marker.as_deref(), Some(MARKER_A));
@@ -1183,14 +1282,13 @@ mod tests {
     #[test]
     fn herdr_foreground_evidence_classifies_what_the_pid_table_comm_missed() {
         // Found live on TM02-R: the herdr pane ran the `pi` harness, but the
-        // pid-table comm did not match an alias while herdr's pane
-        // process-info named the foreground process. The provider reading
-        // upgrades the classification to `harness` and names WHICH evidence
-        // decided.
+        // pid-table comm named no harness while herdr's pane process-info
+        // named the foreground process. The provider reading upgrades the
+        // classification to `harness` and names WHICH evidence decided.
         let mut panes = vec![herdr_observation("w9/w9:p1", "w9:p1", Some(4242))];
         panes[0].pane_command = Some("pi".into());
         let table = vec![pid(4242, "zsh", MARKER_A)];
-        join_process_evidence(&mut panes, &table);
+        join_process_evidence(&mut panes, &table, &vocabulary());
 
         assert_eq!(panes[0].classification, PLACE_CLASS_HARNESS);
         assert_eq!(panes[0].harness_slug.as_deref(), Some("pi"));
@@ -1205,7 +1303,7 @@ mod tests {
         let mut panes = vec![herdr_observation("w9/w9:p1", "w9:p1", Some(4242))];
         panes[0].pane_command = Some("codex".into());
         let table = vec![pid(4242, "claude", MARKER_A)];
-        join_process_evidence(&mut panes, &table);
+        join_process_evidence(&mut panes, &table, &vocabulary());
 
         assert_eq!(panes[0].classification, PLACE_CLASS_HARNESS);
         assert_eq!(panes[0].harness_slug.as_deref(), Some("claude-code"));
@@ -1234,7 +1332,7 @@ mod tests {
             pid(11, "zsh", MARKER_A),
             pid(12, "zsh", MARKER_A),
         ];
-        join_process_evidence(&mut panes, &table);
+        join_process_evidence(&mut panes, &table, &vocabulary());
 
         assert_eq!(panes[0].classification, PLACE_CLASS_OTHER);
         assert_eq!(
@@ -1328,6 +1426,9 @@ mod tests {
         );
         let value = census_json(&census);
         assert_eq!(value["schema"], PLACE_CENSUS_VERSION);
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["status"], PLACE_CENSUS_OK);
+        assert!(value["reason"].is_null());
         assert_eq!(value["machine"], "workcell-host");
         assert_eq!(value["generated_utc"], "2026-09-15T12:00:00Z");
         assert_eq!(value["providers"][0]["status"], PLACE_PROVIDER_NO_SERVER);
@@ -1337,6 +1438,36 @@ mod tests {
         );
         assert_eq!(value["panes"][0]["pane_pid"], 4242);
         assert_eq!(value["summary"]["panes"], 1);
+    }
+
+    #[test]
+    fn a_census_without_its_inputs_is_unavailable_with_the_reason() {
+        let census = PlaceCensus::unavailable(
+            "workcell-host".into(),
+            "2026-11-13T12:00:00Z".into(),
+            "run `actuation harness detect --json`: No such file or directory (os error 2)".into(),
+        );
+        let value = census_json(&census);
+        assert_eq!(value["schema"], PLACE_CENSUS_VERSION);
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["status"], PLACE_CENSUS_UNAVAILABLE);
+        assert!(value["reason"]
+            .as_str()
+            .unwrap()
+            .contains("actuation harness detect"));
+        // Nothing was enumerated; `ok: false` says so, never a machine with
+        // no places.
+        assert_eq!(value["providers"], json!([]));
+        assert_eq!(value["panes"], json!([]));
+    }
+
+    #[test]
+    fn the_live_census_without_actuation_is_unavailable() {
+        let census = scan_places_live("definitely-not-actuation");
+        assert_eq!(census.status, PLACE_CENSUS_UNAVAILABLE);
+        assert!(census.reason.unwrap().contains("definitely-not-actuation"));
+        assert!(census.providers.is_empty());
+        assert!(census.panes.is_empty());
     }
 
     #[test]

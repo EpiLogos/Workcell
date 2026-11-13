@@ -4,9 +4,11 @@
 //! three evidence sources into the instance registry:
 //!
 //! 1. Actuation detection (`actuation harness detect --json`) — executable
-//!    receipts (path + sha256) and facet seams. Actuation owns detection
-//!    probes; Workcell intakes their records (routing-of-powers stays with
-//!    Actuation).
+//!    receipts (path + sha256), facet seams, and the executable names its
+//!    probes look for, which are the only names the pid table is matched
+//!    against ([`HarnessVocabulary`]). Actuation owns detection probes and the
+//!    census of agents; Workcell intakes their records (routing-of-powers
+//!    stays with Actuation) and keeps no list of agent names of its own.
 //! 2. The live pid table (`ps -axo pid=,comm=`) — which detected harnesses
 //!    are actually executing right now. Install presence is not instance
 //!    presence.
@@ -39,24 +41,83 @@ use crate::instance_registry::{
 
 pub const STALE_AFTER_MISSED_SCANS: u64 = 2;
 
-/// Executable-name → harness slug, mirroring the Actuation descriptor
-/// modules (`Actuation/detection/harnesses/*.mjs` probe executable names).
-/// This table is pid-matching vocabulary only; detection probes stay with
-/// Actuation.
-pub const PID_ALIASES: [(&str, &str); 12] = [
-    ("claude", "claude-code"),
-    ("codex", "codex"),
-    ("gemini", "gemini"),
-    ("antigravity", "gemini-antigravity"),
-    ("hermes", "hermes"),
-    ("kimi", "kimi"),
-    ("ollama", "ollama"),
-    ("openclaw", "openclaw"),
-    ("pi", "pi"),
-    ("zcode", "zcode"),
-    ("grok", "grok-bot"),
-    ("qwen", "qwen"),
-];
+/// The executable-name → harness-slug vocabulary a pid table is matched
+/// against, derived from one Actuation detection document
+/// (`actuation.harness-detection/v1`). Actuation holds the census of agents;
+/// this is its reading, never a list Workcell keeps.
+///
+/// Every harness row the document lists contributes the names of its
+/// `executable` probes: each name in the probe `spec` (Actuation joins a
+/// descriptor's executable names with spaces), and the basename of the path
+/// in its `detail` when the probe resolved one. A row whose probe found no
+/// executable still contributes its `spec`; a row with no executable probe
+/// contributes nothing. A name no listed row carries is not a harness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HarnessVocabulary {
+    /// Executable name → the slugs of the rows naming it, in document order.
+    slugs: BTreeMap<String, Vec<String>>,
+}
+
+impl HarnessVocabulary {
+    /// Derive the vocabulary from a detection document. A document that
+    /// cannot drive intake is refused with the reason, never read as an
+    /// empty vocabulary.
+    pub fn from_detection(document: &Value) -> std::result::Result<Self, String> {
+        validate_detection_document(document)
+            .map_err(|error| format!("invalid detection document: {error}"))?;
+        let mut slugs: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for harness in document["harnesses"].as_array().into_iter().flatten() {
+            let slug = harness["slug"].as_str().unwrap_or_default();
+            let executable_probes = harness
+                .get("probes")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|probe| probe.get("kind").and_then(Value::as_str) == Some("executable"));
+            for probe in executable_probes {
+                let declared = probe
+                    .get("spec")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .split_whitespace();
+                // Actuation writes the resolved path into `detail`, or a
+                // sentence ("not found on PATH", a refusal) when it found none.
+                let resolved = probe
+                    .get("detail")
+                    .and_then(Value::as_str)
+                    .map(Path::new)
+                    .filter(|path| path.is_absolute())
+                    .and_then(Path::file_name)
+                    .and_then(|name| name.to_str());
+                for name in declared.chain(resolved) {
+                    let named = slugs.entry(name.to_owned()).or_default();
+                    if !named.iter().any(|known| known == slug) {
+                        named.push(slug.to_owned());
+                    }
+                }
+            }
+        }
+        Ok(Self { slugs })
+    }
+
+    /// The harness slug an executable (a name or a path, read by its
+    /// basename) names. When more than one row names it, the first row in
+    /// the document's order.
+    pub fn slug_for(&self, executable: &str) -> Option<&str> {
+        self.slugs
+            .get(executable_basename(executable).as_str())?
+            .first()
+            .map(String::as_str)
+    }
+
+    /// Whether the row for `slug` names this executable (a name or a path,
+    /// read by its basename).
+    pub fn names(&self, executable: &str, slug: &str) -> bool {
+        self.slugs
+            .get(executable_basename(executable).as_str())
+            .is_some_and(|slugs| slugs.iter().any(|named| named == slug))
+    }
+}
 
 /// One row of the live pid table: the pid, the OS process start marker
 /// (`ps lstart`, the start-identity discipline shared with `resource_usage`)
@@ -122,7 +183,9 @@ pub struct ScanReport {
     pub stale: Vec<Value>,
     pub transitions: ScanTransitions,
     pub conflicts: Vec<InstanceConflict>,
-    /// pid comms that matched no known alias; named, never silently dropped.
+    /// Executable names the detection document carries for a harness that no
+    /// instance was observed for this scan (its row is not detected); named,
+    /// never silently dropped.
     pub unmatched_processes: Vec<String>,
     /// Same-pid-different-start-marker findings this scan.
     pub generation_replacements: Vec<GenerationReplacement>,
@@ -154,6 +217,8 @@ impl ScanReport {
 /// them directly to `reconcile`.
 pub struct ScanInputs {
     /// Parsed Actuation detection document (`actuation.harness-detection/v1`).
+    /// The pid table is matched against the [`HarnessVocabulary`] derived
+    /// from it and nothing else.
     pub detection: Value,
     /// Live pid table rows with their process start markers.
     pub processes: Vec<ObservedProcess>,
@@ -204,18 +269,15 @@ pub fn reconcile(
     workcell_ref: &WorkcellRef,
     inputs: ScanInputs,
 ) -> ScanReport {
-    let detection = match validate_detection_document(&inputs.detection) {
-        Ok(()) => inputs.detection,
-        Err(error) => {
-            return ScanReport::unavailable(
-                workcell_ref,
-                format!("invalid detection document: {error}"),
-            )
-        }
+    let vocabulary = match HarnessVocabulary::from_detection(&inputs.detection) {
+        Ok(vocabulary) => vocabulary,
+        Err(reason) => return ScanReport::unavailable(workcell_ref, reason),
     };
+    let detection = inputs.detection;
 
     let observed = match observations_from_detection(
         &detection,
+        &vocabulary,
         &inputs.processes,
         workcell_ref,
         inputs.gateway_answering,
@@ -495,22 +557,25 @@ pub fn reconcile(
 
     // A detected harness with no live pid is installed, not instanced — it
     // stays out of the live registry (install knowledge is Actuation's).
-    let matched_comms: BTreeSet<String> = inputs
+    // A running process the vocabulary names, whose harness no instance was
+    // observed for, is named.
+    let process_names: BTreeSet<String> = inputs
         .processes
         .iter()
         .map(|process| executable_basename(&process.comm))
         .collect();
-    let known_aliases: BTreeSet<&str> = PID_ALIASES.iter().map(|(alias, _)| *alias).collect();
-    let unmatched_processes = matched_comms
+    let unmatched_processes = process_names
         .into_iter()
-        .filter(|comm| known_aliases.contains(comm.as_str()))
-        .filter(|comm| {
+        .filter(|name| vocabulary.slug_for(name).is_some())
+        .filter(|name| {
             !observed.iter().any(|instance| {
-                instance.record["harness_ref"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .trim_start_matches("harness/")
-                    == alias_slug(comm)
+                vocabulary.names(
+                    name,
+                    instance.record["harness_ref"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .trim_start_matches("harness/"),
+                )
             })
         })
         .collect();
@@ -528,19 +593,14 @@ pub fn reconcile(
     }
 }
 
-fn alias_slug(comm: &str) -> &str {
-    PID_ALIASES
-        .iter()
-        .find(|(alias, _)| alias == &comm)
-        .map(|(_, slug)| *slug)
-        .unwrap_or(comm)
-}
-
 /// Build instance observations from a validated detection document plus the
-/// live pid table. One observation per (detected harness, observed
-/// executable identity); each observed pid carries its process start marker.
+/// live pid table. A process belongs to a detected harness when that
+/// harness's row names its executable in the document's vocabulary. One
+/// observation per (detected harness, observed executable identity); each
+/// observed pid carries its process start marker.
 fn observations_from_detection(
     detection: &Value,
+    vocabulary: &HarnessVocabulary,
     processes: &[ObservedProcess],
     workcell_ref: &WorkcellRef,
     gateway_answer: bool,
@@ -583,8 +643,7 @@ fn observations_from_detection(
 
         let mut process_groups: BTreeMap<(PathBuf, bool), Vec<ObservedProcess>> = BTreeMap::new();
         for observed_process in processes {
-            let observed_name = executable_basename(&observed_process.comm);
-            if observed_name != executable_name && !alias_matches_slug(&observed_name, slug) {
+            if !vocabulary.names(&observed_process.comm, slug) {
                 continue;
             }
             let observed_path = PathBuf::from(&observed_process.comm);
@@ -649,12 +708,6 @@ fn observations_from_detection(
         }
     }
     Ok(observed)
-}
-
-fn alias_matches_slug(comm: &str, slug: &str) -> bool {
-    PID_ALIASES
-        .iter()
-        .any(|(alias, alias_slug)| alias == &comm && alias_slug == &slug)
 }
 
 /// A Hermes instance detected only through its carrier answer: no pid match
@@ -748,7 +801,10 @@ pub fn gateway_answering(_socket: &Path) -> bool {
     false
 }
 
-fn run_actuation_detection(command: &str) -> std::result::Result<Value, String> {
+/// Run Actuation's detection (`<command> harness detect --json`) and parse its
+/// document. The one seam through which Workcell reads the census of agents;
+/// a failed run is a named reason, never an empty document.
+pub(crate) fn run_actuation_detection(command: &str) -> std::result::Result<Value, String> {
     let output = Command::new(command)
         .args(["harness", "detect", "--json"])
         .stdin(Stdio::null())
@@ -822,14 +878,22 @@ fn validate_detection_document(document: &Value) -> Result<()> {
             "detection document schema must be actuation.harness-detection/v1".into(),
         ));
     }
-    if document
-        .get("harnesses")
-        .and_then(Value::as_array)
-        .is_none()
-    {
+    let Some(harnesses) = document.get("harnesses").and_then(Value::as_array) else {
         return Err(WorkcellError::OperationFailed(
             "detection document lacks a harnesses array".into(),
         ));
+    };
+    // A row that names no harness cannot be attributed: its executable names
+    // would silently drop out of the vocabulary.
+    if let Some(index) = harnesses.iter().position(|harness| {
+        !harness
+            .get("slug")
+            .and_then(Value::as_str)
+            .is_some_and(|slug| !slug.is_empty())
+    }) {
+        return Err(WorkcellError::OperationFailed(format!(
+            "detection document harness row {index} lacks a slug"
+        )));
     }
     Ok(())
 }
@@ -895,25 +959,52 @@ mod tests {
         root
     }
 
-    fn detection(slugs: &[(&str, bool)]) -> Value {
+    /// A detection document in Actuation's shape, one row per
+    /// `(slug, executable name, detected)`. Each row carries the executable
+    /// probe the scan's vocabulary is read from: a detected row's probe
+    /// resolved `/usr/local/bin/<name>`, any other row's found nothing.
+    fn detection(rows: &[(&str, &str, bool)]) -> Value {
         json!({
             "schema": "actuation.harness-detection/v1",
             "document": "detection",
-            "catalog_revision": 4,
-            "harnesses": slugs.iter().map(|(slug, detected)| json!({
-                "slug": slug,
-                "harness_ref": format!("harness/{slug}"),
-                "state": if *detected { "detected" } else { "not-installed" },
-                "receipts": if *detected {
-                    json!({
-                        "executable": format!("/usr/local/bin/{slug}"),
-                        "sha256": "ab".repeat(32),
-                    })
-                } else { json!({}) },
-                "facets": [json!({"kind": "skills",
-                    "path": format!("~/.{slug}/skills"), "exists": true, "count": 3})],
-            })).collect::<Vec<_>>(),
+            "detection_ref": "detection:2026-11-13T00:00:00.000Z",
+            "observed_at": "2026-11-13T00:00:00.000Z",
+            "catalog_revision": 20,
+            "detector": {"implementation": "actuation surface-probes", "version": "0.2.0"},
+            "harnesses": rows
+                .iter()
+                .map(|(slug, executable, detected)| harness_row(slug, executable, *detected))
+                .collect::<Vec<_>>(),
+            "absent": rows
+                .iter()
+                .filter(|(_, _, detected)| !detected)
+                .map(|(slug, _, _)| slug)
+                .collect::<Vec<_>>(),
+            "availability": "complete",
+            "disclosure": [],
         })
+    }
+
+    fn harness_row(slug: &str, executable: &str, detected: bool) -> Value {
+        let path = format!("/usr/local/bin/{executable}");
+        let mut row = json!({
+            "slug": slug,
+            "harness_ref": format!("harness/{slug}"),
+            "native_kind": "harness",
+            "state": if detected { "detected" } else { "not-installed" },
+            "probes": [{
+                "kind": "executable",
+                "result": "pass",
+                "spec": executable,
+                "detail": if detected { path.clone() } else { "not found on PATH".to_owned() },
+            }],
+        });
+        if detected {
+            row["receipts"] = json!({"executable": path, "sha256": "ab".repeat(32)});
+            row["facets"] = json!([{"kind": "skills",
+                "path": format!("~/.{slug}/skills"), "exists": true, "count": 3}]);
+        }
+        row
     }
 
     fn scan(registry: InstanceRegistry, inputs: ScanInputs) -> ScanReport {
@@ -997,7 +1088,7 @@ mod tests {
         let report = scan(
             registry.clone(),
             ScanInputs {
-                detection: detection(&[("hermes", true)]),
+                detection: detection(&[("hermes", "hermes", true)]),
                 processes: vec![proc(4242, "hermes")],
                 gateway_answering: false,
             },
@@ -1024,7 +1115,7 @@ mod tests {
         let report = scan(
             registry.clone(),
             inputs(
-                detection(&[("codex", true)]),
+                detection(&[("codex", "codex", true)]),
                 vec![proc(30757, &running.to_string_lossy())],
                 false,
             ),
@@ -1056,7 +1147,7 @@ mod tests {
         let report = scan(
             registry.clone(),
             inputs(
-                detection(&[("codex", true)]),
+                detection(&[("codex", "codex", true)]),
                 vec![
                     proc(10, &first.to_string_lossy()),
                     proc(11, &second.to_string_lossy()),
@@ -1089,7 +1180,7 @@ mod tests {
         let report = scan(
             registry.clone(),
             ScanInputs {
-                detection: detection(&[("claude-code", true), ("codex", false)]),
+                detection: detection(&[("claude-code", "claude", true), ("codex", "codex", false)]),
                 processes: vec![],
                 gateway_answering: false,
             },
@@ -1106,7 +1197,7 @@ mod tests {
         let first = scan(
             registry.clone(),
             inputs(
-                detection(&[("hermes", true)]),
+                detection(&[("hermes", "hermes", true)]),
                 vec![proc(7, "hermes")],
                 false,
             ),
@@ -1115,7 +1206,7 @@ mod tests {
 
         let second = scan(
             registry.clone(),
-            inputs(detection(&[("hermes", true)]), vec![], false),
+            inputs(detection(&[("hermes", "hermes", true)]), vec![], false),
         );
         assert_eq!(second.transitions.went_stale, 0, "one miss stays live");
         let records = registry.list().unwrap();
@@ -1124,7 +1215,7 @@ mod tests {
 
         let third = scan(
             registry.clone(),
-            inputs(detection(&[("hermes", true)]), vec![], false),
+            inputs(detection(&[("hermes", "hermes", true)]), vec![], false),
         );
         assert_eq!(third.transitions.went_stale, 1, "two misses go stale");
         let records = registry.list().unwrap();
@@ -1135,7 +1226,7 @@ mod tests {
         let fourth = scan(
             registry.clone(),
             inputs(
-                detection(&[("hermes", true)]),
+                detection(&[("hermes", "hermes", true)]),
                 vec![proc(9, "hermes")],
                 false,
             ),
@@ -1167,21 +1258,110 @@ mod tests {
     }
 
     #[test]
-    fn unknown_alias_pids_are_named_unmatched() {
+    fn a_listed_harness_name_without_a_detected_row_is_named_unmatched() {
         let root = temp_root("unmatched");
         let registry = InstanceRegistry::new(&root, WorkcellRef::new("workcell:local").unwrap());
         let report = scan(
             registry,
             ScanInputs {
-                detection: detection(&[]),
+                detection: detection(&[("claude-code", "claude", false)]),
                 processes: vec![proc(100, "mystery"), proc(200, "claude")],
                 gateway_answering: false,
             },
         );
         assert_eq!(report.status, "ok");
-        // `claude` is a known alias but its harness was not detected, so the
-        // pid cannot be tied to a receipt; `mystery` is not even an alias.
+        // The claude-code row names `claude`, but the row is not detected, so
+        // the pid cannot be tied to a receipt; no row names `mystery`.
         assert_eq!(report.unmatched_processes, vec!["claude".to_string()]);
+    }
+
+    #[test]
+    fn the_vocabulary_is_read_from_the_rows_the_detection_document_lists() {
+        // Rows shaped as Actuation writes them (paths shortened).
+        let document = json!({
+            "schema": "actuation.harness-detection/v1",
+            "harnesses": [
+                {"slug": "claude-code", "state": "detected", "probes": [
+                    {"kind": "executable", "result": "pass", "spec": "claude",
+                     "detail": "/Users/me/.local/bin/claude"},
+                    {"kind": "config-dir", "result": "pass", "spec": "~/.claude",
+                     "detail": "exists at /Users/me/.claude"}]},
+                // Found nothing: the spec still names it, every name in it.
+                {"slug": "qwen-code", "state": "not-installed", "probes": [
+                    {"kind": "executable", "result": "pass", "spec": "qwen qwen-cli",
+                     "detail": "not found on PATH"}]},
+                // A probe that could not run: its detail is a reason, not a path.
+                {"slug": "grok", "state": "unavailable", "probes": [
+                    {"kind": "executable", "result": "fail", "spec": "grok",
+                     "detail": "timed-out after 5000ms"}]},
+                // No executable probe: the row names no executable at all,
+                // whatever its config-dir receipt is called.
+                {"slug": "gemini-antigravity", "state": "detected", "probes": [
+                    {"kind": "config-dir", "result": "pass", "spec": "~/.gemini/antigravity",
+                     "detail": "exists at /Users/me/.gemini/antigravity"}],
+                 "receipts": {"executable": "/Users/me/.gemini/antigravity",
+                     "executable_is": "config-dir"}},
+            ],
+        });
+        let vocabulary = HarnessVocabulary::from_detection(&document).unwrap();
+        assert_eq!(vocabulary.slug_for("claude"), Some("claude-code"));
+        assert_eq!(
+            vocabulary.slug_for("/Applications/Elsewhere/claude"),
+            Some("claude-code"),
+            "a path is read by its basename"
+        );
+        assert_eq!(vocabulary.slug_for("qwen"), Some("qwen-code"));
+        assert_eq!(vocabulary.slug_for("qwen-cli"), Some("qwen-code"));
+        assert_eq!(vocabulary.slug_for("grok"), Some("grok"));
+        assert_eq!(vocabulary.slug_for("antigravity"), None);
+        assert_eq!(
+            vocabulary.slug_for("codex"),
+            None,
+            "a harness the document does not list is no harness"
+        );
+        assert!(vocabulary.names("claude", "claude-code"));
+        assert!(!vocabulary.names("claude", "codex"));
+    }
+
+    #[test]
+    fn processes_match_only_through_the_detection_vocabulary() {
+        // The slugs are Actuation's: `qwen` runs qwen-code and `grok` runs
+        // grok, where a hand-kept table once said `qwen` and `grok-bot`. A
+        // name no row lists (`codex` here) is not a harness at all.
+        let root = temp_root("vocabulary");
+        let registry = InstanceRegistry::new(&root, WorkcellRef::new("workcell:local").unwrap());
+        let report = scan(
+            registry.clone(),
+            inputs(
+                detection(&[("qwen-code", "qwen", true), ("grok", "grok", false)]),
+                vec![proc(31, "qwen"), proc(32, "grok"), proc(33, "codex")],
+                false,
+            ),
+        );
+        assert_eq!(report.status, "ok");
+        let records = registry.list().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["harness_ref"], "harness/qwen-code");
+        assert_eq!(records[0]["pids"], json!([31]));
+        assert_eq!(report.unmatched_processes, vec!["grok".to_string()]);
+    }
+
+    #[test]
+    fn a_detection_row_without_a_slug_is_unavailable() {
+        let root = temp_root("row-without-slug");
+        let registry = InstanceRegistry::new(&root, WorkcellRef::new("workcell:local").unwrap());
+        let mut document = detection(&[("claude-code", "claude", true)]);
+        document["harnesses"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("slug");
+        let report = scan(
+            registry.clone(),
+            inputs(document, vec![proc(41, "claude")], false),
+        );
+        assert_eq!(report.status, "unavailable");
+        assert!(report.reason.unwrap().contains("lacks a slug"));
+        assert!(registry.list().unwrap().is_empty());
     }
 
     #[test]
@@ -1191,7 +1371,7 @@ mod tests {
         let report = scan(
             registry,
             ScanInputs {
-                detection: detection(&[("hermes", true)]),
+                detection: detection(&[("hermes", "hermes", true)]),
                 processes: vec![proc(1, "hermes")],
                 gateway_answering: false,
             },
@@ -1207,13 +1387,13 @@ mod tests {
     #[test]
     fn gateway_answer_detects_hermes_the_pid_table_cannot_name() {
         // Symmetry law: Hermes-with-gateway is detected through its carrier
-        // answer even when the runtime comm (python/node) carries no alias.
+        // answer even when the runtime comm (python/node) names no harness.
         let root = temp_root("gateway-seam");
         let registry = InstanceRegistry::new(&root, WorkcellRef::new("workcell:local").unwrap());
         let report = scan(
             registry.clone(),
             inputs(
-                detection(&[("hermes", true), ("claude-code", true)]),
+                detection(&[("hermes", "hermes", true), ("claude-code", "claude", true)]),
                 vec![proc(500, "python3.11"), proc(600, "claude")],
                 true,
             ),
@@ -1245,7 +1425,7 @@ mod tests {
         let report = scan(
             registry.clone(),
             inputs(
-                detection(&[("claude-code", true)]),
+                detection(&[("claude-code", "claude", true)]),
                 vec![proc(11, "claude"), proc(12, "claude"), proc(13, "claude")],
                 false,
             ),
@@ -1268,7 +1448,7 @@ mod tests {
         let first = scan(
             registry.clone(),
             inputs(
-                detection(&[("hermes", true)]),
+                detection(&[("hermes", "hermes", true)]),
                 vec![proc_marker(7, "hermes", "Thu Sep 14 00:00:01 2026")],
                 false,
             ),
@@ -1279,7 +1459,7 @@ mod tests {
         let second = scan(
             registry.clone(),
             inputs(
-                detection(&[("hermes", true)]),
+                detection(&[("hermes", "hermes", true)]),
                 vec![proc_marker(7, "hermes", "Thu Sep 14 00:00:09 2026")],
                 false,
             ),
@@ -1323,7 +1503,7 @@ mod tests {
             let report = scan(
                 registry.clone(),
                 inputs(
-                    detection(&[("hermes", true)]),
+                    detection(&[("hermes", "hermes", true)]),
                     vec![proc_marker(7, "hermes", marker)],
                     false,
                 ),
@@ -1346,7 +1526,7 @@ mod tests {
         let report = scan(
             registry.clone(),
             inputs(
-                detection(&[("claude-code", true)]),
+                detection(&[("claude-code", "claude", true)]),
                 vec![
                     proc_marker(11, "claude", "Thu Sep 14 00:00:03 2026"),
                     proc_marker(12, "claude", "Thu Sep 14 00:00:07 2026"),
@@ -1397,7 +1577,7 @@ mod tests {
         let report = scan(
             registry.clone(),
             inputs(
-                detection(&[("hermes", true)]),
+                detection(&[("hermes", "hermes", true)]),
                 vec![proc(500, "python3.11")],
                 false,
             ),
@@ -1426,7 +1606,7 @@ mod tests {
         let report = scan(
             registry.clone(),
             inputs(
-                detection(&[("hermes", true)]),
+                detection(&[("hermes", "hermes", true)]),
                 vec![proc(41, "hermes")],
                 false,
             ),
@@ -1459,7 +1639,7 @@ mod tests {
         for _ in 0..3 {
             let report = scan(
                 registry.clone(),
-                inputs(detection(&[("hermes", true)]), vec![], false),
+                inputs(detection(&[("hermes", "hermes", true)]), vec![], false),
             );
             assert_eq!(report.status, "ok");
             // A declaration is not a miss: it never transitions, it waits.
@@ -1494,7 +1674,7 @@ mod tests {
         let report = scan(
             registry.clone(),
             inputs(
-                detection(&[("hermes", true)]),
+                detection(&[("hermes", "hermes", true)]),
                 vec![proc(77, "hermes")],
                 false,
             ),
@@ -1522,7 +1702,7 @@ mod tests {
         let report = scan(
             registry.clone(),
             inputs(
-                detection(&[("codex", true)]),
+                detection(&[("codex", "codex", true)]),
                 vec![proc(88, "codex")],
                 false,
             ),
