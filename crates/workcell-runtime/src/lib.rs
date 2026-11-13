@@ -62,8 +62,8 @@ pub use instance_registry::{
 };
 pub use instance_scan::{
     gateway_answering, read_pid_table, reconcile, report_json, scan_inputs_live, scan_live,
-    GenerationReplacement, InstanceConflict, ObservedInstance, ObservedProcess, ScanInputs,
-    ScanReport, ScanTransitions, PID_ALIASES, STALE_AFTER_MISSED_SCANS,
+    GenerationReplacement, HarnessVocabulary, InstanceConflict, ObservedInstance, ObservedProcess,
+    ScanInputs, ScanReport, ScanTransitions, STALE_AFTER_MISSED_SCANS,
 };
 pub use local::{
     BindingLease, CollapsedLocalConfig, CollapsedLocalWorkcell, ExternalExecutionProviderFactory,
@@ -82,10 +82,10 @@ pub use place_scan::{
     machine_name, parse_herdr_pane_list, parse_herdr_process_info, parse_herdr_workspace_list,
     parse_tmux_list_panes, scan_places_live, utc_now_rfc3339, HerdrPaneRow, HerdrProcessInfo,
     HerdrWorkspaceRow, PaneObservation, PlaceCensus, PlaceReuseFinding, ProviderCensus,
-    TmuxPaneRow, HERDR_PROVIDER, PLACE_CENSUS_VERSION, PLACE_CLASS_HARNESS, PLACE_CLASS_OTHER,
-    PLACE_CLASS_SELF, PLACE_CLASS_UNOBSERVED, PLACE_EVIDENCE_PROVIDER_FOREGROUND,
-    PLACE_EVIDENCE_PS_COMM, PLACE_PROVIDER_ABSENT, PLACE_PROVIDER_CLI_UNPARSED,
-    PLACE_PROVIDER_ERROR, PLACE_PROVIDER_NO_SERVER, PLACE_PROVIDER_OK,
+    TmuxPaneRow, HERDR_PROVIDER, PLACE_CENSUS_OK, PLACE_CENSUS_UNAVAILABLE, PLACE_CENSUS_VERSION,
+    PLACE_CLASS_HARNESS, PLACE_CLASS_OTHER, PLACE_CLASS_SELF, PLACE_CLASS_UNOBSERVED,
+    PLACE_EVIDENCE_PROVIDER_FOREGROUND, PLACE_EVIDENCE_PS_COMM, PLACE_PROVIDER_ABSENT,
+    PLACE_PROVIDER_CLI_UNPARSED, PLACE_PROVIDER_ERROR, PLACE_PROVIDER_NO_SERVER, PLACE_PROVIDER_OK,
     PLACE_PROVIDER_SERVER_UNREACHABLE, SELF_BINARY_STEMS, TMUX_PANE_FORMAT, TMUX_PROVIDER,
 };
 pub use profile::*;

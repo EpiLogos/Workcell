@@ -49,8 +49,13 @@ process, and the census can tell.
 
 Each pane is classified by its process command stem:
 
-- `harness` — the stem matches the known harness alias table (claude, codex,
-  zcode, hermes, …), and the record names the harness slug;
+- `harness` — the stem is an executable name Actuation's detection document
+  gives a harness row, and the record names that row's slug. The census reads
+  the document through the seam the instance census uses (`actuation harness
+  detect --json`); every row it lists contributes its executable probe's
+  `spec` names and, when the probe found one, the basename of the path it
+  resolved. Workcell keeps no list of agent names of its own: a process no
+  listed row names is not a harness;
 - `self` — the stem is a Workcell/Factory binary, i.e. a place this suite
   launched;
 - `other` — everything else. This is the point of the census: panes running
@@ -65,18 +70,26 @@ evidence decided:
 
 - `ps-comm` — the pid-table `ps` command stem decided. Every tmux pane, and
   any pane whose provider reading was not consulted or did not match;
-- `provider-foreground` — the pid-table comm did not match a harness alias,
-  but the herdr provider's `pane process-info` named a foreground process
-  whose stem is a known harness. Found live on TM02-R: a herdr pane running
+- `provider-foreground` — the pid-table comm named no harness, but the herdr
+  provider's `pane process-info` named a foreground process whose stem the
+  detection document names. Found live on TM02-R: a herdr pane running
   the `pi` harness classified `other` because its pid-table comm named the
   shell; the provider's own reading now classifies it, and the record says
   so.
 
 The fallback applies only to herdr panes (tmux panes keep `ps-comm`), only
-after `ps-comm` missed, and only against the harness alias table — never the
-self stems. If neither evidence source names a known harness, the pane stays
-`other`. The field is additive in `workcell.place-census/v1` and is `null`
-for `unobserved` panes nothing classified.
+after `ps-comm` missed, and only against the detection document's names —
+never the self stems. If neither evidence source names a harness, the pane
+stays `other`. The field is additive in `workcell.place-census/v1` and is
+`null` for `unobserved` panes nothing classified.
+
+When Actuation's detection cannot be read (Actuation is not on `PATH`, exits
+nonzero, or answers something other than an `actuation.harness-detection/v1`
+document), or the `ps` pid table cannot be read, the census does not run. It
+answers `ok: false`, `status: "unavailable"` and the `reason`, with no
+providers and no panes: never panes classified against a list, and never an
+empty census read as a machine without places. The intake law is the
+instance census's. A completed census answers `ok: true` and `status: "ok"`.
 
 A pane whose id or session name reappears bound to a different process
 generation is a **place reuse finding**: named with both pids, never merged
@@ -200,7 +213,9 @@ before any destructive step.
 
 - `workcell.place-census/v1` — the census document (`workcell places`). The
   `classification_evidence` pane field is an additive revision of this
-  schema: new field, disclosed here, existing fields untouched.
+  schema: new field, disclosed here, existing fields untouched. So are the
+  census's `status` and `reason`; `ok` is `false` only for an `unavailable`
+  census.
 - `workcell.place-grant/v1` — the place grant and its release proof.
 - `workcell.place-provider-close/v1` — the receipt for a
   `--provider-close` release.

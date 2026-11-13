@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_workcell")
@@ -38,6 +38,127 @@ fn json_stdout(output: &Output) -> Value {
             String::from_utf8_lossy(&output.stderr)
         )
     })
+}
+
+/// A detection document in Actuation's shape whose one row calls `sleep` the
+/// executable of harness `fixture-sleeper`, found at `/bin/sleep` or not.
+#[cfg(unix)]
+fn sleeper_detection(detected: bool) -> Value {
+    let mut row = json!({
+        "slug": "fixture-sleeper",
+        "harness_ref": "harness/fixture-sleeper",
+        "native_kind": "harness",
+        "state": if detected { "detected" } else { "not-installed" },
+        "probes": [{"kind": "executable", "result": "pass", "spec": "sleep",
+            "detail": if detected { "/bin/sleep" } else { "not found on PATH" }}],
+    });
+    if detected {
+        row["receipts"] = json!({"executable": "/bin/sleep", "sha256": "ab".repeat(32)});
+    }
+    json!({
+        "schema": "actuation.harness-detection/v1",
+        "document": "detection",
+        "harnesses": [row],
+        "absent": if detected { json!([]) } else { json!(["fixture-sleeper"]) },
+        "availability": "complete",
+    })
+}
+
+/// A directory holding an `actuation` that answers `harness detect --json`
+/// with `document`, as Actuation does.
+#[cfg(unix)]
+fn actuation_answering(label: &str, document: &Value) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = temp_path(label);
+    fs::create_dir_all(&directory).unwrap();
+    let script = directory.join("actuation");
+    fs::write(&script, format!("#!/bin/sh\nprintf '%s\\n' '{document}'\n")).unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    directory
+}
+
+/// A child process killed and reaped however the test ends.
+#[cfg(unix)]
+struct Running(std::process::Child);
+
+#[cfg(unix)]
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// `instances scan` knows a harness process only by the executable names
+/// Actuation's detection document gives. Here the document calls `sleep` a
+/// harness — a name no list kept in Workcell could hold — and the scan binds
+/// a running `sleep` to it, or names it unmatched when the row is not
+/// detected.
+#[cfg(unix)]
+#[test]
+fn instance_scan_cli_reads_harness_names_from_the_detection_document() {
+    let sleeper = Running(Command::new("/bin/sleep").arg("60").spawn().unwrap());
+    let pid = u64::from(sleeper.0.id());
+    let home = temp_path("scan-vocabulary-home");
+    fs::create_dir_all(&home).unwrap();
+
+    let scan = |detected: bool| -> Value {
+        let label = format!("scan-vocabulary-{detected}");
+        let actuation =
+            actuation_answering(&format!("{label}-actuation"), &sleeper_detection(detected));
+        let state = temp_path(&format!("{label}-state"));
+        let output = Command::new(binary())
+            .args([
+                "--state-root",
+                path_arg(&state),
+                "--json",
+                "instances",
+                "scan",
+            ])
+            .env("PATH", format!("{}:/usr/bin:/bin", actuation.display()))
+            .env("HOME", &home)
+            .output()
+            .unwrap();
+        let _ = fs::remove_dir_all(&actuation);
+        let _ = fs::remove_dir_all(&state);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        json_stdout(&output)
+    };
+    let sleeper_instances = |report: &Value| -> Vec<Value> {
+        report["instances"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|record| record["harness_ref"] == "harness/fixture-sleeper")
+            .cloned()
+            .collect()
+    };
+
+    let detected = scan(true);
+    assert_eq!(detected["status"], "ok", "{detected}");
+    assert!(
+        sleeper_instances(&detected)
+            .iter()
+            .any(|record| record["pids"].as_array().unwrap().contains(&json!(pid))),
+        "the running sleep {pid} is bound to harness/fixture-sleeper: {detected}"
+    );
+
+    let listed_only = scan(false);
+    assert_eq!(listed_only["status"], "ok", "{listed_only}");
+    assert!(sleeper_instances(&listed_only).is_empty(), "{listed_only}");
+    assert!(
+        listed_only["unmatched_processes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("sleep")),
+        "a listed, undetected harness name that is running is named: {listed_only}"
+    );
+
+    let _ = fs::remove_dir_all(home);
 }
 
 #[test]
