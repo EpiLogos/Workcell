@@ -20,12 +20,19 @@ fn binary() -> &'static str {
 }
 
 fn temp_path(label: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Tests in one binary share a pid, and two of them build their fixture
+    // repository at the same instant; macOS reads the clock in whole
+    // microseconds, so both would get one path and race `git init` on its
+    // config lock.
+    static SEQ: AtomicU64 = AtomicU64::new(0);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "epilogos-workcell-run-lifecycle-{label}-{}-{nonce}",
+        "epilogos-workcell-run-lifecycle-{label}-{}-{nonce}-{seq}",
         std::process::id()
     ))
 }
