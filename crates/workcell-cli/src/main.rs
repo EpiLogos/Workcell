@@ -1,4 +1,5 @@
 include!("run_admission.rs");
+include!("action_field.rs");
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
@@ -94,6 +95,13 @@ fn main() -> ExitCode {
 
 fn run(args: Vec<String>) -> Result<(), WorkcellError> {
     let global = parse_global(args)?;
+    dispatch(&global)
+}
+
+/// The command `global.remaining` names, run with these global arguments
+/// (`run`, and an Action of the field run through `workcell action run`).
+fn dispatch(global: &GlobalArgs) -> Result<(), WorkcellError> {
+    let global = global.clone();
     let Some(command) = global.remaining.first().map(String::as_str) else {
         print_help();
         return Ok(());
@@ -141,6 +149,8 @@ fn run(args: Vec<String>) -> Result<(), WorkcellError> {
         "system" => command_system(&global),
         "config" => command_config(&global, command_args),
         "config-contribution" => command_config_contribution(&global),
+        "actions" => command_actions(&global),
+        "action" => command_action_run(&global, command_args),
         other if other.starts_with('-') => Err(WorkcellError::InvalidDemand(format!(
             "unknown option `{other}`; run `workcell help`"
         ))),
