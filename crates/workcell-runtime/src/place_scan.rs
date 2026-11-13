@@ -1029,7 +1029,7 @@ mod tests {
     }
 
     fn tmux_fixture() -> String {
-        // Two live panes (one a harness alias), one dead pane with no pid,
+        // Two live panes (one running `claude`), one dead pane with no pid,
         // one row whose window name contains spaces, and one malformed row.
         // Separator `:` — see TMUX_PANE_FORMAT for why not a tab.
         "main:1718000000:0:zsh:%0:4242:zsh:0:/dev/ttys004\n\
