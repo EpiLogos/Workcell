@@ -21,7 +21,8 @@ fn landing_refused(words: impl Into<String>) -> WorkcellError {
 }
 
 /// A seat a lane holds: where its checkout stands, the branch the lane works
-/// on, and the main its lanes are cut from and land in.
+/// on, the main its lanes are cut from and land in, and the zones its claim
+/// records (the regions the lane commits inside; lane_regions reads them).
 struct LaneSeat {
     world: PathBuf,
     workcell: String,
@@ -29,6 +30,7 @@ struct LaneSeat {
     checkout: PathBuf,
     branch: String,
     main_ref: String,
+    zones: Value,
 }
 
 /// The flags of a landing act.
@@ -170,6 +172,7 @@ fn lane_seat(world: &Path, workcell: &str, product: &str) -> Result<LaneSeat, Wo
             .as_str()
             .unwrap_or("origin/main")
             .to_owned(),
+        zones: seat["zones"].clone(),
     })
 }
 
@@ -342,6 +345,93 @@ fn lane_changes(seat: &LaneSeat) -> Result<Vec<LaneChange>, WorkcellError> {
         .collect())
 }
 
+/// The lane's regions, as the seat instrument records and reads them: every
+/// region of every zone on the seat's claim (`zones`, each `{actor, regions,
+/// since_unix_seconds}` as `seat join --region` writes it; they leave with
+/// the lane at its release), with a trailing `/` dropped and `.` the whole
+/// checkout, as its `region_of` reads a region. None: the lane holds the seat
+/// whole. A region that names no path in the checkout (free words, several
+/// paths in one string) is refused by name, for a commit is never cut to a
+/// guess.
+fn lane_regions(seat: &LaneSeat) -> Result<Vec<String>, WorkcellError> {
+    let unreadable = || {
+        landing_refused(format!(
+            "{}'s {} seat records zones that are no list of {{actor, regions}}: {}",
+            seat.workcell, seat.product, seat.zones
+        ))
+    };
+    let zones = match &seat.zones {
+        Value::Null => return Ok(Vec::new()),
+        Value::Array(zones) => zones,
+        _ => return Err(unreadable()),
+    };
+    let mut regions: Vec<String> = Vec::new();
+    for zone in zones {
+        for written in zone["regions"].as_array().ok_or_else(unreadable)? {
+            let written = written.as_str().ok_or_else(unreadable)?;
+            let region = match written.trim_end_matches('/') {
+                "" => ".",
+                region => region,
+            };
+            if !lane_names_a_path(seat, region) {
+                return Err(landing_refused(format!(
+                    "the lane's region `{written}`{} names no path in {}: a commit takes the changes inside the lane's regions, and this region cannot be read as a path. Nothing was staged or committed",
+                    zone["actor"]
+                        .as_str()
+                        .map(|actor| format!(" ({actor}'s zone)"))
+                        .unwrap_or_default(),
+                    seat.checkout.display()
+                )));
+            }
+            if !regions.iter().any(|known| known == region) {
+                regions.push(region.to_owned());
+            }
+        }
+    }
+    Ok(regions)
+}
+
+/// Whether a region names a path in the checkout: `.` (the whole of it), or a
+/// relative path in plain form (no empty, `.` or `..` step) among its working
+/// files or among what git tracks there (a folder the lane deleted is one).
+fn lane_names_a_path(seat: &LaneSeat, region: &str) -> bool {
+    if region == "." {
+        return true;
+    }
+    if region
+        .split('/')
+        .any(|step| matches!(step, "" | "." | ".."))
+    {
+        return false;
+    }
+    seat.checkout.join(region).symlink_metadata().is_ok()
+        || lane_git(
+            seat,
+            &[
+                "--literal-pathspecs",
+                "ls-files",
+                "--error-unmatch",
+                "--with-tree=HEAD",
+                "--",
+                region,
+            ],
+        )
+        .is_ok()
+}
+
+/// Whether a path lies inside the lane's regions, as the seat instrument's
+/// `region_of` reads it: a region holds itself and what lies under it, `.`
+/// holds everything, and a lane with no region holds the whole checkout.
+fn in_lane_regions(path: &[u8], regions: &[String]) -> bool {
+    regions.is_empty()
+        || regions.iter().any(|region| {
+            region == "."
+                || path
+                    .strip_prefix(region.as_bytes())
+                    .is_some_and(|rest| rest.is_empty() || rest[0] == b'/')
+        })
+}
+
 /// git in a seat's checkout on exactly `paths`, each as it is written (no
 /// pathspec magic), handed to git on its stdin.
 fn lane_git_paths(seat: &LaneSeat, args: &[&str], paths: &[&[u8]]) -> Result<(), WorkcellError> {
@@ -355,14 +445,17 @@ fn lane_git_paths(seat: &LaneSeat, args: &[&str], paths: &[&[u8]]) -> Result<(),
     git_bytes(&seat.checkout, &words, Some(&named)).map(|_| ())
 }
 
-/// Commit: the seat's working files, every change and every untracked file
-/// git does not ignore, but the seat instrument's link, as one commit on the
-/// lane's branch, under the identity the repository's git names. The commit
-/// names each file it takes: untracked ones are added first, since git names
-/// a file only once it knows it, and the commit takes exactly those paths as
-/// they stand in the working files, leaving whatever else the index holds as
-/// it was. Refused, with nothing staged, in the middle of a merge,
-/// cherry-pick, revert or rebase, or with a path in conflict.
+/// Commit: the lane's work, as one commit on its branch, under the identity
+/// the repository's git names. The lane's work is every change and every
+/// untracked file git does not ignore, but the seat instrument's link; where
+/// the lane's claim names regions (a shared checkout holds other lanes' and
+/// workers' work beside the lane's), only the changes inside them, and the
+/// answer names what it left outside. The commit names each file it takes:
+/// untracked ones are added first, since git names a file only once it knows
+/// it, and the commit takes exactly those paths as they stand in the working
+/// files, leaving whatever else the index holds as it was. Refused, with
+/// nothing staged, in the middle of a merge, cherry-pick, revert or rebase,
+/// with a path in conflict, and with a region that names no path.
 fn lane_commit(seat: &LaneSeat, message: &str) -> Result<Value, WorkcellError> {
     if message.trim().is_empty() {
         return Err(landing_refused(
@@ -371,14 +464,31 @@ fn lane_commit(seat: &LaneSeat, message: &str) -> Result<Value, WorkcellError> {
     }
     let changes = lane_changes(seat)?;
     lane_settled(seat, &changes)?;
+    let regions = lane_regions(seat)?;
     let pool_link = seat.checkout.join(SEAT_POOL_LINK).is_symlink();
-    let changes = changes
+    let (changes, outside): (Vec<_>, Vec<_>) = changes
         .into_iter()
         .filter(|change| !(pool_link && change.path == SEAT_POOL_LINK.as_bytes()))
+        .partition(|change| in_lane_regions(&change.path, &regions));
+    let left_outside = outside
+        .iter()
+        .map(LaneChange::shown)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect::<Vec<_>>();
     if changes.is_empty() {
+        let within = if regions.is_empty() {
+            String::new()
+        } else {
+            format!(" inside the lane's regions ({})", regions.join(", "))
+        };
+        let left = if left_outside.is_empty() {
+            String::new()
+        } else {
+            format!("; outside them, left as they are: {}", listed(&left_outside))
+        };
         return Err(landing_refused(format!(
-            "nothing to commit: {} holds no change on {}",
+            "nothing to commit: {} holds no change{within} on {}{left}",
             seat.checkout.display(),
             seat.branch
         )));
@@ -406,6 +516,8 @@ fn lane_commit(seat: &LaneSeat, message: &str) -> Result<Value, WorkcellError> {
     let mut answer = landing(seat, "commit", &head);
     answer["files"] = paths.len().into();
     answer["subject"] = message.lines().next().unwrap_or_default().into();
+    answer["regions"] = regions.into();
+    answer["left_outside"] = left_outside.into();
     Ok(answer)
 }
 
@@ -592,4 +704,26 @@ fn command_lane(_global: &GlobalArgs, args: &[String]) -> Result<(), WorkcellErr
     };
     emit_json(answer);
     Ok(())
+}
+
+#[cfg(test)]
+mod landing_tests {
+    use super::*;
+
+    #[test]
+    fn a_path_lies_inside_the_lanes_regions_as_the_seat_instrument_reads_them() {
+        let regions = ["crates/a".to_owned(), "docs".to_owned()];
+        for (path, inside) in [
+            ("crates/a", true),
+            ("crates/a/lib.rs", true),
+            ("crates/ab/lib.rs", false),
+            ("crates", false),
+            ("docs/guide/one.md", true),
+            ("README.md", false),
+        ] {
+            assert_eq!(in_lane_regions(path.as_bytes(), &regions), inside, "{path}");
+        }
+        assert!(in_lane_regions(b"README.md", &[]), "no region: the whole checkout");
+        assert!(in_lane_regions(b"README.md", &[".".to_owned()]));
+    }
 }

@@ -169,6 +169,23 @@ impl World {
         fs::write(&path, serde_json::to_vec_pretty(&register).unwrap()).unwrap();
     }
 
+    /// A zone on the seat's claim, as the seat instrument's `seat join --region` records one: `{actor, regions,
+    /// since_unix_seconds}` in the seat's `zones`.
+    fn zone(&self, actor: &str, regions: &[&str]) {
+        let path = self.world.join(REGISTER);
+        let mut register: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let seat = &mut register["workcells"][0]["seats"][0];
+        if !seat["zones"].is_array() {
+            seat["zones"] = json!([]);
+        }
+        seat["zones"].as_array_mut().unwrap().push(json!({
+            "actor": actor,
+            "regions": regions,
+            "since_unix_seconds": 1_794_000_000u64,
+        }));
+        fs::write(&path, serde_json::to_vec_pretty(&register).unwrap()).unwrap();
+    }
+
     /// The checkout's changes, a line each, as `git status --porcelain --untracked-files=all` shows them.
     fn standing(&self) -> Vec<String> {
         let output = git_output(
@@ -578,4 +595,108 @@ fn a_commit_is_refused_mid_merge_or_cherry_pick_and_leaves_it_as_it_was() {
         stands("resolved");
         git(&world.checkout, &world.home, abort);
     }
+}
+
+#[test]
+fn a_commit_takes_only_the_lanes_regions_and_names_what_it_left_outside() {
+    // A shared checkout holds other work beside the lane's: another lane's edit, an untracked secret. The commit took all of
+    // it (W130-3). Where the lane's claim names regions (the seat's `zones`, as `seat join --region` records them), it takes
+    // the changes inside them and names what it left outside, which stays as it was; a region that names no path in the
+    // checkout is refused by name rather than guessed at.
+    let world = World::new("zones", false);
+    world.hold_lane("lane-1");
+    world.zone("agent:landing-test", &["crates/a"]);
+    world.zone("agent:co-worker", &["docs/"]);
+    for (path, text) in [
+        ("crates/a/lib.rs", "the lane's crate\n"),
+        ("docs/guide.md", "the co-worker's guide\n"),
+        ("crates/ab/lib.rs", "a neighbour's crate\n"),
+        ("crates/b/lib.rs", "another lane's crate\n"),
+        (".env.local", "TOKEN=not-the-lanes\n"),
+        ("README.md", "notes, as another lane edits them\n"),
+    ] {
+        let file = world.checkout.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, text).unwrap();
+    }
+    let committed = answer(world.act(
+        "workcell.lane.commit",
+        world.with("message", "The lane's crate and its guide"),
+    ));
+    assert_eq!(committed["files"].as_u64(), Some(2));
+    assert_eq!(committed["regions"], json!(["crates/a", "docs"]));
+    assert_eq!(
+        git(
+            &world.checkout,
+            &world.home,
+            &["show", "--name-only", "--format=", "HEAD"]
+        ),
+        "crates/a/lib.rs\ndocs/guide.md"
+    );
+    let mut left = committed["left_outside"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the answer names what it left: {committed}"))
+        .iter()
+        .map(|path| path.as_str().unwrap())
+        .collect::<Vec<_>>();
+    left.sort_unstable();
+    assert_eq!(
+        left,
+        [
+            ".env.local",
+            "README.md",
+            "crates/ab/lib.rs",
+            "crates/b/lib.rs"
+        ]
+    );
+    let outside = [
+        " M README.md",
+        "?? .env.local",
+        "?? crates/ab/lib.rs",
+        "?? crates/b/lib.rs",
+    ];
+    assert_eq!(
+        world.standing(),
+        outside,
+        "what lies outside stays as it was"
+    );
+    let head = git(&world.checkout, &world.home, &["rev-parse", "HEAD"]);
+
+    let nothing = refusal(world.act(
+        "workcell.lane.commit",
+        world.with("message", "Not the lane's"),
+    ));
+    assert!(
+        nothing.contains("nothing to commit") && nothing.contains("crates/b/lib.rs"),
+        "{nothing}"
+    );
+
+    let free_text = "native host field hand-off for live-engine's K8 node (new files first)";
+    world.zone("agent:free-text", &[free_text]);
+    fs::write(
+        world.checkout.join("crates/a/lib.rs"),
+        "the lane's crate, again\n",
+    )
+    .unwrap();
+    let unread = refusal(world.act(
+        "workcell.lane.commit",
+        world.with("message", "The lane's crate, again"),
+    ));
+    assert!(unread.contains(free_text), "{unread}");
+    assert_eq!(
+        git(&world.checkout, &world.home, &["rev-parse", "HEAD"]),
+        head,
+        "nothing committed"
+    );
+    assert_eq!(
+        world.standing(),
+        [
+            " M README.md",
+            " M crates/a/lib.rs",
+            "?? .env.local",
+            "?? crates/ab/lib.rs",
+            "?? crates/b/lib.rs",
+        ],
+        "nothing staged"
+    );
 }

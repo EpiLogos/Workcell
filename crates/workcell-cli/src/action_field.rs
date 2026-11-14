@@ -80,7 +80,7 @@ const FIELD: &[FieldAction] = &[
     },
     FieldAction {
         id: "workcell.lane.commit",
-        title: "Commit a seat's work on its lane's branch",
+        title: "Commit a lane's work on its branch: inside its regions, where its claim names them",
         route: &["lane", "commit"],
         flags: &[
             ("world", "--world", "string", false, "the World's folder, absolute (else CENTRAL_ROOT)"),
