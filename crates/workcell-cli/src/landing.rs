@@ -224,15 +224,71 @@ fn landing(seat: &LaneSeat, act: &str, head: &str) -> Value {
 
 /// An env seat's `target`: the seat instrument's link into the primary's
 /// shared build tree (its ensure_target_pool), the instrument's artifact and
-/// not the lane's work. A repository whose .gitignore names `target/`
-/// (directories only) does not ignore the link, so a commit leaves it out by
-/// name, as the instrument's own reading of a seat's files does
-/// (drop_pool_link).
+/// not the lane's work. Where git does not ignore the link (a .gitignore that
+/// names `target/` matches directories only), `git status` lists it and a
+/// commit leaves it out by name, as the instrument's own reading of a seat's
+/// files does (drop_pool_link). Where git ignores it (`/target`, `target`,
+/// info/exclude: every env seat here), git lists it nowhere, and the commit
+/// names it nowhere: a pathspec naming an ignored path makes `git add` refuse.
 const SEAT_POOL_LINK: &str = "target";
+
+/// One change in a seat's checkout as `git status` reads it: its two-letter
+/// code and its path, as git names it.
+struct LaneChange {
+    code: [u8; 2],
+    path: Vec<u8>,
+}
+
+impl LaneChange {
+    fn untracked(&self) -> bool {
+        &self.code == b"??"
+    }
+}
+
+/// The checkout's changes: every change and every untracked file git does not
+/// ignore, a rename read as its two sides.
+fn lane_changes(seat: &LaneSeat) -> Result<Vec<LaneChange>, WorkcellError> {
+    let status = git_bytes(
+        &seat.checkout,
+        &[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--no-renames",
+        ],
+        None,
+    )?;
+    Ok(status
+        .split(|byte| *byte == 0)
+        .filter(|record| record.len() > 3 && record[2] == b' ')
+        .map(|record| LaneChange {
+            code: [record[0], record[1]],
+            path: record[3..].to_vec(),
+        })
+        .collect())
+}
+
+/// git in a seat's checkout on exactly `paths`, each as it is written (no
+/// pathspec magic), handed to git on its stdin.
+fn lane_git_paths(seat: &LaneSeat, args: &[&str], paths: &[&[u8]]) -> Result<(), WorkcellError> {
+    let mut words = vec!["--literal-pathspecs"];
+    words.extend_from_slice(args);
+    words.extend(["--pathspec-from-file=-", "--pathspec-file-nul"]);
+    let named = paths
+        .iter()
+        .flat_map(|path| path.iter().copied().chain([0]))
+        .collect::<Vec<u8>>();
+    git_bytes(&seat.checkout, &words, Some(&named)).map(|_| ())
+}
 
 /// Commit: the seat's working files, every change and every untracked file
 /// git does not ignore, but the seat instrument's link, as one commit on the
-/// lane's branch, under the identity the repository's git names.
+/// lane's branch, under the identity the repository's git names. The commit
+/// names each file it takes: untracked ones are added first, since git names
+/// a file only once it knows it, and the commit takes exactly those paths as
+/// they stand in the working files, leaving whatever else the index holds as
+/// it was.
 fn lane_commit(seat: &LaneSeat, message: &str) -> Result<Value, WorkcellError> {
     if message.trim().is_empty() {
         return Err(landing_refused(
@@ -240,29 +296,39 @@ fn lane_commit(seat: &LaneSeat, message: &str) -> Result<Value, WorkcellError> {
         ));
     }
     let pool_link = seat.checkout.join(SEAT_POOL_LINK).is_symlink();
-    let changes = lane_git(seat, &["status", "--porcelain=v1", "--untracked-files=all"])?;
-    let files = changes
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .filter(|line| !(pool_link && line.get(3..) == Some(SEAT_POOL_LINK)))
-        .count();
-    if files == 0 {
+    let changes = lane_changes(seat)?
+        .into_iter()
+        .filter(|change| !(pool_link && change.path == SEAT_POOL_LINK.as_bytes()))
+        .collect::<Vec<_>>();
+    if changes.is_empty() {
         return Err(landing_refused(format!(
             "nothing to commit: {} holds no change on {}",
             seat.checkout.display(),
             seat.branch
         )));
     }
-    let leave_out = format!(":(exclude){SEAT_POOL_LINK}");
-    let mut add = vec!["add", "--all"];
-    if pool_link {
-        add.extend(["--", ".", leave_out.as_str()]);
+    let untracked = changes
+        .iter()
+        .filter(|change| change.untracked())
+        .map(|change| change.path.as_slice())
+        .collect::<Vec<_>>();
+    if !untracked.is_empty() {
+        lane_git_paths(seat, &["add"], &untracked)?;
     }
-    lane_git(seat, &add)?;
-    lane_git(seat, &["commit", "--quiet", "--message", message])?;
+    let paths = changes
+        .iter()
+        .map(|change| change.path.as_slice())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    lane_git_paths(
+        seat,
+        &["commit", "--quiet", "--only", "--message", message],
+        &paths,
+    )?;
     let head = lane_git(seat, &["rev-parse", "HEAD"])?;
     let mut answer = landing(seat, "commit", &head);
-    answer["files"] = files.into();
+    answer["files"] = paths.len().into();
     answer["subject"] = message.lines().next().unwrap_or_default().into();
     Ok(answer)
 }

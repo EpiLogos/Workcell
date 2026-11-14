@@ -61,11 +61,17 @@ fn isolated(command: &mut Command, home: &Path) {
         .env_remove("CENTRAL_ROOT");
 }
 
-fn git(cwd: &Path, home: &Path, args: &[&str]) -> String {
+/// git under the test's home, its output as it is: where git may refuse (a conflicted merge does), or where the output's
+/// leading space counts (`git status`).
+fn git_output(cwd: &Path, home: &Path, args: &[&str]) -> Output {
     let mut command = Command::new("git");
     command.args(args).current_dir(cwd);
     isolated(&mut command, home);
-    let output = command.output().unwrap();
+    command.output().unwrap()
+}
+
+fn git(cwd: &Path, home: &Path, args: &[&str]) -> String {
+    let output = git_output(cwd, home, args);
     assert!(
         output.status.success(),
         "git {args:?} in {}: {}",
@@ -161,6 +167,19 @@ impl World {
         seat["branch"] = json!(lane);
         seat["claimed_by"] = json!("agent:landing-test");
         fs::write(&path, serde_json::to_vec_pretty(&register).unwrap()).unwrap();
+    }
+
+    /// The checkout's changes, a line each, as `git status --porcelain --untracked-files=all` shows them.
+    fn standing(&self) -> Vec<String> {
+        let output = git_output(
+            &self.checkout,
+            &self.home,
+            &["status", "--porcelain", "--untracked-files=all"],
+        );
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
     fn register(&self) -> Vec<u8> {
@@ -417,4 +436,64 @@ fn a_commit_leaves_out_the_seat_instruments_target_link() {
         "?? target",
         "the link stays where the seat instrument put it: a landing never tidies the working files"
     );
+}
+
+#[test]
+fn a_commit_takes_the_lanes_work_where_git_ignores_the_target_link() {
+    // Every env seat on this machine ignores its `target` link: a .gitignore naming `/target` or `target`, or the primary's
+    // info/exclude (as Factory's does). A commit that named the ignored link in a pathspec made `git add` exit 1 there, so
+    // no commit was made on any of these seats (W130-1). The commit takes the lane's work, and never the link.
+    for (label, place, rule) in [
+        ("rooted", ".gitignore", "/target"),
+        ("bare", ".gitignore", "target"),
+        ("exclude", "info/exclude", "/target"),
+    ] {
+        let world = World::new(&format!("ignored-{label}"), false);
+        world.hold_lane("lane-1");
+        if place == ".gitignore" {
+            fs::write(world.checkout.join(".gitignore"), format!("{rule}\n")).unwrap();
+            git(&world.checkout, &world.home, &["add", ".gitignore"]);
+            git(
+                &world.checkout,
+                &world.home,
+                &["commit", "--quiet", "-m", "The build tree is ignored"],
+            );
+        } else {
+            fs::create_dir_all(world.primary.join(".git/info")).unwrap();
+            fs::write(world.primary.join(".git/info/exclude"), format!("{rule}\n")).unwrap();
+        }
+        fs::create_dir_all(world.primary.join("target")).unwrap();
+        std::os::unix::fs::symlink(world.primary.join("target"), world.checkout.join("target"))
+            .unwrap();
+        assert!(world.standing().is_empty(), "{label}: git ignores the link");
+        let link_only = refusal(world.act(
+            "workcell.lane.commit",
+            world.with("message", "The link alone"),
+        ));
+        assert!(
+            link_only.contains("nothing to commit"),
+            "{label}: {link_only}"
+        );
+
+        fs::write(world.checkout.join("NOTES.md"), "The lane's note.\n").unwrap();
+        let committed = answer(world.act(
+            "workcell.lane.commit",
+            world.with("message", "The lane's note"),
+        ));
+        assert_eq!(committed["files"].as_u64(), Some(1), "{label}");
+        assert_eq!(
+            git(
+                &world.checkout,
+                &world.home,
+                &["show", "--name-only", "--format=", "HEAD"]
+            ),
+            "NOTES.md",
+            "{label}: the commit holds the lane's work and not the link"
+        );
+        assert!(world.standing().is_empty(), "{label}");
+        assert!(
+            world.checkout.join("target").is_symlink(),
+            "{label}: the link stays where the seat instrument put it"
+        );
+    }
 }
