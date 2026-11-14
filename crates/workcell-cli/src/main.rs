@@ -1,6 +1,7 @@
 include!("run_admission.rs");
 include!("action_field.rs");
 include!("declare.rs");
+include!("landing.rs");
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
@@ -138,6 +139,7 @@ fn dispatch(global: &GlobalArgs) -> Result<(), WorkcellError> {
         "places" => command_places(&global),
         "place" => command_place(&global, command_args),
         "declare" => command_declare(&global, command_args),
+        "lane" => command_lane(&global, command_args),
         "sandboxes" => command_sandboxes(&global, command_args),
         "run" => command_run(&global, command_args),
         "serve" => command_serve(&global, command_args),

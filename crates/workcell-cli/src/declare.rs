@@ -38,6 +38,8 @@ fn declare_git(cwd: &Path, args: &[&str]) -> Result<String, WorkcellError> {
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
+        // A push asks no terminal for a credential: it answers in its own words instead.
+        .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|error| {
