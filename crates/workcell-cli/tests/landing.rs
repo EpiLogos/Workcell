@@ -700,3 +700,119 @@ fn a_commit_takes_only_the_lanes_regions_and_names_what_it_left_outside() {
         "nothing staged"
     );
 }
+
+/// An act's output, once it is read for the credential the test's origin carries: nothing in it shows it.
+fn shown(output: Output) -> Output {
+    for stream in [&output.stdout, &output.stderr] {
+        let text = String::from_utf8_lossy(stream);
+        assert!(!text.contains("s3cret"), "the credential is shown: {text}");
+    }
+    output
+}
+
+#[test]
+fn no_answer_or_refusal_shows_a_credential_in_origins_url() {
+    // An origin URL can carry a credential: userinfo, or an insteadOf rewrite that adds one. The answers and one refusal
+    // printed it as git read it (W130-5). git pushes with the URL as it is; the acts name the remote without its userinfo,
+    // as git's own messages do.
+    let world = World::new("credential", true);
+    world.hold_lane("lane-1");
+    let bare = world.origin();
+    let bare = bare.to_str().unwrap();
+    // https: origin's URL carries the credential, and the push reaches the scratch remote through origin's pushurl.
+    git(
+        &world.primary,
+        &world.home,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://landing:s3cret@git.example.invalid/notes.git",
+        ],
+    );
+    git(
+        &world.primary,
+        &world.home,
+        &["remote", "set-url", "--push", "origin", bare],
+    );
+    fs::write(world.checkout.join("NOTES.md"), "The lane's note.\n").unwrap();
+    let committed = answer(world.act(
+        "workcell.lane.commit",
+        world.with("message", "The lane's note"),
+    ));
+    let pushed = answer(shown(world.act("workcell.lane.push", world.seat())));
+    assert_eq!(pushed["remote"], "https://git.example.invalid/notes.git");
+    for land_as in ["draft", "mr"] {
+        let refused = refusal(shown(
+            world.act("workcell.lane.land", world.with("as", land_as)),
+        ));
+        assert!(
+            refused.contains("https://git.example.invalid/notes.git is not on GitHub"),
+            "{land_as}: {refused}"
+        );
+    }
+
+    // A clean URL that a credentialed insteadOf rewrites: git reads the rewritten URL as origin's.
+    let rewrite = "url.https://landing:s3cret@git.example.invalid/.insteadOf";
+    git(
+        &world.primary,
+        &world.home,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://git.example.invalid/notes.git",
+        ],
+    );
+    git(
+        &world.primary,
+        &world.home,
+        &[
+            "config",
+            "--global",
+            rewrite,
+            "https://git.example.invalid/",
+        ],
+    );
+    let refused = refusal(shown(
+        world.act("workcell.lane.land", world.with("as", "draft")),
+    ));
+    assert!(
+        refused.contains("https://git.example.invalid/notes.git is not on GitHub"),
+        "{refused}"
+    );
+
+    // file://: the merge's push and the fetch after it both reach the scratch remote through the credentialed URL.
+    git(
+        &world.primary,
+        &world.home,
+        &["config", "--global", "--unset", rewrite],
+    );
+    git(
+        &world.primary,
+        &world.home,
+        &["config", "--unset", "remote.origin.pushurl"],
+    );
+    git(
+        &world.primary,
+        &world.home,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            &format!("file://landing:s3cret@{bare}"),
+        ],
+    );
+    let merged = answer(shown(
+        world.act("workcell.lane.land", world.with("as", "merge")),
+    ));
+    assert_eq!(merged["remote"], format!("file://{bare}"));
+    assert_eq!(
+        git(
+            &world.origin(),
+            &world.home,
+            &["rev-parse", "refs/heads/main"]
+        ),
+        committed["head"].as_str().unwrap()
+    );
+}

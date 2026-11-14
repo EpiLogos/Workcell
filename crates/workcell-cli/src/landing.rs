@@ -191,6 +191,30 @@ fn lane_remote(seat: &LaneSeat) -> Result<String, WorkcellError> {
     })
 }
 
+/// A remote's URL as an answer or a refusal shows it: without its userinfo,
+/// where a credential rides (`https://user:secret@host/path` is shown
+/// `https://host/path`, `user@host:path` is shown `host:path`), as git's own
+/// messages show a remote. The userinfo ends at the last `@` before the first
+/// `/` after the scheme. git pushes to the URL as it is.
+fn shown_remote(url: &str) -> String {
+    if let Some(scheme) = url.find("://") {
+        let (head, rest) = url.split_at(scheme + 3);
+        let authority = rest.find('/').unwrap_or(rest.len());
+        return match rest[..authority].rfind('@') {
+            Some(at) => format!("{head}{}", &rest[at + 1..]),
+            None => url.to_owned(),
+        };
+    }
+    // scp-like `[user@]host:path`, a `:` before any `/` (a local path has none).
+    match url.find(':') {
+        Some(colon) if !url[..colon].contains('/') => match url[..colon].rfind('@') {
+            Some(at) => url[at + 1..].to_owned(),
+            None => url.to_owned(),
+        },
+        _ => url.to_owned(),
+    }
+}
+
 fn gh_on_path() -> bool {
     env::var_os("PATH")
         .is_some_and(|path| env::split_paths(&path).any(|dir| dir.join("gh").is_file()))
@@ -546,7 +570,7 @@ fn lane_push(seat: &LaneSeat) -> Result<Value, WorkcellError> {
         )));
     }
     let mut answer = landing(seat, "push", &head);
-    answer["remote"] = remote.into();
+    answer["remote"] = shown_remote(&remote).into();
     answer["upstream"] = format!("origin/{}", seat.branch).into();
     Ok(answer)
 }
@@ -622,12 +646,13 @@ fn lane_land(seat: &LaneSeat, land_as: &str) -> Result<Value, WorkcellError> {
         lane_push_to(seat, &remote, &format!("{head}:refs/heads/main"))?;
         lane_git(seat, &["fetch", "--quiet", "origin", "main"])?;
         answer["merged_into"] = "origin/main".into();
-        answer["remote"] = remote.into();
+        answer["remote"] = shown_remote(&remote).into();
         return Ok(answer);
     }
     if !remote.contains("github.com") {
         return Err(landing_refused(format!(
-            "{remote} is not on GitHub: Workcell opens merge requests with GitHub's CLI, on GitHub"
+            "{} is not on GitHub: Workcell opens merge requests with GitHub's CLI, on GitHub",
+            shown_remote(&remote)
         )));
     }
     if !gh_on_path() {
@@ -674,7 +699,7 @@ fn lane_land(seat: &LaneSeat, land_as: &str) -> Result<Value, WorkcellError> {
         .trim()
         .to_owned()
         .into();
-    answer["remote"] = remote.into();
+    answer["remote"] = shown_remote(&remote).into();
     Ok(answer)
 }
 
@@ -725,5 +750,27 @@ mod landing_tests {
         }
         assert!(in_lane_regions(b"README.md", &[]), "no region: the whole checkout");
         assert!(in_lane_regions(b"README.md", &[".".to_owned()]));
+    }
+
+    #[test]
+    fn a_remote_is_shown_without_its_userinfo() {
+        for (url, shown) in [
+            (
+                "https://x-access-token:tok3n@github.com/EpiLogos/X.git",
+                "https://github.com/EpiLogos/X.git",
+            ),
+            ("https://oauth2:tok3n@gitlab.com/g/x.git", "https://gitlab.com/g/x.git"),
+            ("https://user:p@ss@host.invalid/x.git", "https://host.invalid/x.git"),
+            ("https://org@dev.azure.com/org/p/_git/r", "https://dev.azure.com/org/p/_git/r"),
+            ("ssh://git@host.invalid:22/x.git", "ssh://host.invalid:22/x.git"),
+            ("file://landing:tok3n@/srv/x.git", "file:///srv/x.git"),
+            ("git@github.com:EpiLogos/X.git", "github.com:EpiLogos/X.git"),
+            ("https://github.com/EpiLogos/X.git", "https://github.com/EpiLogos/X.git"),
+            ("https://host.invalid/a@b/x.git", "https://host.invalid/a@b/x.git"),
+            ("/srv/repos/x@y.git", "/srv/repos/x@y.git"),
+            ("../x.git", "../x.git"),
+        ] {
+            assert_eq!(shown_remote(url), shown, "{url}");
+        }
     }
 }
