@@ -222,19 +222,29 @@ fn landing(seat: &LaneSeat, act: &str, head: &str) -> Value {
     })
 }
 
+/// An env seat's `target`: the seat instrument's link into the primary's
+/// shared build tree (its ensure_target_pool), the instrument's artifact and
+/// not the lane's work. A repository whose .gitignore names `target/`
+/// (directories only) does not ignore the link, so a commit leaves it out by
+/// name, as the instrument's own reading of a seat's files does
+/// (drop_pool_link).
+const SEAT_POOL_LINK: &str = "target";
+
 /// Commit: the seat's working files, every change and every untracked file
-/// git does not ignore, as one commit on the lane's branch, under the
-/// identity the repository's git names.
+/// git does not ignore, but the seat instrument's link, as one commit on the
+/// lane's branch, under the identity the repository's git names.
 fn lane_commit(seat: &LaneSeat, message: &str) -> Result<Value, WorkcellError> {
     if message.trim().is_empty() {
         return Err(landing_refused(
             "a commit says what it holds: its message is empty",
         ));
     }
+    let pool_link = seat.checkout.join(SEAT_POOL_LINK).is_symlink();
     let changes = lane_git(seat, &["status", "--porcelain=v1", "--untracked-files=all"])?;
     let files = changes
         .lines()
         .filter(|line| !line.trim().is_empty())
+        .filter(|line| !(pool_link && line.get(3..) == Some(SEAT_POOL_LINK)))
         .count();
     if files == 0 {
         return Err(landing_refused(format!(
@@ -243,7 +253,12 @@ fn lane_commit(seat: &LaneSeat, message: &str) -> Result<Value, WorkcellError> {
             seat.branch
         )));
     }
-    lane_git(seat, &["add", "--all"])?;
+    let leave_out = format!(":(exclude){SEAT_POOL_LINK}");
+    let mut add = vec!["add", "--all"];
+    if pool_link {
+        add.extend(["--", ".", leave_out.as_str()]);
+    }
+    lane_git(seat, &add)?;
     lane_git(seat, &["commit", "--quiet", "--message", message])?;
     let head = lane_git(seat, &["rev-parse", "HEAD"])?;
     let mut answer = landing(seat, "commit", &head);

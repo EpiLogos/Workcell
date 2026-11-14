@@ -377,3 +377,44 @@ fn a_landing_is_refused_in_words_where_no_lane_holds_the_seat_or_no_world_is_nam
     let moved = refusal(world.act("workcell.lane.commit", world.with("message", "m")));
     assert!(moved.contains("the register's lane is lane-1"), "{moved}");
 }
+
+#[test]
+fn a_commit_leaves_out_the_seat_instruments_target_link() {
+    // An env seat's `target` is the seat instrument's link into the primary's shared build tree (its ensure_target_pool), not the
+    // lane's work. A repository whose .gitignore does not name `/target` sees the link untracked, so a commit leaves it out by name.
+    let world = World::new("pool", false);
+    world.hold_lane("lane-1");
+    fs::create_dir_all(world.primary.join("target")).unwrap();
+    std::os::unix::fs::symlink(world.primary.join("target"), world.checkout.join("target"))
+        .unwrap();
+    assert_eq!(
+        git(&world.checkout, &world.home, &["status", "--porcelain"]),
+        "?? target"
+    );
+    let link_only = refusal(world.act(
+        "workcell.lane.commit",
+        world.with("message", "The link alone"),
+    ));
+    assert!(link_only.contains("nothing to commit"), "{link_only}");
+
+    fs::write(world.checkout.join("NOTES.md"), "The lane's note.\n").unwrap();
+    let committed = answer(world.act(
+        "workcell.lane.commit",
+        world.with("message", "The lane's note"),
+    ));
+    assert_eq!(committed["files"].as_u64(), Some(1));
+    assert_eq!(
+        git(
+            &world.checkout,
+            &world.home,
+            &["show", "--name-only", "--format=", "HEAD"]
+        ),
+        "NOTES.md",
+        "the commit holds the lane's work and not the seat's link"
+    );
+    assert_eq!(
+        git(&world.checkout, &world.home, &["status", "--porcelain"]),
+        "?? target",
+        "the link stays where the seat instrument put it: a landing never tidies the working files"
+    );
+}
