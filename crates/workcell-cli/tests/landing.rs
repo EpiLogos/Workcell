@@ -497,3 +497,85 @@ fn a_commit_takes_the_lanes_work_where_git_ignores_the_target_link() {
         );
     }
 }
+
+#[test]
+fn a_commit_is_refused_mid_merge_or_cherry_pick_and_leaves_it_as_it_was() {
+    // In the middle of a conflicted merge or cherry-pick, a commit staged the conflict markers and concluded it (W130-2). It
+    // is refused in words before anything is staged, and the operation stands as it was, to be resolved or aborted.
+    let world = World::new("conflict", false);
+    world.hold_lane("lane-1");
+    fs::write(
+        world.checkout.join("README.md"),
+        "notes, as the lane has them\n",
+    )
+    .unwrap();
+    git(
+        &world.checkout,
+        &world.home,
+        &["commit", "--quiet", "-am", "The lane's README"],
+    );
+    fs::write(world.primary.join("README.md"), "notes, as main has them\n").unwrap();
+    git(
+        &world.primary,
+        &world.home,
+        &["commit", "--quiet", "-am", "Main's README"],
+    );
+    let head = git(&world.checkout, &world.home, &["rev-parse", "HEAD"]);
+    let operations: [(&str, &[&str], &str, &[&str]); 2] = [
+        (
+            "merge",
+            &["merge", "--quiet", "main"],
+            "MERGE_HEAD",
+            &["merge", "--abort"],
+        ),
+        (
+            "cherry-pick",
+            &["cherry-pick", "main"],
+            "CHERRY_PICK_HEAD",
+            &["cherry-pick", "--abort"],
+        ),
+    ];
+    for (operation, start, under_way, abort) in operations {
+        assert!(
+            !git_output(&world.checkout, &world.home, start)
+                .status
+                .success(),
+            "the {operation} conflicts"
+        );
+        let conflicted = world.standing();
+        assert_eq!(conflicted, ["UU README.md"], "{operation}");
+        let refused =
+            refusal(world.act("workcell.lane.commit", world.with("message", "Lane work")));
+        assert!(
+            refused.contains(&format!("a {operation} ({under_way})"))
+                && refused.contains("unmerged README.md"),
+            "{refused}"
+        );
+        assert_eq!(world.standing(), conflicted, "{operation}: nothing staged");
+        let stands = |when: &str| {
+            assert_eq!(
+                git(&world.checkout, &world.home, &["rev-parse", "HEAD"]),
+                head,
+                "{operation}, {when}: nothing committed"
+            );
+            git(
+                &world.checkout,
+                &world.home,
+                &["rev-parse", "--quiet", "--verify", under_way],
+            );
+        };
+        stands("conflicted");
+
+        // Resolved but not concluded: a commit would still conclude it, so it is still refused.
+        fs::write(world.checkout.join("README.md"), "notes, resolved\n").unwrap();
+        git(&world.checkout, &world.home, &["add", "README.md"]);
+        let unconcluded =
+            refusal(world.act("workcell.lane.commit", world.with("message", "Lane work")));
+        assert!(
+            unconcluded.contains(&format!("a {operation} ({under_way})")),
+            "{unconcluded}"
+        );
+        stands("resolved");
+        git(&world.checkout, &world.home, abort);
+    }
+}

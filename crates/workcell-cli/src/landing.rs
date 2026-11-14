@@ -240,9 +240,82 @@ struct LaneChange {
 }
 
 impl LaneChange {
+    fn shown(&self) -> String {
+        String::from_utf8_lossy(&self.path).into_owned()
+    }
+
     fn untracked(&self) -> bool {
         &self.code == b"??"
     }
+
+    /// A path git holds in conflict (`git status`'s unmerged codes).
+    fn unmerged(&self) -> bool {
+        matches!(
+            &self.code,
+            b"DD" | b"AU" | b"UD" | b"UA" | b"DU" | b"AA" | b"UU"
+        )
+    }
+}
+
+/// Paths in words: the first dozen, and how many more.
+fn listed(paths: &[String]) -> String {
+    const SHOWN: usize = 12;
+    let shown = paths
+        .iter()
+        .take(SHOWN)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    match paths.len().saturating_sub(SHOWN) {
+        0 => shown,
+        more => format!("{shown} and {more} more"),
+    }
+}
+
+/// What stops a commit before anything is staged: an operation under way that
+/// a commit would conclude (a merge, cherry-pick, revert or rebase, read where
+/// git keeps it for this checkout, so a linked checkout reads its own), and a
+/// path in conflict, which staging would record with its conflict markers.
+/// The operation is left as it stands, to be resolved and concluded or
+/// aborted.
+fn lane_settled(seat: &LaneSeat, changes: &[LaneChange]) -> Result<(), WorkcellError> {
+    const UNDER_WAY: [(&str, &str); 5] = [
+        ("MERGE_HEAD", "a merge"),
+        ("CHERRY_PICK_HEAD", "a cherry-pick"),
+        ("REVERT_HEAD", "a revert"),
+        ("rebase-merge", "a rebase"),
+        ("rebase-apply", "a rebase or git am"),
+    ];
+    let mut args = vec!["rev-parse", "--path-format=absolute"];
+    for (name, _) in UNDER_WAY {
+        args.extend(["--git-path", name]);
+    }
+    let kept = lane_git(seat, &args)?;
+    let under_way = UNDER_WAY
+        .iter()
+        .zip(kept.lines())
+        .filter(|(_, path)| Path::new(path).exists())
+        .map(|((name, operation), _)| format!("{operation} ({name})"))
+        .collect::<Vec<_>>();
+    let unmerged = changes
+        .iter()
+        .filter(|change| change.unmerged())
+        .map(LaneChange::shown)
+        .collect::<Vec<_>>();
+    let state = match (under_way.is_empty(), unmerged.is_empty()) {
+        (true, true) => return Ok(()),
+        (false, true) => format!("is in the middle of {}", under_way.join(" and ")),
+        (false, false) => format!(
+            "is in the middle of {}, with unmerged {}",
+            under_way.join(" and "),
+            listed(&unmerged)
+        ),
+        (true, false) => format!("holds unmerged {}", listed(&unmerged)),
+    };
+    Err(landing_refused(format!(
+        "{} {state}: a lane's commit never concludes what is under way or records conflict markers; resolve it, and conclude or abort it, first. Nothing was staged or committed",
+        seat.checkout.display()
+    )))
 }
 
 /// The checkout's changes: every change and every untracked file git does not
@@ -288,15 +361,18 @@ fn lane_git_paths(seat: &LaneSeat, args: &[&str], paths: &[&[u8]]) -> Result<(),
 /// names each file it takes: untracked ones are added first, since git names
 /// a file only once it knows it, and the commit takes exactly those paths as
 /// they stand in the working files, leaving whatever else the index holds as
-/// it was.
+/// it was. Refused, with nothing staged, in the middle of a merge,
+/// cherry-pick, revert or rebase, or with a path in conflict.
 fn lane_commit(seat: &LaneSeat, message: &str) -> Result<Value, WorkcellError> {
     if message.trim().is_empty() {
         return Err(landing_refused(
             "a commit says what it holds: its message is empty",
         ));
     }
+    let changes = lane_changes(seat)?;
+    lane_settled(seat, &changes)?;
     let pool_link = seat.checkout.join(SEAT_POOL_LINK).is_symlink();
-    let changes = lane_changes(seat)?
+    let changes = changes
         .into_iter()
         .filter(|change| !(pool_link && change.path == SEAT_POOL_LINK.as_bytes()))
         .collect::<Vec<_>>();
