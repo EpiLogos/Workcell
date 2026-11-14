@@ -8,7 +8,8 @@
 // one makes the route's words from the input, checked by name, and runs it
 // through the same dispatch, in this process, so the document or refusal is
 // Workcell's own. The seats (`workcell.seat.*`) are the seat instrument's
-// field, not this one.
+// field, not this one; a held seat's landing (`workcell.lane.*`: commit, push,
+// land; landing.rs) is Workcell's, and never writes the seat's claim.
 
 const OWNER_ACTION_FIELD: &str = "oi.owner-action-field/v1";
 
@@ -76,6 +77,41 @@ const FIELD: &[FieldAction] = &[
             ("project", "--project", "string", true, "the project: one folder of the World's Work, standing on main"),
         ],
         mutation_class: "locally-mutating",
+    },
+    FieldAction {
+        id: "workcell.lane.commit",
+        title: "Commit a lane's work on its branch: inside its regions, where its claim names them",
+        route: &["lane", "commit"],
+        flags: &[
+            ("world", "--world", "string", false, "the World's folder, absolute (else CENTRAL_ROOT)"),
+            ("workcell", "--workcell", "string", true, "the workcell that holds the seat"),
+            ("product", "--product", "string", true, "the seat's project"),
+            ("message", "--message", "string", true, "what the commit holds, in words"),
+        ],
+        mutation_class: "locally-mutating",
+    },
+    FieldAction {
+        id: "workcell.lane.push",
+        title: "Push a seat's lane to its project's remote",
+        route: &["lane", "push"],
+        flags: &[
+            ("world", "--world", "string", false, "the World's folder, absolute (else CENTRAL_ROOT)"),
+            ("workcell", "--workcell", "string", true, "the workcell that holds the seat"),
+            ("product", "--product", "string", true, "the seat's project"),
+        ],
+        mutation_class: "externally-mutating",
+    },
+    FieldAction {
+        id: "workcell.lane.land",
+        title: "Land a seat's lane: a draft merge request, a merge request, or a merge into main",
+        route: &["lane", "land"],
+        flags: &[
+            ("world", "--world", "string", false, "the World's folder, absolute (else CENTRAL_ROOT)"),
+            ("workcell", "--workcell", "string", true, "the workcell that holds the seat"),
+            ("product", "--product", "string", true, "the seat's project"),
+            ("as", "--as", "string", true, "how the work lands: draft, mr or merge"),
+        ],
+        mutation_class: "externally-mutating",
     },
     FieldAction {
         id: "workcell.instances.list",

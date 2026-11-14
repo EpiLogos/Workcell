@@ -32,26 +32,79 @@ fn declare_refused(words: impl Into<String>) -> WorkcellError {
 }
 
 fn declare_git(cwd: &Path, args: &[&str]) -> Result<String, WorkcellError> {
-    let output = std::process::Command::new("git")
+    git_bytes(cwd, args, None).map(|stdout| String::from_utf8_lossy(&stdout).trim().to_owned())
+}
+
+/// git in `cwd`: its output as git wrote it, and `input`, where there is one,
+/// on its stdin. Its words are kept on refusal, and nothing is asked of a
+/// terminal.
+fn git_bytes(cwd: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, WorkcellError> {
+    git_bytes_in(cwd, args, input, None)
+}
+
+/// [`git_bytes`], on an index of the caller's own (`GIT_INDEX_FILE`) where one
+/// is named: a commit of a tree the caller builds, the checkout's own index
+/// left as it stands.
+fn git_bytes_in(
+    cwd: &Path,
+    args: &[&str],
+    input: Option<&[u8]>,
+    index: Option<&Path>,
+) -> Result<Vec<u8>, WorkcellError> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut command = std::process::Command::new("git");
+    command
         .args(args)
         .current_dir(cwd)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .stdin(std::process::Stdio::null())
-        .output()
+        .env_remove("GIT_INDEX_FILE");
+    if let Some(index) = index {
+        command.env("GIT_INDEX_FILE", index);
+    }
+    let mut child = command
+        // A push asks no terminal for a credential: it answers in its own words instead.
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| {
             WorkcellError::OperationFailed(format!("git could not start: {error}"))
         })?;
+    let stdin = child.stdin.take();
+    let output = std::thread::scope(|scope| {
+        if let (Some(mut stdin), Some(bytes)) = (stdin, input) {
+            // Written beside the reading of git's output, so neither waits on the other's full pipe; a write git stops
+            // reading shows in its exit.
+            scope.spawn(move || {
+                let _ = stdin.write_all(bytes);
+            });
+        }
+        child.wait_with_output()
+    })
+    .map_err(|error| WorkcellError::OperationFailed(format!("git could not finish: {error}")))?;
     if !output.status.success() {
+        // git says some refusals only on stdout ("nothing to commit"): its words are kept wherever it wrote them.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let words = if stderr.trim().is_empty() {
+            String::from_utf8_lossy(&output.stdout)
+        } else {
+            stderr
+        };
         return Err(WorkcellError::OperationFailed(format!(
             "git {} refused in {}: {}",
             args.join(" "),
             cwd.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
+            words.trim()
         )));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    Ok(output.stdout)
 }
 
 /// The register a World's first workcell writes: the shape the seat instrument
