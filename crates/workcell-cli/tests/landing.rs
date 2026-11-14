@@ -152,6 +152,22 @@ impl World {
         command.env("CENTRAL_ROOT", &self.world).output().unwrap()
     }
 
+    /// [`World::act`], its tools found first in `bin`: a stand-in for one of them (GitHub's `gh`).
+    fn act_on_path(&self, id: &str, input: Value, bin: &Path) -> Output {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_workcell"));
+        command.args(["--json", "action", "run", id, &input.to_string()]);
+        isolated(&mut command, &self.home);
+        let mut path = vec![bin.to_path_buf()];
+        path.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+        command
+            .env("PATH", std::env::join_paths(path).unwrap())
+            .env("CENTRAL_ROOT", &self.world)
+            .output()
+            .unwrap()
+    }
+
     /// The seat held by a lane as the seat instrument's join holds it: the lane's branch cut where the seat stands, and the
     /// register's seat claimed for it.
     fn hold_lane(&self, lane: &str) {
@@ -166,11 +182,28 @@ impl World {
         seat["state"] = json!("claimed");
         seat["branch"] = json!(lane);
         seat["claimed_by"] = json!("agent:landing-test");
+        seat["workers"] = json!(["agent:landing-test"]);
         fs::write(&path, serde_json::to_vec_pretty(&register).unwrap()).unwrap();
     }
 
+    /// A co-worker on the lane, as the seat instrument's `seat join --actor <actor> --region <regions>` attaches one: among
+    /// the seat's `workers`, with its zone.
+    fn attach(&self, actor: &str, regions: &[&str]) {
+        let path = self.world.join(REGISTER);
+        let mut register: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        register["workcells"][0]["seats"][0]["workers"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!(actor));
+        fs::write(&path, serde_json::to_vec_pretty(&register).unwrap()).unwrap();
+        if !regions.is_empty() {
+            self.zone(actor, regions);
+        }
+    }
+
     /// A zone on the seat's claim, as the seat instrument's `seat join --region` records one: `{actor, regions,
-    /// since_unix_seconds}` in the seat's `zones`.
+    /// since_unix_seconds}` in the seat's `zones`. The instrument keeps the zone of a lane a `--new-lane` claim displaced, its
+    /// actor no longer among the workers.
     fn zone(&self, actor: &str, regions: &[&str]) {
         let path = self.world.join(REGISTER);
         let mut register: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -606,7 +639,7 @@ fn a_commit_takes_only_the_lanes_regions_and_names_what_it_left_outside() {
     let world = World::new("zones", false);
     world.hold_lane("lane-1");
     world.zone("agent:landing-test", &["crates/a"]);
-    world.zone("agent:co-worker", &["docs/"]);
+    world.attach("agent:co-worker", &["docs/"]);
     for (path, text) in [
         ("crates/a/lib.rs", "the lane's crate\n"),
         ("docs/guide.md", "the co-worker's guide\n"),
@@ -672,7 +705,7 @@ fn a_commit_takes_only_the_lanes_regions_and_names_what_it_left_outside() {
     );
 
     let free_text = "native host field hand-off for live-engine's K8 node (new files first)";
-    world.zone("agent:free-text", &[free_text]);
+    world.attach("agent:free-text", &[free_text]);
     fs::write(
         world.checkout.join("crates/a/lib.rs"),
         "the lane's crate, again\n",
@@ -752,6 +785,46 @@ fn no_answer_or_refusal_shows_a_credential_in_origins_url() {
         );
     }
 
+    // On GitHub, a merge request is opened with GitHub's CLI (a stand-in here, first on PATH), and its answer names the remote
+    // without the credential too.
+    git(
+        &world.primary,
+        &world.home,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://x-access-token:s3cret@github.com/EpiLogos/notes.git",
+        ],
+    );
+    let bin = world.scratch.0.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let gh = bin.join("gh");
+    fs::write(
+        &gh,
+        "#!/bin/sh\necho https://github.com/EpiLogos/notes/pull/7\n",
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    for land_as in ["draft", "mr"] {
+        let opened = answer(shown(world.act_on_path(
+            "workcell.lane.land",
+            world.with("as", land_as),
+            &bin,
+        )));
+        assert_eq!(
+            opened["remote"], "https://github.com/EpiLogos/notes.git",
+            "{land_as}: {opened}"
+        );
+        assert_eq!(
+            opened["merge_request"], "https://github.com/EpiLogos/notes/pull/7",
+            "{land_as}: {opened}"
+        );
+    }
+
     // A clean URL that a credentialed insteadOf rewrites: git reads the rewritten URL as origin's.
     let rewrite = "url.https://landing:s3cret@git.example.invalid/.insteadOf";
     git(
@@ -815,4 +888,159 @@ fn no_answer_or_refusal_shows_a_credential_in_origins_url() {
         ),
         committed["head"].as_str().unwrap()
     );
+}
+
+/// The paths a commit records, a line each (`<status>\t<path>[\t<new path>]`), as `git show --name-status` reads them.
+fn recorded(world: &World, renames: &str) -> Vec<String> {
+    git(
+        &world.checkout,
+        &world.home,
+        &["show", renames, "--name-status", "--format=", "HEAD"],
+    )
+    .lines()
+    .map(str::to_owned)
+    .collect()
+}
+
+fn write(world: &World, path: &str, text: &str) {
+    let file = world.checkout.join(path);
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(file, text).unwrap();
+}
+
+#[test]
+fn a_zone_a_new_lane_displaced_is_not_the_lanes() {
+    // A lane that takes a seat over (`seat join --new-lane --region crates/a`) becomes its only worker, and the seat
+    // instrument keeps the displaced lane's zone on the claim. Counting that zone swept the displaced lane's unfinished work
+    // and its secret into the new lane's commit (RR130-1). The lane's regions are its actors' zones alone.
+    let world = World::new("displaced", false);
+    world.hold_lane("lane-2");
+    world.zone("agent:displaced", &["crates/b"]);
+    world.zone("agent:landing-test", &["crates/a"]);
+    write(&world, "crates/a/lib.rs", "the new lane's crate\n");
+    write(
+        &world,
+        "crates/b/lib.rs",
+        "the displaced lane's unfinished crate\n",
+    );
+    write(&world, "crates/b/.env.local", "TOKEN=the-displaced-lanes\n");
+    let committed = answer(world.act(
+        "workcell.lane.commit",
+        world.with("message", "The new lane's crate"),
+    ));
+    assert_eq!(committed["regions"], json!(["crates/a"]), "{committed}");
+    assert_eq!(recorded(&world, "--no-renames"), ["A\tcrates/a/lib.rs"]);
+    assert_eq!(
+        committed["left_outside"],
+        json!(["crates/b/.env.local", "crates/b/lib.rs"]),
+        "{committed}"
+    );
+    assert_eq!(
+        world.standing(),
+        ["?? crates/b/.env.local", "?? crates/b/lib.rs"],
+        "the displaced lane's work stays as it was"
+    );
+}
+
+#[test]
+fn a_lead_with_no_zone_commits_its_work_beside_a_zoned_co_worker() {
+    // A lead who claims without --region holds the whole seat: the instrument reads no region as `.`. A co-worker's zone
+    // narrowed the commit to the co-worker's regions, and the lead's own work was left out of the landing (RR130-4).
+    let world = World::new("zoneless", false);
+    world.hold_lane("lane-1");
+    world.attach("agent:co-worker", &["docs"]);
+    write(&world, "crates/x/lib.rs", "the lead's crate\n");
+    write(&world, "docs/guide.md", "the co-worker's guide\n");
+    let committed = answer(world.act(
+        "workcell.lane.commit",
+        world.with("message", "The lead's crate and the guide"),
+    ));
+    assert_eq!(committed["files"].as_u64(), Some(2), "{committed}");
+    assert_eq!(committed["regions"], json!([]), "{committed}");
+    assert_eq!(committed["left_outside"], json!([]), "{committed}");
+    assert_eq!(
+        recorded(&world, "--no-renames"),
+        ["A\tcrates/x/lib.rs", "A\tdocs/guide.md"]
+    );
+    assert!(world.standing().is_empty(), "{:?}", world.standing());
+}
+
+#[test]
+fn a_region_not_made_yet_or_deleted_holds_no_change_and_never_stops_a_commit() {
+    // The instrument records a lane's regions as the zones it will work, and reads one where nothing stands as holding
+    // nothing. A region not made yet, or one the lane deleted, refused every commit of the lane (RR130-2).
+    let world = World::new("regions", false);
+    world.hold_lane("lane-1");
+    world.zone(
+        "agent:landing-test",
+        &["crates/a", "crates/new", "crates/b"],
+    );
+    write(&world, "crates/a/lib.rs", "the lane's crate\n");
+    write(&world, "crates/b/lib.rs", "a crate the lane will retire\n");
+    let first = answer(world.act(
+        "workcell.lane.commit",
+        world.with("message", "Two crates, a third to come"),
+    ));
+    assert_eq!(
+        first["regions"],
+        json!(["crates/a", "crates/new", "crates/b"])
+    );
+    assert_eq!(first["files"].as_u64(), Some(2), "{first}");
+    fs::remove_dir_all(world.checkout.join("crates/b")).unwrap();
+    answer(world.act(
+        "workcell.lane.commit",
+        world.with("message", "The retired crate leaves"),
+    ));
+    assert_eq!(recorded(&world, "--no-renames"), ["D\tcrates/b/lib.rs"]);
+    write(&world, "crates/a/lib.rs", "the lane's crate, again\n");
+    answer(world.act(
+        "workcell.lane.commit",
+        world.with("message", "The lane's crate, again"),
+    ));
+    assert_eq!(recorded(&world, "--no-renames"), ["M\tcrates/a/lib.rs"]);
+    assert!(world.standing().is_empty(), "{:?}", world.standing());
+}
+
+#[test]
+fn a_rename_in_case_only_and_a_link_swapped_for_a_folder_are_committed_as_staged() {
+    // git's partial commit (`commit --only`) reads each named path from disk again: on a checkout that ignores case (every
+    // macOS seat), a staged rename in case only failed with "will not add file alias", and a tracked link swapped for a
+    // folder failed as a submodule with no commit (RR130-3). The commit is made from what the lane staged.
+    let world = World::new("case", false);
+    world.hold_lane("lane-1");
+    write(&world, "crates/a/lib.rs", "the lane's crate\n");
+    std::os::unix::fs::symlink("README.md", world.checkout.join("alink")).unwrap();
+    answer(world.act(
+        "workcell.lane.commit",
+        world.with("message", "A crate and a link"),
+    ));
+    git(
+        &world.checkout,
+        &world.home,
+        &["mv", "crates/a/lib.rs", "crates/a/Lib.rs"],
+    );
+    write(&world, "README.md", "notes, renamed beside\n");
+    write(&world, "docs/new.md", "a new page\n");
+    let renamed = answer(world.act(
+        "workcell.lane.commit",
+        world.with("message", "The crate's file in its case"),
+    ));
+    assert_eq!(renamed["files"].as_u64(), Some(4), "{renamed}");
+    assert_eq!(
+        recorded(&world, "-M"),
+        [
+            "M\tREADME.md",
+            "R100\tcrates/a/lib.rs\tcrates/a/Lib.rs",
+            "A\tdocs/new.md"
+        ]
+    );
+    assert!(world.standing().is_empty(), "{:?}", world.standing());
+    fs::remove_file(world.checkout.join("alink")).unwrap();
+    write(&world, "alink/f", "a folder where the link stood\n");
+    answer(world.act(
+        "workcell.lane.commit",
+        world.with("message", "The link becomes a folder"),
+    ));
+    assert_eq!(recorded(&world, "--no-renames"), ["D\talink", "A\talink/f"]);
+    assert!(world.standing().is_empty(), "{:?}", world.standing());
 }

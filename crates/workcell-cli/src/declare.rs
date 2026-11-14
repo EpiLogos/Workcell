@@ -39,14 +39,31 @@ fn declare_git(cwd: &Path, args: &[&str]) -> Result<String, WorkcellError> {
 /// on its stdin. Its words are kept on refusal, and nothing is asked of a
 /// terminal.
 fn git_bytes(cwd: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, WorkcellError> {
+    git_bytes_in(cwd, args, input, None)
+}
+
+/// [`git_bytes`], on an index of the caller's own (`GIT_INDEX_FILE`) where one
+/// is named: a commit of a tree the caller builds, the checkout's own index
+/// left as it stands.
+fn git_bytes_in(
+    cwd: &Path,
+    args: &[&str],
+    input: Option<&[u8]>,
+    index: Option<&Path>,
+) -> Result<Vec<u8>, WorkcellError> {
     use std::io::Write;
     use std::process::Stdio;
-    let mut child = std::process::Command::new("git")
+    let mut command = std::process::Command::new("git");
+    command
         .args(args)
         .current_dir(cwd)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_INDEX_FILE");
+    if let Some(index) = index {
+        command.env("GIT_INDEX_FILE", index);
+    }
+    let mut child = command
         // A push asks no terminal for a credential: it answers in its own words instead.
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(if input.is_some() {
@@ -73,11 +90,18 @@ fn git_bytes(cwd: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>,
     })
     .map_err(|error| WorkcellError::OperationFailed(format!("git could not finish: {error}")))?;
     if !output.status.success() {
+        // git says some refusals only on stdout ("nothing to commit"): its words are kept wherever it wrote them.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let words = if stderr.trim().is_empty() {
+            String::from_utf8_lossy(&output.stdout)
+        } else {
+            stderr
+        };
         return Err(WorkcellError::OperationFailed(format!(
             "git {} refused in {}: {}",
             args.join(" "),
             cwd.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
+            words.trim()
         )));
     }
     Ok(output.stdout)

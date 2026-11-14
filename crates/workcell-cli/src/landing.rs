@@ -21,8 +21,10 @@ fn landing_refused(words: impl Into<String>) -> WorkcellError {
 }
 
 /// A seat a lane holds: where its checkout stands, the branch the lane works
-/// on, the main its lanes are cut from and land in, and the zones its claim
-/// records (the regions the lane commits inside; lane_regions reads them).
+/// on, the main its lanes are cut from and land in, the actors on its lane
+/// (its `workers`, else the one who `claimed_by` it, as the seat instrument
+/// reads them) and the zones its claim records (the regions the lane commits
+/// inside; lane_regions reads them).
 struct LaneSeat {
     world: PathBuf,
     workcell: String,
@@ -30,6 +32,7 @@ struct LaneSeat {
     checkout: PathBuf,
     branch: String,
     main_ref: String,
+    actors: Vec<String>,
     zones: Value,
 }
 
@@ -172,6 +175,18 @@ fn lane_seat(world: &Path, workcell: &str, product: &str) -> Result<LaneSeat, Wo
             .as_str()
             .unwrap_or("origin/main")
             .to_owned(),
+        actors: match seat["workers"].as_array().filter(|workers| !workers.is_empty()) {
+            Some(workers) => workers
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+            None => seat["claimed_by"]
+                .as_str()
+                .map(str::to_owned)
+                .into_iter()
+                .collect(),
+        },
         zones: seat["zones"].clone(),
     })
 }
@@ -271,10 +286,6 @@ impl LaneChange {
         String::from_utf8_lossy(&self.path).into_owned()
     }
 
-    fn untracked(&self) -> bool {
-        &self.code == b"??"
-    }
-
     /// A path git holds in conflict (`git status`'s unmerged codes).
     fn unmerged(&self) -> bool {
         matches!(
@@ -282,6 +293,38 @@ impl LaneChange {
             b"DD" | b"AU" | b"UD" | b"UA" | b"DU" | b"AA" | b"UU"
         )
     }
+
+    /// A path no longer among the working files as git knew it: deleted, or
+    /// replaced by a folder (its deletion staged or not). It leaves the index
+    /// by name, for git adds only what stands.
+    fn gone(&self) -> bool {
+        self.code[1] == b'D' || &self.code == b"D "
+    }
+
+    /// The path as the index names it: an untracked repository inside the
+    /// checkout is listed as its folder (`nested/`), and the index holds it as
+    /// `nested`.
+    fn indexed(&self) -> &[u8] {
+        self.path.strip_suffix(b"/").unwrap_or(&self.path)
+    }
+}
+
+/// An index file of a commit's own, removed when the commit is done, however
+/// it ends.
+struct LaneIndex(PathBuf);
+
+impl Drop for LaneIndex {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// Paths, each ended by a NUL, as git reads them on its stdin with `-z`.
+fn nul_ended<'a>(paths: impl IntoIterator<Item = &'a [u8]>) -> Vec<u8> {
+    paths
+        .into_iter()
+        .flat_map(|path| path.iter().copied().chain([0]))
+        .collect()
 }
 
 /// Paths in words: the first dozen, and how many more.
@@ -369,14 +412,16 @@ fn lane_changes(seat: &LaneSeat) -> Result<Vec<LaneChange>, WorkcellError> {
         .collect())
 }
 
-/// The lane's regions, as the seat instrument records and reads them: every
-/// region of every zone on the seat's claim (`zones`, each `{actor, regions,
-/// since_unix_seconds}` as `seat join --region` writes it; they leave with
-/// the lane at its release), with a trailing `/` dropped and `.` the whole
-/// checkout, as its `region_of` reads a region. None: the lane holds the seat
-/// whole. A region that names no path in the checkout (free words, several
-/// paths in one string) is refused by name, for a commit is never cut to a
-/// guess.
+/// The lane's regions, as the seat instrument records and reads them: the
+/// regions of the zones of the actors on the lane (`zones`, each `{actor,
+/// regions, since_unix_seconds}` as `seat join --region` writes it), with a
+/// trailing `/` dropped and `.` the whole checkout, as its `region_of` reads a
+/// region. A zone of an actor no longer on the lane (one a `--new-lane` claim
+/// displaced, which the instrument keeps) is not the lane's. None: the lane
+/// holds the seat whole, as where an actor on it has no zone, for the
+/// instrument reads no region as `.`. A region that cannot be read as a path
+/// (free words, several paths in one string) is refused by name, for a commit
+/// is never cut to a guess.
 fn lane_regions(seat: &LaneSeat) -> Result<Vec<String>, WorkcellError> {
     let unreadable = || {
         landing_refused(format!(
@@ -390,35 +435,40 @@ fn lane_regions(seat: &LaneSeat) -> Result<Vec<String>, WorkcellError> {
         _ => return Err(unreadable()),
     };
     let mut regions: Vec<String> = Vec::new();
-    for zone in zones {
-        for written in zone["regions"].as_array().ok_or_else(unreadable)? {
-            let written = written.as_str().ok_or_else(unreadable)?;
-            let region = match written.trim_end_matches('/') {
-                "" => ".",
-                region => region,
-            };
-            if !lane_names_a_path(seat, region) {
-                return Err(landing_refused(format!(
-                    "the lane's region `{written}`{} names no path in {}: a commit takes the changes inside the lane's regions, and this region cannot be read as a path. Nothing was staged or committed",
-                    zone["actor"]
-                        .as_str()
-                        .map(|actor| format!(" ({actor}'s zone)"))
-                        .unwrap_or_default(),
-                    seat.checkout.display()
-                )));
-            }
-            if !regions.iter().any(|known| known == region) {
-                regions.push(region.to_owned());
+    let mut whole = false;
+    for actor in &seat.actors {
+        let mut zoned = false;
+        for zone in zones.iter().filter(|zone| zone["actor"] == actor.as_str()) {
+            for written in zone["regions"].as_array().ok_or_else(unreadable)? {
+                let written = written.as_str().ok_or_else(unreadable)?;
+                let region = match written.trim_end_matches('/') {
+                    "" => ".",
+                    region => region,
+                };
+                if !lane_reads_as_a_path(seat, region) {
+                    return Err(landing_refused(format!(
+                        "the lane's region `{written}` ({actor}'s zone) names no path in {}: a commit takes the changes inside the lane's regions, and this region cannot be read as a path. Nothing was staged or committed",
+                        seat.checkout.display()
+                    )));
+                }
+                zoned = true;
+                if !regions.iter().any(|known| known == region) {
+                    regions.push(region.to_owned());
+                }
             }
         }
+        whole |= !zoned;
     }
-    Ok(regions)
+    Ok(if whole { Vec::new() } else { regions })
 }
 
-/// Whether a region names a path in the checkout: `.` (the whole of it), or a
-/// relative path in plain form (no empty, `.` or `..` step) among its working
-/// files or among what git tracks there (a folder the lane deleted is one).
-fn lane_names_a_path(seat: &LaneSeat, region: &str) -> bool {
+/// Whether a region can be read as a path in the checkout: `.` (the whole of
+/// it), or a relative path in plain form (no empty, `.` or `..` step). One
+/// that names nothing there yet, or nothing any longer, holds no change, as
+/// the seat instrument's `region_of` reads it. Words with spaces between them
+/// are read as a path only where one stands among the working files or what
+/// git tracks.
+fn lane_reads_as_a_path(seat: &LaneSeat, region: &str) -> bool {
     if region == "." {
         return true;
     }
@@ -428,7 +478,8 @@ fn lane_names_a_path(seat: &LaneSeat, region: &str) -> bool {
     {
         return false;
     }
-    seat.checkout.join(region).symlink_metadata().is_ok()
+    !region.chars().any(char::is_whitespace)
+        || seat.checkout.join(region).symlink_metadata().is_ok()
         || lane_git(
             seat,
             &[
@@ -462,11 +513,87 @@ fn lane_git_paths(seat: &LaneSeat, args: &[&str], paths: &[&[u8]]) -> Result<(),
     let mut words = vec!["--literal-pathspecs"];
     words.extend_from_slice(args);
     words.extend(["--pathspec-from-file=-", "--pathspec-file-nul"]);
-    let named = paths
+    git_bytes(&seat.checkout, &words, Some(&nul_ended(paths.iter().copied()))).map(|_| ())
+}
+
+/// The lane's changes staged, and committed as exactly those: each path is
+/// staged in the checkout's index as it stands (one gone from the working
+/// files leaves it by name, since git adds only what stands, and one under a
+/// folder that is now a link lies beyond it), and the commit is made from an
+/// index of its own, built from the branch's head with those paths' entries
+/// taken over from the checkout's. git never reads the paths from disk again
+/// at the commit, so a rename in case only, or a link swapped for a folder or
+/// the other way, is committed as staged; what else the checkout's index holds
+/// stays staged, and out of the commit.
+fn lane_stage_and_commit(
+    seat: &LaneSeat,
+    changes: &[LaneChange],
+    message: &str,
+) -> Result<(), WorkcellError> {
+    let (gone, standing): (Vec<&LaneChange>, Vec<&LaneChange>) =
+        changes.iter().partition(|change| change.gone());
+    if !gone.is_empty() {
+        git_bytes(
+            &seat.checkout,
+            &["update-index", "-z", "--force-remove", "--stdin"],
+            Some(&nul_ended(gone.iter().map(|change| change.indexed()))),
+        )?;
+    }
+    if !standing.is_empty() {
+        let paths = standing
+            .iter()
+            .map(|change| change.path.as_slice())
+            .collect::<Vec<_>>();
+        lane_git_paths(seat, &["add", "--all"], &paths)?;
+    }
+    let lane = changes
         .iter()
-        .flat_map(|path| path.iter().copied().chain([0]))
+        .map(LaneChange::indexed)
+        .collect::<BTreeSet<_>>();
+    let index = LaneIndex(PathBuf::from(lane_git(
+        seat,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            &format!("workcell-lane-commit-{}.index", std::process::id()),
+        ],
+    )?));
+    let own = Some(index.0.as_path());
+    git_bytes_in(&seat.checkout, &["read-tree", "HEAD"], None, own)?;
+    git_bytes_in(
+        &seat.checkout,
+        &["update-index", "-z", "--force-remove", "--stdin"],
+        Some(&nul_ended(lane.iter().copied())),
+        own,
+    )?;
+    // The checkout's entries for the lane's paths (`<mode> <object> <stage>\t<path>`), as --index-info reads them.
+    let staged = git_bytes(&seat.checkout, &["ls-files", "--stage", "-z"], None)?;
+    let entries = staged
+        .split(|byte| *byte == 0)
+        .filter(|entry| {
+            entry
+                .iter()
+                .position(|byte| *byte == b'\t')
+                .is_some_and(|tab| lane.contains(&entry[tab + 1..]))
+        })
+        .flat_map(|entry| entry.iter().copied().chain([0]))
         .collect::<Vec<u8>>();
-    git_bytes(&seat.checkout, &words, Some(&named)).map(|_| ())
+    if !entries.is_empty() {
+        git_bytes_in(
+            &seat.checkout,
+            &["update-index", "-z", "--index-info"],
+            Some(&entries),
+            own,
+        )?;
+    }
+    git_bytes_in(
+        &seat.checkout,
+        &["commit", "--quiet", "--message", message],
+        None,
+        own,
+    )
+    .map(|_| ())
 }
 
 /// Commit: the lane's work, as one commit on its branch, under the identity
@@ -474,12 +601,11 @@ fn lane_git_paths(seat: &LaneSeat, args: &[&str], paths: &[&[u8]]) -> Result<(),
 /// untracked file git does not ignore, but the seat instrument's link; where
 /// the lane's claim names regions (a shared checkout holds other lanes' and
 /// workers' work beside the lane's), only the changes inside them, and the
-/// answer names what it left outside. The commit names each file it takes:
-/// untracked ones are added first, since git names a file only once it knows
-/// it, and the commit takes exactly those paths as they stand in the working
-/// files, leaving whatever else the index holds as it was. Refused, with
-/// nothing staged, in the middle of a merge, cherry-pick, revert or rebase,
-/// with a path in conflict, and with a region that names no path.
+/// answer names what it left outside. The commit takes exactly those paths
+/// as they stand in the working files (lane_stage_and_commit), leaving
+/// whatever else the index holds as it was. Refused, with nothing staged, in
+/// the middle of a merge, cherry-pick, revert or rebase, with a path in
+/// conflict, and with a region that cannot be read as a path.
 fn lane_commit(seat: &LaneSeat, message: &str) -> Result<Value, WorkcellError> {
     if message.trim().is_empty() {
         return Err(landing_refused(
@@ -517,25 +643,11 @@ fn lane_commit(seat: &LaneSeat, message: &str) -> Result<Value, WorkcellError> {
             seat.branch
         )));
     }
-    let untracked = changes
-        .iter()
-        .filter(|change| change.untracked())
-        .map(|change| change.path.as_slice())
-        .collect::<Vec<_>>();
-    if !untracked.is_empty() {
-        lane_git_paths(seat, &["add"], &untracked)?;
-    }
+    lane_stage_and_commit(seat, &changes, message)?;
     let paths = changes
         .iter()
         .map(|change| change.path.as_slice())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    lane_git_paths(
-        seat,
-        &["commit", "--quiet", "--only", "--message", message],
-        &paths,
-    )?;
+        .collect::<BTreeSet<_>>();
     let head = lane_git(seat, &["rev-parse", "HEAD"])?;
     let mut answer = landing(seat, "commit", &head);
     answer["files"] = paths.len().into();
