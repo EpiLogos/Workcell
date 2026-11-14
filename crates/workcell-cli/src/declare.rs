@@ -122,6 +122,12 @@ fn command_declare(_global: &GlobalArgs, args: &[String]) -> Result<(), Workcell
             world.display()
         )));
     }
+    // The World by its real path, never by a link to it (on macOS /tmp is /private/tmp): git records a seat's primary by its
+    // real path in the seat's `.git`, and whoever finds the seat's project reads that path under the World's Work (AIKit's
+    // project rule), so the register, the seat and the checkout name the World as git does.
+    let world = world.canonicalize().map_err(|error| {
+        WorkcellError::OperationFailed(format!("{}: {error}", world.display()))
+    })?;
     if project.is_empty()
         || project.contains('/')
         || project.starts_with('.')
@@ -162,6 +168,11 @@ fn command_declare(_global: &GlobalArgs, args: &[String]) -> Result<(), Workcell
     }
     fs::create_dir_all(&env)
         .map_err(|error| WorkcellError::OperationFailed(format!("{}: {error}", env.display())))?;
+    // The checkout by its real path too, where the World's `worktrees` is itself a link.
+    let env = env
+        .canonicalize()
+        .map_err(|error| WorkcellError::OperationFailed(format!("{}: {error}", env.display())))?;
+    let checkout = env.join(project);
     // The seat is a linked checkout of the primary, as every seat of the machine is: it shares the primary's refs, and its
     // `.git` names the worktree the primary keeps for it, so whoever reads a seat as a worktree of `Work/<name>` (AIKit's
     // project rule) finds its project. It stands detached at the main it can see, where its lanes are cut: the primary's
@@ -363,6 +374,32 @@ mod declare_tests {
             declare_git(&primary, &["rev-parse", "origin/main"]).unwrap()
         );
         assert!(!checkout.join("NEXT.md").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_world_named_through_a_link_is_declared_by_its_real_path() {
+        // A World reached through a link (on macOS /tmp is /private/tmp, and a mktemp World stands under /var, which is
+        // /private/var): git records the seat's primary by its real path, so the register and the checkout name the World by
+        // that path too, and the seat's primary stands under the register's World's Work, where AIKit's project rule finds it.
+        let root = Scratch::new("linked");
+        let real = world_with_project(root.path());
+        let link = root.path().join("linked-world");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        declare(&link, "notes").unwrap();
+        let register: Value =
+            serde_json::from_slice(&fs::read(real.join(WORKCELL_REGISTER_REL)).unwrap()).unwrap();
+        let env = PathBuf::from(register["workcells"][0]["path"].as_str().unwrap());
+        assert_eq!(env, real.join("worktrees/env-1"), "the register names the World by its real path");
+        let seat = fs::read_to_string(env.join("notes/.git")).unwrap();
+        let gitdir = PathBuf::from(seat.trim().strip_prefix("gitdir: ").unwrap());
+        let world = env.parent().and_then(Path::parent).unwrap();
+        assert!(
+            gitdir.starts_with(world.join("Work/notes/.git")),
+            "the seat's primary ({}) stands under the register's World's Work ({})",
+            gitdir.display(),
+            world.join("Work").display()
+        );
     }
 
     #[test]
