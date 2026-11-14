@@ -3,15 +3,17 @@
 //
 // `workcell declare --world <World> --project <name>` gives a World that has
 // none its first workcell: the persistent track `env-1` under the World's
-// `worktrees/`, holding one checkout of the project cloned from the project's
-// primary (`Work/<name>`, standing on `main`), and the World's workcell
-// register (`Control/machines/workcells.register.json`,
-// central.workcell-register/v1) naming it, its seat free and detached at
-// `origin/main`. From then on the seats are the seat instrument's: it joins and
-// releases them (`workcell.seat.join`, `workcell.seat.release`) in the World
-// its CENTRAL_ROOT names. A World that already declares its workcells is
-// refused, its register untouched: a declaration is made once, and changed by
-// the instrument that keeps it.
+// `worktrees/`, holding one linked checkout (`git worktree`) of the project's
+// primary (`Work/<name>`, standing on `main`), the shape every seat of the
+// machine has, and the World's workcell register
+// (`Control/machines/workcells.register.json`, central.workcell-register/v1)
+// naming it, its seat free and detached at the main it can see: the primary's
+// `origin/main` where the primary knows one, else the primary's own `main`.
+// From then on the seats are the seat instrument's: it joins and releases them
+// (`workcell.seat.join`, `workcell.seat.release`) in the World its
+// CENTRAL_ROOT names, cutting a lane from that main. A World that already
+// declares its workcells is refused, its register untouched: a declaration is
+// made once, and changed by the instrument that keeps it.
 
 const WORKCELL_REGISTER_SCHEMA: &str = "central.workcell-register/v1";
 const WORKCELL_DECLARATION: &str = "workcell.declaration/v1";
@@ -53,8 +55,9 @@ fn declare_git(cwd: &Path, args: &[&str]) -> Result<String, WorkcellError> {
 }
 
 /// The register a World's first workcell writes: the shape the seat instrument
-/// reads (`find_workcell`, `find_seat`, `product_dir`, the admission floors).
-fn first_register(env: &Path, project: &str, head: &str, now: u64) -> Value {
+/// reads (`find_workcell`, `find_seat`, `product_dir`, the admission floors),
+/// its seat's lanes cut from `main_ref`.
+fn first_register(env: &Path, project: &str, head: &str, main_ref: &str, now: u64) -> Value {
     json!({
         "schema": WORKCELL_REGISTER_SCHEMA,
         "scope_ref": "control:root",
@@ -69,9 +72,9 @@ fn first_register(env: &Path, project: &str, head: &str, now: u64) -> Value {
             "name": FIRST_TRACK,
             "path": env,
             "domains": [],
-            "notes": [format!("Declared with the World by `workcell declare`: one checkout of {project}, cloned from its primary.")],
+            "notes": [format!("Declared with the World by `workcell declare`: one linked checkout of {project}'s primary.")],
             "products": {
-                project: {"path": project, "main_ref": "origin/main", "primary": format!("Work/{project}")}
+                project: {"path": project, "main_ref": main_ref, "primary": format!("Work/{project}")}
             },
             "seats": [{
                 "product": project,
@@ -81,7 +84,7 @@ fn first_register(env: &Path, project: &str, head: &str, now: u64) -> Value {
                 "claimed_by": null,
                 "now_ref": null,
                 "claimed_at_unix_seconds": null,
-                "note": "declared free, detached at origin/main"
+                "note": format!("declared free, detached at {main_ref}")
             }],
             "admission": {"min_free_gb": SOFT_FLOOR_GB, "hard_free_gb": HARD_FLOOR_GB}
         }],
@@ -145,7 +148,7 @@ fn command_declare(_global: &GlobalArgs, args: &[String]) -> Result<(), Workcell
     let branch = declare_git(&primary, &["rev-parse", "--abbrev-ref", "HEAD"])?;
     if branch != "main" {
         return Err(declare_refused(format!(
-            "{}'s primary stands on {branch}, not main: a seat is cut from origin/main",
+            "{}'s primary stands on {branch}, not main: a seat is cut from its main",
             primary.display()
         )));
     }
@@ -159,16 +162,31 @@ fn command_declare(_global: &GlobalArgs, args: &[String]) -> Result<(), Workcell
     }
     fs::create_dir_all(&env)
         .map_err(|error| WorkcellError::OperationFailed(format!("{}: {error}", env.display())))?;
-    let primary_text = primary.to_string_lossy().into_owned();
+    // The seat is a linked checkout of the primary, as every seat of the machine is: it shares the primary's refs, and its
+    // `.git` names the worktree the primary keeps for it, so whoever reads a seat as a worktree of `Work/<name>` (AIKit's
+    // project rule) finds its project. It stands detached at the main it can see, where its lanes are cut: the primary's
+    // origin/main where the primary knows one, else the primary's own main (which the primary stands on, so detached).
+    let main_ref = if declare_git(
+        &primary,
+        &["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"],
+    )
+    .is_ok()
+    {
+        "origin/main"
+    } else {
+        "main"
+    };
     let checkout_text = checkout.to_string_lossy().into_owned();
-    declare_git(&env, &["clone", "--quiet", &primary_text, &checkout_text])?;
-    declare_git(&checkout, &["switch", "--quiet", "--detach", "origin/main"])?;
+    declare_git(
+        &primary,
+        &["worktree", "add", "--quiet", "--detach", &checkout_text, main_ref],
+    )?;
     let head = declare_git(&checkout, &["rev-parse", "--short", "HEAD"])?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or_default();
-    let document = first_register(&env, project, &head, now);
+    let document = first_register(&env, project, &head, main_ref, now);
     let machines = register.parent().unwrap_or(&world).to_path_buf();
     fs::create_dir_all(&machines).map_err(|error| {
         WorkcellError::OperationFailed(format!("{}: {error}", machines.display()))
@@ -202,6 +220,7 @@ fn command_declare(_global: &GlobalArgs, args: &[String]) -> Result<(), Workcell
         "product": project,
         "checkout": checkout,
         "head": head,
+        "main_ref": main_ref,
         "seat": "free",
         "standing": "declared; its seat is joined and released by the seat instrument (workcell.seat.join, workcell.seat.release)",
     }));
@@ -266,6 +285,27 @@ mod declare_tests {
         )
     }
 
+    /// The seat is a linked checkout of the primary, the shape every seat of the machine has: its `.git` is a file naming
+    /// the worktree the primary keeps for it (`Work/<name>/.git/worktrees/`), and its HEAD stands detached.
+    fn assert_linked_to_its_primary(checkout: &Path, primary: &Path) {
+        let link = fs::read_to_string(checkout.join(".git")).unwrap_or_else(|error| {
+            panic!("{}/.git is no file naming the primary's worktree: {error}", checkout.display())
+        });
+        let gitdir = link.trim().strip_prefix("gitdir: ").unwrap_or_default();
+        assert!(
+            Path::new(gitdir).starts_with(primary.join(".git/worktrees")),
+            "{} links to {gitdir}, not into the primary's worktrees",
+            checkout.display()
+        );
+        let listed = declare_git(primary, &["worktree", "list", "--porcelain"]).unwrap();
+        assert!(
+            listed.lines().any(|line| line == format!("worktree {}", checkout.display())),
+            "the primary keeps no worktree at {}: {listed}",
+            checkout.display()
+        );
+        assert!(declare_git(checkout, &["symbolic-ref", "--quiet", "HEAD"]).is_err());
+    }
+
     #[test]
     fn a_world_declares_its_first_workcell_once_with_its_seat_free_at_main() {
         let root = Scratch::new("once");
@@ -277,17 +317,52 @@ mod declare_tests {
         let cell = &register["workcells"][0];
         assert_eq!(cell["name"], "env-1");
         assert_eq!(cell["seats"][0]["state"], "free");
-        assert_eq!(cell["products"]["notes"]["main_ref"], "origin/main");
+        // The primary has no origin: its seat sees the primary's own main, and is cut from it.
+        assert_eq!(cell["products"]["notes"]["main_ref"], "main");
         let checkout = world.join("worktrees/env-1/notes");
+        let primary = world.join("Work/notes");
         assert!(checkout.join("README.md").is_file());
+        assert_linked_to_its_primary(&checkout, &primary);
         assert_eq!(
             declare_git(&checkout, &["rev-parse", "HEAD"]).unwrap(),
-            declare_git(&world.join("Work/notes"), &["rev-parse", "HEAD"]).unwrap()
+            declare_git(&primary, &["rev-parse", "main"]).unwrap()
         );
         let before = fs::read(world.join(WORKCELL_REGISTER_REL)).unwrap();
         let again = declare(&world, "notes").unwrap_err().to_string();
         assert!(again.contains("declares this World's workcells already"), "{again}");
         assert_eq!(fs::read(world.join(WORKCELL_REGISTER_REL)).unwrap(), before);
+    }
+
+    #[test]
+    fn a_primary_with_an_origin_declares_its_seat_at_origin_main() {
+        let root = Scratch::new("origin");
+        let world = world_with_project(root.path());
+        let primary = world.join("Work/notes");
+        let origin = root.path().join("notes.git");
+        git_in(
+            root.path(),
+            &["init", "--quiet", "--bare", "--initial-branch", "main", &origin.to_string_lossy()],
+        );
+        git_in(&primary, &["remote", "add", "origin", &origin.to_string_lossy()]);
+        git_in(&primary, &["push", "--quiet", "origin", "main"]);
+        // The primary's main moves on past what its origin holds: the seat is cut from origin/main, not from it.
+        fs::write(primary.join("NEXT.md"), "next\n").unwrap();
+        git_in(&primary, &["add", "NEXT.md"]);
+        git_in(
+            &primary,
+            &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "next"],
+        );
+        declare(&world, "notes").unwrap();
+        let register: Value =
+            serde_json::from_slice(&fs::read(world.join(WORKCELL_REGISTER_REL)).unwrap()).unwrap();
+        assert_eq!(register["workcells"][0]["products"]["notes"]["main_ref"], "origin/main");
+        let checkout = world.join("worktrees/env-1/notes");
+        assert_linked_to_its_primary(&checkout, &primary);
+        assert_eq!(
+            declare_git(&checkout, &["rev-parse", "HEAD"]).unwrap(),
+            declare_git(&primary, &["rev-parse", "origin/main"]).unwrap()
+        );
+        assert!(!checkout.join("NEXT.md").exists());
     }
 
     #[test]
