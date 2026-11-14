@@ -68,6 +68,16 @@ const FIELD: &[FieldAction] = &[
         mutation_class: "locally-mutating",
     },
     FieldAction {
+        id: "workcell.declare",
+        title: "Declare a World's first workcell: a checkout of its project and a free seat",
+        route: &["declare"],
+        flags: &[
+            ("world", "--world", "string", true, "the World's folder, absolute"),
+            ("project", "--project", "string", true, "the project: one folder of the World's Work, standing on main"),
+        ],
+        mutation_class: "locally-mutating",
+    },
+    FieldAction {
         id: "workcell.instances.list",
         title: "List the harness instances this workcell knows",
         route: &["instances", "list"],
