@@ -341,3 +341,31 @@ fn a_malformed_journal_is_an_honest_construction_failure_not_silence() {
     assert!(error.to_string().contains("workcell.git-worktrees/v1"));
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn constructing_the_provider_over_a_root_with_no_journal_writes_none() {
+    // Every Workcell command composes this provider, a reading among them: a root that holds no journal (a World that
+    // was removed, or one where no worktree was ever made) is left as it was, with no folder made for it.
+    let root = temp_path("git-journal-absent");
+    let provider =
+        GitWorktreeWorkspaceProvider::new(ProviderRef::new("provider:git-absent").unwrap(), &root)
+            .unwrap();
+    drop(provider);
+    assert!(
+        !root.exists(),
+        "a provider that made no worktree wrote {}",
+        root.display()
+    );
+
+    // A journal whose entries all stand is read and left byte for byte.
+    fs::create_dir_all(&root).unwrap();
+    let journal = root.join("git-worktrees.json");
+    let kept = "{\"schema\": \"workcell.git-worktrees/v1\", \"worktrees\": []}";
+    fs::write(&journal, kept).unwrap();
+    drop(
+        GitWorktreeWorkspaceProvider::new(ProviderRef::new("provider:git-absent").unwrap(), &root)
+            .unwrap(),
+    );
+    assert_eq!(fs::read_to_string(&journal).unwrap(), kept);
+    let _ = fs::remove_dir_all(&root);
+}

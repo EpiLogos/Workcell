@@ -218,10 +218,17 @@ impl GitWorktreeWorkspaceProvider {
     /// path has disappeared are pruned here and again on observation. A
     /// malformed journal is an honest construction failure, not a
     /// silently-forgotten set of worktrees.
+    ///
+    /// Construction writes the journal only when it pruned an entry: every
+    /// Workcell command composes this provider, a reading among them, and a
+    /// reading leaves the state root as it found it. A root with no journal
+    /// keeps none until a worktree is made (O-I #1006: a status read after a
+    /// World was removed wrote `workspaces/git-worktrees.json` back into it).
     pub fn new(provider_ref: ProviderRef, root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         let journal_path = root.join(GIT_WORKTREES_JOURNAL_FILE);
         let mut records = load_journal(&journal_path)?;
+        let loaded = records.len();
         // Prune entries whose material path is gone: the worktree is no longer
         // material, so the journal must not claim it.
         records.retain(|material_ref, record| {
@@ -234,7 +241,9 @@ impl GitWorktreeWorkspaceProvider {
             }
             present
         });
-        write_journal(&journal_path, &records)?;
+        if records.len() != loaded {
+            write_journal(&journal_path, &records)?;
+        }
         Ok(Self {
             provider_ref,
             root,
