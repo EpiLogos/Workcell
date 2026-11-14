@@ -1044,3 +1044,292 @@ fn a_rename_in_case_only_and_a_link_swapped_for_a_folder_are_committed_as_staged
     assert_eq!(recorded(&world, "--no-renames"), ["D\talink", "A\talink/f"]);
     assert!(world.standing().is_empty(), "{:?}", world.standing());
 }
+
+#[test]
+fn a_tracked_file_inside_a_folder_git_ignores_is_committed() {
+    // ai-kit tracks .aikit/profile.toml under its `/.aikit/` rule, and O-I tracks JSON under folders its `target` rule covers.
+    // git add exits 1 on a path an ignore rule covers as a folder, tracked or not, though it stages it, so every commit of
+    // such an edit was refused (F1). The lane's paths are staged whatever an ignore rule says: git status lists no ignored new
+    // file, and a new file the rules ignore stays out.
+    let world = World::new("ignored-folder", false);
+    world.hold_lane("lane-1");
+    write(&world, ".gitignore", "/.aikit/\ntarget\n");
+    write(&world, ".aikit/profile.toml", "name = \"notes\"\n");
+    write(&world, "ql/target/k8/basis.json", "{}\n");
+    git(
+        &world.checkout,
+        &world.home,
+        &[
+            "add",
+            "--force",
+            ".gitignore",
+            ".aikit/profile.toml",
+            "ql/target/k8/basis.json",
+        ],
+    );
+    git(
+        &world.checkout,
+        &world.home,
+        &[
+            "commit",
+            "--quiet",
+            "-m",
+            "Files tracked under ignored folders",
+        ],
+    );
+    write(&world, ".aikit/profile.toml", "name = \"notes, edited\"\n");
+    write(&world, "ql/target/k8/basis.json", "{\"edited\": true}\n");
+    write(&world, ".aikit/cache.toml", "a new file the rules ignore\n");
+    let committed = answer(world.act(
+        "workcell.lane.commit",
+        world.with("message", "Edits under ignored folders"),
+    ));
+    assert_eq!(committed["files"].as_u64(), Some(2), "{committed}");
+    assert_eq!(
+        recorded(&world, "--no-renames"),
+        ["M\t.aikit/profile.toml", "M\tql/target/k8/basis.json"]
+    );
+    assert!(world.standing().is_empty(), "{:?}", world.standing());
+}
+
+#[test]
+fn a_new_file_in_a_folder_the_index_holds_in_another_case_is_committed_as_git_staged_it() {
+    // On a checkout that ignores case (every macOS seat), a folder can stand on disk in another case than the index holds:
+    // `Docs/` on disk, `docs/y.md` in the index. git status names a new file in it in the disk's case, and git add stages it
+    // in the index's. The commit took only the entries named exactly as the lane's paths, so it left the file out and still
+    // counted it (F2). It takes the entry git staged for each path.
+    let world = World::new("folder-case", false);
+    world.hold_lane("lane-1");
+    write(&world, "docs/y.md", "a page\n");
+    git(&world.checkout, &world.home, &["add", "docs/y.md"]);
+    git(
+        &world.checkout,
+        &world.home,
+        &["commit", "--quiet", "-m", "A page"],
+    );
+    fs::write(world.checkout.join("CASE-PROBE"), "").unwrap();
+    let folds = world.checkout.join("case-probe").exists();
+    fs::remove_file(world.checkout.join("CASE-PROBE")).unwrap();
+    if folds {
+        // The folder renamed on disk in case only, as Finder, or a switch across a rename of it, leaves it.
+        fs::rename(
+            world.checkout.join("docs"),
+            world.checkout.join("docs-moving"),
+        )
+        .unwrap();
+        fs::rename(
+            world.checkout.join("docs-moving"),
+            world.checkout.join("Docs"),
+        )
+        .unwrap();
+    } else {
+        // A filesystem that keeps case: git reads the checkout as a macOS seat's, the folder in the disk's case beside.
+        git(
+            &world.checkout,
+            &world.home,
+            &["config", "core.ignorecase", "true"],
+        );
+    }
+    write(&world, "Docs/x.md", "a new page\n");
+    write(&world, "README.md", "notes, with a new page\n");
+    assert_eq!(world.standing(), [" M README.md", "?? Docs/x.md"]);
+    let committed = answer(world.act("workcell.lane.commit", world.with("message", "A new page")));
+    assert_eq!(committed["files"].as_u64(), Some(2), "{committed}");
+    assert_eq!(
+        recorded(&world, "--no-renames"),
+        ["M\tREADME.md", "A\tdocs/x.md"]
+    );
+    assert_eq!(
+        git(&world.checkout, &world.home, &["show", "HEAD:docs/x.md"]),
+        "a new page"
+    );
+    assert!(
+        git_output(
+            &world.checkout,
+            &world.home,
+            &["diff", "--cached", "--quiet"]
+        )
+        .status
+        .success(),
+        "nothing the lane staged is left out of its commit"
+    );
+}
+
+/// The git the tests run, by its full path: a stand-in `git` first on PATH hands each call on to it.
+fn real_git() -> PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|folder| folder.join("git"))
+        .find(|git| git.is_file())
+        .expect("git on PATH")
+}
+
+/// A stand-in `git`, in a folder of its own to put first on PATH: once, as the lane's `git commit` begins (on its own index),
+/// it runs `act` in the checkout, as another process sharing the seat (the checkout's index, not the commit's), and then
+/// hands the call on to git. `act` reaches git as `$GIT`. The folder, the mark that `act` ran, and what `act` said.
+fn stand_in_git(world: &World, act: &str) -> (PathBuf, PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = world.scratch.0.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let ran = world.scratch.0.join("stand-in-ran");
+    let said = world.scratch.0.join("stand-in.log");
+    let stand_in = bin.join("git");
+    fs::write(
+        &stand_in,
+        format!(
+            "#!/bin/sh\nGIT='{git}'\nif [ \"$1\" = commit ] && [ -n \"$GIT_INDEX_FILE\" ] && [ ! -e '{ran}' ]; then\n  : > '{ran}'\n  (unset GIT_INDEX_FILE; cd '{checkout}' && {act}) > '{said}' 2>&1\nfi\nexec \"$GIT\" \"$@\"\n",
+            git = real_git().display(),
+            ran = ran.display(),
+            checkout = world.checkout.display(),
+            said = said.display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&stand_in, fs::Permissions::from_mode(0o755)).unwrap();
+    (bin, ran, said)
+}
+
+/// A seat whose lane works in `lane` beside a page every worker shares, `d.md`, committed: the lane's page written.
+fn shared_page(label: &str) -> World {
+    let world = World::new(label, false);
+    world.hold_lane("lane-1");
+    world.zone("agent:landing-test", &["lane"]);
+    write(&world, "d.md", "d0\n");
+    git(&world.checkout, &world.home, &["add", "d.md"]);
+    git(
+        &world.checkout,
+        &world.home,
+        &["commit", "--quiet", "-m", "The shared page"],
+    );
+    write(&world, "lane/a.md", "the lane's page\n");
+    world
+}
+
+#[test]
+fn a_co_workers_commit_is_never_undone_by_the_lanes() {
+    // A shared seat: a co-worker commits its own file while the lane's commit is made. The commit's tree was read from HEAD
+    // before `git commit` read HEAD again as its parent, so a co-worker's commit landing between the two was taken back by
+    // the lane's (F3). A stand-in git lands the co-worker's commit just as the lane's begins.
+    let world = shared_page("co-worker");
+    write(&world, "d.md", "d1, the co-worker's\n");
+    let (bin, ran, said) = stand_in_git(
+        &world,
+        "\"$GIT\" commit --quiet -m \"The co-worker's page\" -- d.md",
+    );
+    let committed = answer(world.act_on_path(
+        "workcell.lane.commit",
+        world.with("message", "The lane's page"),
+        &bin,
+    ));
+    assert!(ran.exists(), "the co-worker's commit was tried");
+    assert_eq!(
+        recorded(&world, "--no-renames"),
+        ["A\tlane/a.md"],
+        "the lane's commit holds the lane's page alone (the co-worker's commit: {})",
+        fs::read_to_string(&said).unwrap_or_default()
+    );
+    let subjects = git(&world.checkout, &world.home, &["log", "--format=%s"]);
+    if subjects
+        .lines()
+        .any(|subject| subject == "The co-worker's page")
+    {
+        assert_eq!(
+            git(&world.checkout, &world.home, &["show", "HEAD:d.md"]),
+            "d1, the co-worker's"
+        );
+    } else {
+        assert_eq!(committed["left_outside"], json!(["d.md"]), "{committed}");
+        assert_eq!(
+            world.standing(),
+            [" M d.md"],
+            "the co-worker's page waits for its own commit"
+        );
+    }
+}
+
+#[test]
+fn a_head_set_by_hand_as_the_lane_commits_is_refused_and_left_where_it_was_set() {
+    // A ref set by hand takes no index, so nothing that holds the index keeps it out of the moment between the head the
+    // lane's commit is cut from and the head git finds as the commit begins. That commit took back what the hand set (F3).
+    // The lane's commit is one on the head it was cut from, or none.
+    let world = shared_page("set-by-hand");
+    write(&world, "d.md", "d1, set by hand\n");
+    git(&world.checkout, &world.home, &["add", "d.md"]);
+    let tree = git(&world.checkout, &world.home, &["write-tree"]);
+    let set = git(
+        &world.checkout,
+        &world.home,
+        &["commit-tree", &tree, "-p", "HEAD", "-m", "Set by hand"],
+    );
+    git(
+        &world.checkout,
+        &world.home,
+        &["reset", "--quiet", "--", "d.md"],
+    );
+    write(&world, "d.md", "d0\n");
+    let (bin, ran, _) = stand_in_git(&world, &format!("\"$GIT\" update-ref HEAD {set}"));
+    let refused = refusal(world.act_on_path(
+        "workcell.lane.commit",
+        world.with("message", "The lane's page"),
+        &bin,
+    ));
+    assert!(ran.exists(), "the hand set the head");
+    assert!(
+        refused.contains("moved") && refused.contains("taken back"),
+        "{refused}"
+    );
+    assert_eq!(
+        git(&world.checkout, &world.home, &["rev-parse", "HEAD"]),
+        set,
+        "the head stands where the hand set it"
+    );
+    assert_eq!(
+        git(&world.checkout, &world.home, &["show", "HEAD:d.md"]),
+        "d1, set by hand"
+    );
+    assert!(
+        world.standing().contains(&"A  lane/a.md".to_owned()),
+        "the lane's page stays staged: {:?}",
+        world.standing()
+    );
+}
+
+#[test]
+fn a_zone_kept_for_a_displaced_lane_is_never_taken_by_a_lane_that_holds_the_whole_seat() {
+    // A lane that joins without --region holds the whole seat, and the seat instrument keeps the zone of the lane it
+    // displaced. Reading the whole seat as the lane's swept the displaced lane's unfinished work and its secret into the new
+    // lane's commit (F4). A zone kept for a displaced lane is never the lane's, whatever the lane holds.
+    let world = World::new("displaced-whole", false);
+    world.hold_lane("lane-2");
+    world.zone("agent:displaced", &["crates/b"]);
+    write(&world, "crates/n/lib.rs", "the new lane's crate\n");
+    write(
+        &world,
+        "crates/b/lib.rs",
+        "the displaced lane's unfinished crate\n",
+    );
+    write(&world, "crates/b/.env.local", "TOKEN=the-displaced-lanes\n");
+    let committed = answer(world.act(
+        "workcell.lane.commit",
+        world.with("message", "The new lane's crate"),
+    ));
+    assert_eq!(committed["regions"], json!([]), "{committed}");
+    assert_eq!(recorded(&world, "--no-renames"), ["A\tcrates/n/lib.rs"]);
+    assert_eq!(
+        committed["left_outside"],
+        json!(["crates/b/.env.local", "crates/b/lib.rs"]),
+        "{committed}"
+    );
+    assert_eq!(
+        world.standing(),
+        ["?? crates/b/.env.local", "?? crates/b/lib.rs"],
+        "the displaced lane's work stays as it was"
+    );
+    let only_theirs = refusal(world.act(
+        "workcell.lane.commit",
+        world.with("message", "The displaced lane's work"),
+    ));
+    assert!(
+        only_theirs.contains("nothing to commit") && only_theirs.contains("crates/b"),
+        "{only_theirs}"
+    );
+}

@@ -412,17 +412,42 @@ fn lane_changes(seat: &LaneSeat) -> Result<Vec<LaneChange>, WorkcellError> {
         .collect())
 }
 
+/// The regions a lane's commit is cut by: the lane's own, and those of the
+/// zones the seat keeps for lanes no longer on it.
+#[derive(Default)]
+struct LaneRegions {
+    /// The regions of the zones of the actors on the lane; none where the
+    /// lane holds the seat whole.
+    held: Vec<String>,
+    /// The regions of the zones of actors no longer on the lane (a
+    /// `--new-lane` claim displaced them, and the instrument keeps their
+    /// zones): never the lane's, whatever the lane holds.
+    displaced: Vec<String>,
+}
+
+impl LaneRegions {
+    /// Whether a change is the lane's: inside its regions (all of the
+    /// checkout, where it holds the seat whole), and inside no zone kept for
+    /// a displaced lane.
+    fn take(&self, path: &[u8]) -> bool {
+        (self.held.is_empty() || self.held.iter().any(|region| in_region(path, region)))
+            && !self.displaced.iter().any(|region| in_region(path, region))
+    }
+}
+
 /// The lane's regions, as the seat instrument records and reads them: the
 /// regions of the zones of the actors on the lane (`zones`, each `{actor,
 /// regions, since_unix_seconds}` as `seat join --region` writes it), with a
 /// trailing `/` dropped and `.` the whole checkout, as its `region_of` reads a
-/// region. A zone of an actor no longer on the lane (one a `--new-lane` claim
-/// displaced, which the instrument keeps) is not the lane's. None: the lane
-/// holds the seat whole, as where an actor on it has no zone, for the
-/// instrument reads no region as `.`. A region that cannot be read as a path
+/// region. None: the lane holds the seat whole, as where an actor on it has no
+/// zone, for the instrument reads no region as `.`. A zone of an actor no
+/// longer on the lane (one a `--new-lane` claim displaced, which the
+/// instrument keeps, with that lane's unfinished work in the shared tree) is
+/// not the lane's, and what lies inside it stays out of the lane's commit even
+/// where the lane holds the seat whole. A region that cannot be read as a path
 /// (free words, several paths in one string) is refused by name, for a commit
 /// is never cut to a guess.
-fn lane_regions(seat: &LaneSeat) -> Result<Vec<String>, WorkcellError> {
+fn lane_regions(seat: &LaneSeat) -> Result<LaneRegions, WorkcellError> {
     let unreadable = || {
         landing_refused(format!(
             "{}'s {} seat records zones that are no list of {{actor, regions}}: {}",
@@ -430,36 +455,62 @@ fn lane_regions(seat: &LaneSeat) -> Result<Vec<String>, WorkcellError> {
         ))
     };
     let zones = match &seat.zones {
-        Value::Null => return Ok(Vec::new()),
+        Value::Null => return Ok(LaneRegions::default()),
         Value::Array(zones) => zones,
         _ => return Err(unreadable()),
     };
-    let mut regions: Vec<String> = Vec::new();
+    // A zone's regions as paths: each written region read as one, or refused naming whose zone it is.
+    let regions_of = |zone: &Value, whose: &str| -> Result<Vec<String>, WorkcellError> {
+        let mut read = Vec::new();
+        for written in zone["regions"].as_array().ok_or_else(unreadable)? {
+            let written = written.as_str().ok_or_else(unreadable)?;
+            let region = match written.trim_end_matches('/') {
+                "" => ".",
+                region => region,
+            };
+            if !lane_reads_as_a_path(seat, region) {
+                return Err(landing_refused(format!(
+                    "the region `{written}` ({whose}) names no path in {}: a commit is cut by the seat's zones, and this region cannot be read as a path. Nothing was staged or committed",
+                    seat.checkout.display()
+                )));
+            }
+            read.push(region.to_owned());
+        }
+        Ok(read)
+    };
+    let add = |regions: &mut Vec<String>, region: String| {
+        if !regions.contains(&region) {
+            regions.push(region);
+        }
+    };
+    let mut regions = LaneRegions::default();
     let mut whole = false;
     for actor in &seat.actors {
         let mut zoned = false;
         for zone in zones.iter().filter(|zone| zone["actor"] == actor.as_str()) {
-            for written in zone["regions"].as_array().ok_or_else(unreadable)? {
-                let written = written.as_str().ok_or_else(unreadable)?;
-                let region = match written.trim_end_matches('/') {
-                    "" => ".",
-                    region => region,
-                };
-                if !lane_reads_as_a_path(seat, region) {
-                    return Err(landing_refused(format!(
-                        "the lane's region `{written}` ({actor}'s zone) names no path in {}: a commit takes the changes inside the lane's regions, and this region cannot be read as a path. Nothing was staged or committed",
-                        seat.checkout.display()
-                    )));
-                }
+            for region in regions_of(zone, &format!("{actor}'s zone, on the lane"))? {
                 zoned = true;
-                if !regions.iter().any(|known| known == region) {
-                    regions.push(region.to_owned());
-                }
+                add(&mut regions.held, region);
             }
         }
         whole |= !zoned;
     }
-    Ok(if whole { Vec::new() } else { regions })
+    for zone in zones
+        .iter()
+        .filter(|zone| !seat.actors.iter().any(|actor| zone["actor"] == actor.as_str()))
+    {
+        let whose = match zone["actor"].as_str() {
+            Some(actor) => format!("the zone kept for {actor}, no longer on the lane"),
+            None => "a zone kept for an actor not on the lane".to_owned(),
+        };
+        for region in regions_of(zone, &whose)? {
+            add(&mut regions.displaced, region);
+        }
+    }
+    if whole {
+        regions.held.clear();
+    }
+    Ok(regions)
 }
 
 /// Whether a region can be read as a path in the checkout: `.` (the whole of
@@ -494,17 +545,14 @@ fn lane_reads_as_a_path(seat: &LaneSeat, region: &str) -> bool {
         .is_ok()
 }
 
-/// Whether a path lies inside the lane's regions, as the seat instrument's
-/// `region_of` reads it: a region holds itself and what lies under it, `.`
-/// holds everything, and a lane with no region holds the whole checkout.
-fn in_lane_regions(path: &[u8], regions: &[String]) -> bool {
-    regions.is_empty()
-        || regions.iter().any(|region| {
-            region == "."
-                || path
-                    .strip_prefix(region.as_bytes())
-                    .is_some_and(|rest| rest.is_empty() || rest[0] == b'/')
-        })
+/// Whether a path lies inside a region, as the seat instrument's `region_of`
+/// reads it: a region holds itself and what lies under it, and `.` holds
+/// everything.
+fn in_region(path: &[u8], region: &str) -> bool {
+    region == "."
+        || path
+            .strip_prefix(region.as_bytes())
+            .is_some_and(|rest| rest.is_empty() || rest[0] == b'/')
 }
 
 /// git in a seat's checkout on exactly `paths`, each as it is written (no
@@ -516,20 +564,65 @@ fn lane_git_paths(seat: &LaneSeat, args: &[&str], paths: &[&[u8]]) -> Result<(),
     git_bytes(&seat.checkout, &words, Some(&nul_ended(paths.iter().copied()))).map(|_| ())
 }
 
+/// The checkout's index held as git holds it to write it (its `index.lock`),
+/// from before the lane's commit reads the branch's head until the commit
+/// stands, and released however the commit ends. git's own commits in the
+/// checkout hold that lock from before they read the head until theirs is
+/// recorded, so none lands between the head the lane's commit is cut from and
+/// the commit, to be taken back by it.
+struct HeldIndex(PathBuf);
+
+impl HeldIndex {
+    fn hold(seat: &LaneSeat) -> Result<Self, WorkcellError> {
+        let index = lane_git(
+            seat,
+            &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+        )?;
+        let lock = PathBuf::from(format!("{index}.lock"));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock)
+        {
+            Ok(_) => Ok(HeldIndex(lock)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(landing_refused(format!(
+                    "another git process is writing {}'s index ({} stands): the lane's paths are staged, and its commit is made once that process is done. Nothing was committed",
+                    seat.checkout.display(),
+                    lock.display()
+                )))
+            }
+            Err(error) => Err(WorkcellError::OperationFailed(format!(
+                "{} could not be held: {error}",
+                lock.display()
+            ))),
+        }
+    }
+}
+
+impl Drop for HeldIndex {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
 /// The lane's changes staged, and committed as exactly those: each path is
 /// staged in the checkout's index as it stands (one gone from the working
 /// files leaves it by name, since git adds only what stands, and one under a
 /// folder that is now a link lies beyond it), and the commit is made from an
-/// index of its own, built from the branch's head with those paths' entries
-/// taken over from the checkout's. git never reads the paths from disk again
-/// at the commit, so a rename in case only, or a link swapped for a folder or
-/// the other way, is committed as staged; what else the checkout's index holds
-/// stays staged, and out of the commit.
+/// index of its own, built from the branch's head with the entries git staged
+/// for those paths taken over from the checkout's. git never reads the paths
+/// from disk again at the commit, so a rename in case only, or a link swapped
+/// for a folder or the other way, is committed as staged; what else the
+/// checkout's index holds stays staged, and out of the commit. The head is
+/// read once, with the checkout's index held (HeldIndex), and the commit is
+/// one on that head or none: a head moved by what takes no index (a ref set by
+/// hand) is refused, and the commit made on it taken back. The commit made.
 fn lane_stage_and_commit(
     seat: &LaneSeat,
     changes: &[LaneChange],
     message: &str,
-) -> Result<(), WorkcellError> {
+) -> Result<String, WorkcellError> {
     let (gone, standing): (Vec<&LaneChange>, Vec<&LaneChange>) =
         changes.iter().partition(|change| change.gone());
     if !gone.is_empty() {
@@ -544,12 +637,31 @@ fn lane_stage_and_commit(
             .iter()
             .map(|change| change.path.as_slice())
             .collect::<Vec<_>>();
-        lane_git_paths(seat, &["add", "--all"], &paths)?;
+        // `--force`: git add exits 1 on a path an ignore rule covers as a folder, tracked or not, though it stages it (a file
+        // ai-kit tracks under its `/.aikit/` rule, JSON O-I tracks under a folder its `target` rule covers). git status lists no
+        // new file the rules ignore, so none is among the lane's paths.
+        lane_git_paths(seat, &["add", "--all", "--force"], &paths)?;
     }
+    // Where git reads the checkout as ignoring case (every macOS seat), it stages a new file in a folder the index holds in
+    // another case under the index's case (`?? Docs/x.md` staged as `docs/x.md`): a path and its entry are matched as git
+    // matches them there.
+    let folds = lane_git(
+        seat,
+        &["config", "--type=bool", "--default=false", "core.ignorecase"],
+    )? == "true";
+    let key = |path: &[u8]| {
+        if folds {
+            path.to_ascii_lowercase()
+        } else {
+            path.to_vec()
+        }
+    };
     let lane = changes
         .iter()
-        .map(LaneChange::indexed)
+        .map(|change| key(change.indexed()))
         .collect::<BTreeSet<_>>();
+    let held = HeldIndex::hold(seat)?;
+    let head = lane_git(seat, &["rev-parse", "--verify", "HEAD^{commit}"])?;
     let index = LaneIndex(PathBuf::from(lane_git(
         seat,
         &[
@@ -560,25 +672,44 @@ fn lane_stage_and_commit(
         ],
     )?));
     let own = Some(index.0.as_path());
-    git_bytes_in(&seat.checkout, &["read-tree", "HEAD"], None, own)?;
+    git_bytes_in(&seat.checkout, &["read-tree", &head], None, own)?;
+    // The checkout's entries for the lane's paths (`<mode> <object> <stage>\t<path>`), as --index-info reads them.
+    let staged = git_bytes(&seat.checkout, &["ls-files", "--stage", "-z"], None)?;
+    let mut entries = Vec::new();
+    let mut named = BTreeSet::new();
+    let mut leaving = changes
+        .iter()
+        .map(|change| change.indexed().to_vec())
+        .collect::<BTreeSet<_>>();
+    for entry in staged.split(|byte| *byte == 0) {
+        let Some(tab) = entry.iter().position(|byte| *byte == b'\t') else {
+            continue;
+        };
+        let name = &entry[tab + 1..];
+        if lane.contains(&key(name)) {
+            named.insert(key(name));
+            leaving.insert(name.to_vec());
+            entries.extend(entry.iter().copied().chain([0]));
+        }
+    }
+    let unstaged = standing
+        .iter()
+        .filter(|change| !named.contains(&key(change.indexed())))
+        .map(|change| change.shown())
+        .collect::<Vec<_>>();
+    if !unstaged.is_empty() {
+        return Err(landing_refused(format!(
+            "git staged no entry for {} in {}'s index, so the commit would leave them out: nothing was committed",
+            listed(&unstaged),
+            seat.checkout.display()
+        )));
+    }
     git_bytes_in(
         &seat.checkout,
         &["update-index", "-z", "--force-remove", "--stdin"],
-        Some(&nul_ended(lane.iter().copied())),
+        Some(&nul_ended(leaving.iter().map(Vec::as_slice))),
         own,
     )?;
-    // The checkout's entries for the lane's paths (`<mode> <object> <stage>\t<path>`), as --index-info reads them.
-    let staged = git_bytes(&seat.checkout, &["ls-files", "--stage", "-z"], None)?;
-    let entries = staged
-        .split(|byte| *byte == 0)
-        .filter(|entry| {
-            entry
-                .iter()
-                .position(|byte| *byte == b'\t')
-                .is_some_and(|tab| lane.contains(&entry[tab + 1..]))
-        })
-        .flat_map(|entry| entry.iter().copied().chain([0]))
-        .collect::<Vec<u8>>();
     if !entries.is_empty() {
         git_bytes_in(
             &seat.checkout,
@@ -587,13 +718,56 @@ fn lane_stage_and_commit(
             own,
         )?;
     }
+    let tree = String::from_utf8_lossy(&git_bytes_in(
+        &seat.checkout,
+        &["write-tree"],
+        None,
+        own,
+    )?)
+    .trim()
+    .to_owned();
     git_bytes_in(
         &seat.checkout,
         &["commit", "--quiet", "--message", message],
         None,
         own,
-    )
-    .map(|_| ())
+    )?;
+    let made = lane_git(seat, &["rev-parse", "HEAD"])?;
+    let read = lane_git(seat, &["rev-parse", &format!("{made}^{{tree}}"), &format!("{made}^")])?;
+    let (made_tree, parent) = read.split_once('\n').unwrap_or((read.as_str(), ""));
+    if made_tree != tree {
+        return Err(landing_refused(format!(
+            "{}'s head moved while the lane's commit was made, by what takes no index: it stands at {made}, which is not the lane's commit. Look at the branch before committing again",
+            seat.checkout.display()
+        )));
+    }
+    if parent != head {
+        // The commit's tree was read from `head`, its parent is the head git found when it began: it would take back what moved it.
+        let taken_back = lane_git(
+            seat,
+            &[
+                "update-ref",
+                "-m",
+                "workcell: a lane's commit made on a head moved by hand, taken back",
+                "HEAD",
+                parent,
+                &made,
+            ],
+        );
+        drop(held);
+        return Err(landing_refused(match taken_back {
+            Ok(_) => format!(
+                "{}'s head moved from {head} to {parent} while the lane's commit was made, by what takes no index (a ref set by hand): the commit would take back what moved it, so it is taken back and the head stands at {parent}. The lane's paths are staged; nothing was committed",
+                seat.checkout.display()
+            ),
+            Err(error) => format!(
+                "{}'s head moved from {head} to {parent} while the lane's commit {made} was made, and moved again before it could be taken back ({error}): {made} takes back what moved it. Look at the branch before committing again",
+                seat.checkout.display()
+            ),
+        }));
+    }
+    drop(held);
+    Ok(made)
 }
 
 /// Commit: the lane's work, as one commit on its branch, under the identity
@@ -601,11 +775,13 @@ fn lane_stage_and_commit(
 /// untracked file git does not ignore, but the seat instrument's link; where
 /// the lane's claim names regions (a shared checkout holds other lanes' and
 /// workers' work beside the lane's), only the changes inside them, and the
-/// answer names what it left outside. The commit takes exactly those paths
-/// as they stand in the working files (lane_stage_and_commit), leaving
-/// whatever else the index holds as it was. Refused, with nothing staged, in
-/// the middle of a merge, cherry-pick, revert or rebase, with a path in
-/// conflict, and with a region that cannot be read as a path.
+/// answer names what it left outside. What lies inside a zone the seat keeps
+/// for a lane no longer on it is never the lane's, and is left outside too.
+/// The commit takes exactly those paths as they stand in the working files
+/// (lane_stage_and_commit), leaving whatever else the index holds as it was.
+/// Refused, with nothing staged, in the middle of a merge, cherry-pick, revert
+/// or rebase, with a path in conflict, and with a region that cannot be read
+/// as a path.
 fn lane_commit(seat: &LaneSeat, message: &str) -> Result<Value, WorkcellError> {
     if message.trim().is_empty() {
         return Err(landing_refused(
@@ -619,7 +795,7 @@ fn lane_commit(seat: &LaneSeat, message: &str) -> Result<Value, WorkcellError> {
     let (changes, outside): (Vec<_>, Vec<_>) = changes
         .into_iter()
         .filter(|change| !(pool_link && change.path == SEAT_POOL_LINK.as_bytes()))
-        .partition(|change| in_lane_regions(&change.path, &regions));
+        .partition(|change| regions.take(&change.path));
     let left_outside = outside
         .iter()
         .map(LaneChange::shown)
@@ -627,15 +803,27 @@ fn lane_commit(seat: &LaneSeat, message: &str) -> Result<Value, WorkcellError> {
         .into_iter()
         .collect::<Vec<_>>();
     if changes.is_empty() {
-        let within = if regions.is_empty() {
-            String::new()
-        } else {
-            format!(" inside the lane's regions ({})", regions.join(", "))
+        let mut within = Vec::new();
+        if !regions.held.is_empty() {
+            within.push(format!(
+                "inside the lane's regions ({})",
+                regions.held.join(", ")
+            ));
+        }
+        if !regions.displaced.is_empty() {
+            within.push(format!(
+                "outside the zones the seat keeps for lanes no longer on it ({})",
+                regions.displaced.join(", ")
+            ));
+        }
+        let within = match within.is_empty() {
+            true => String::new(),
+            false => format!(" {}", within.join(" and ")),
         };
         let left = if left_outside.is_empty() {
             String::new()
         } else {
-            format!("; outside them, left as they are: {}", listed(&left_outside))
+            format!("; left as they are: {}", listed(&left_outside))
         };
         return Err(landing_refused(format!(
             "nothing to commit: {} holds no change{within} on {}{left}",
@@ -643,16 +831,15 @@ fn lane_commit(seat: &LaneSeat, message: &str) -> Result<Value, WorkcellError> {
             seat.branch
         )));
     }
-    lane_stage_and_commit(seat, &changes, message)?;
+    let head = lane_stage_and_commit(seat, &changes, message)?;
     let paths = changes
         .iter()
         .map(|change| change.path.as_slice())
         .collect::<BTreeSet<_>>();
-    let head = lane_git(seat, &["rev-parse", "HEAD"])?;
     let mut answer = landing(seat, "commit", &head);
     answer["files"] = paths.len().into();
     answer["subject"] = message.lines().next().unwrap_or_default().into();
-    answer["regions"] = regions.into();
+    answer["regions"] = regions.held.into();
     answer["left_outside"] = left_outside.into();
     Ok(answer)
 }
@@ -849,19 +1036,41 @@ mod landing_tests {
 
     #[test]
     fn a_path_lies_inside_the_lanes_regions_as_the_seat_instrument_reads_them() {
-        let regions = ["crates/a".to_owned(), "docs".to_owned()];
+        let regions = LaneRegions {
+            held: vec!["crates/a".to_owned(), "docs".to_owned()],
+            displaced: vec!["docs/kept".to_owned()],
+        };
         for (path, inside) in [
             ("crates/a", true),
             ("crates/a/lib.rs", true),
             ("crates/ab/lib.rs", false),
             ("crates", false),
             ("docs/guide/one.md", true),
+            ("docs/kept", false),
+            ("docs/kept/one.md", false),
+            ("docs/keepsake.md", true),
             ("README.md", false),
         ] {
-            assert_eq!(in_lane_regions(path.as_bytes(), &regions), inside, "{path}");
+            assert_eq!(regions.take(path.as_bytes()), inside, "{path}");
         }
-        assert!(in_lane_regions(b"README.md", &[]), "no region: the whole checkout");
-        assert!(in_lane_regions(b"README.md", &[".".to_owned()]));
+        assert!(
+            LaneRegions::default().take(b"README.md"),
+            "no region: the whole checkout"
+        );
+        let dot = LaneRegions {
+            held: vec![".".to_owned()],
+            displaced: Vec::new(),
+        };
+        assert!(dot.take(b"README.md"));
+        let whole = LaneRegions {
+            held: Vec::new(),
+            displaced: vec!["crates/b".to_owned()],
+        };
+        assert!(whole.take(b"crates/n/lib.rs"), "the whole seat");
+        assert!(
+            !whole.take(b"crates/b/.env.local"),
+            "but never a zone kept for a displaced lane"
+        );
     }
 
     #[test]
