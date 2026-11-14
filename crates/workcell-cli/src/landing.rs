@@ -587,7 +587,7 @@ impl HeldIndex {
             Ok(_) => Ok(HeldIndex(lock)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 Err(landing_refused(format!(
-                    "another git process is writing {}'s index ({} stands): the lane's paths are staged, and its commit is made once that process is done. Nothing was committed",
+                    "another git process is writing {}'s index ({} stands): the lane's paths are staged; commit again once that process is done. Nothing was committed",
                     seat.checkout.display(),
                     lock.display()
                 )))
@@ -733,15 +733,17 @@ fn lane_stage_and_commit(
         own,
     )?;
     let made = lane_git(seat, &["rev-parse", "HEAD"])?;
-    let read = lane_git(seat, &["rev-parse", &format!("{made}^{{tree}}"), &format!("{made}^")])?;
-    let (made_tree, parent) = read.split_once('\n').unwrap_or((read.as_str(), ""));
-    if made_tree != tree {
-        return Err(landing_refused(format!(
-            "{}'s head moved while the lane's commit was made, by what takes no index: it stands at {made}, which is not the lane's commit. Look at the branch before committing again",
-            seat.checkout.display()
-        )));
-    }
+    let read = lane_git(seat, &["rev-parse", &format!("{made}^"), &format!("{made}^{{tree}}")])?;
+    let (parent, made_tree) = read.split_once('\n').unwrap_or((read.as_str(), ""));
     if parent != head {
+        // HEAD moved by what takes no index. The lane's commit is known by its tree (a pre-commit hook that restages files
+        // makes another, and then which commit HEAD names cannot be told, so nothing is touched).
+        if made_tree != tree {
+            return Err(landing_refused(format!(
+                "{}'s head moved while the lane's commit was made, by what takes no index: it stands at {made}, on {parent}, not on {head}, which the commit was cut from. Look at the branch before committing again",
+                seat.checkout.display()
+            )));
+        }
         // The commit's tree was read from `head`, its parent is the head git found when it began: it would take back what moved it.
         let taken_back = lane_git(
             seat,

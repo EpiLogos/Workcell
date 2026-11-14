@@ -1294,6 +1294,47 @@ fn a_head_set_by_hand_as_the_lane_commits_is_refused_and_left_where_it_was_set()
 }
 
 #[test]
+fn a_pre_commit_hook_that_restages_the_lanes_file_never_stops_its_commit() {
+    // A project's pre-commit hook may rewrite and restage a file (a formatter), and git commits what the hook staged. The
+    // commit's tree is then not the one the lane's index was written as, and that alone is no sign the head moved: the commit
+    // stands on the head it was cut from.
+    let world = shared_page("hook");
+    let hooks = world.scratch.0.join("hooks");
+    fs::create_dir_all(&hooks).unwrap();
+    let hook = hooks.join("pre-commit");
+    fs::write(
+        &hook,
+        "#!/bin/sh\nprintf 'the lane page, formatted\\n' > lane/a.md\ngit add lane/a.md\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    git(
+        &world.checkout,
+        &world.home,
+        &["config", "core.hooksPath", hooks.to_str().unwrap()],
+    );
+    let head = git(&world.checkout, &world.home, &["rev-parse", "HEAD"]);
+    let committed = answer(world.act(
+        "workcell.lane.commit",
+        world.with("message", "The lane's page"),
+    ));
+    assert_eq!(
+        git(&world.checkout, &world.home, &["rev-parse", "HEAD^"]),
+        head
+    );
+    assert_eq!(
+        committed["head"].as_str(),
+        Some(git(&world.checkout, &world.home, &["rev-parse", "HEAD"]).as_str())
+    );
+    assert_eq!(recorded(&world, "--no-renames"), ["A\tlane/a.md"]);
+    assert_eq!(
+        git(&world.checkout, &world.home, &["show", "HEAD:lane/a.md"]),
+        "the lane page, formatted"
+    );
+}
+
+#[test]
 fn a_zone_kept_for_a_displaced_lane_is_never_taken_by_a_lane_that_holds_the_whole_seat() {
     // A lane that joins without --region holds the whole seat, and the seat instrument keeps the zone of the lane it
     // displaced. Reading the whole seat as the lane's swept the displaced lane's unfinished work and its secret into the new
